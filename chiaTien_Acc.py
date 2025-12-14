@@ -89,7 +89,7 @@ def _fresh_balances_for_online(online_users: List[str]) -> Dict[str, int]:
                 if balance < 10000:
                     with contextlib.suppress(Exception):
                         requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
-                    send_telegram(f"💸 User {user} đã hết tiền (Balance = {balance}). Đã cập nhật trạng thái 'Hết Tiền'.")
+                    # send_telegram(f"💸 User {user} đã hết tiền (Balance = {balance}). Đã cập nhật trạng thái 'Hết Tiền'.")
                 else:
                     with contextlib.suppress(Exception):
                         requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Đang Chơi"})

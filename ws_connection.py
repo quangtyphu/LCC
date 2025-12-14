@@ -131,54 +131,22 @@ async def handle_ws(acc, conn_id: str):
             await update_user_status(user, "Proxy Lỗi")
             return
 
-        # ===== 2) Token check sau khi proxy ok =====
-        ok = False
+        # ===== 2) Token check (1 lần, nếu lỗi thì dừng ngay) =====
+        jwt = acc.get("jwt")
+        
+        # Test token nhanh (timeout 3s)
         try:
-            ok = bool(jwt) and await test_token(jwt, proxy_str)
+            ok = await asyncio.wait_for(test_token(jwt, proxy_str), timeout=3)
         except Exception:
             ok = False
-
-        # Nếu token không ok -> cố gắng refresh nhưng chỉ 1 task được refresh cho mỗi user tại 1 thời điểm
+        
         if not ok:
-            print(f"❌ [{user}] Token không hợp lệ → thử login lại lấy JWT mới")
-            # lấy lock per-user để tránh nhiều task cùng refresh cho 1 user
-            async with entry["lock"]:
-                # Re-check vì có thể task khác đã refresh trước khi lock được lấy
-                current_entry = active_ws.get(user)
-                if current_entry and current_entry.get("jwt") and current_entry.get("jwt") != jwt:
-                    # token đã được cập nhật bởi task khác -> dùng lại token mới
-                    jwt = current_entry.get("jwt")
-                    try:
-                        ok = await test_token(jwt, proxy_str)
-                    except Exception:
-                        ok = False
+            print(f"⚠️ [{user}] JWT lỗi, dừng WS (watcher sẽ xử lý)")
+            await update_user_status(user, "Token Lỗi")
+            return  # không retry, để watcher refresh JWT và mở lại
 
-                if not ok:
-                    # Thực hiện refresh_jwt (đồng bộ hoặc bất đồng bộ tùy implement của bạn). refresh_jwt ở đây trả jwt string hoặc None
-                    new_jwt = await asyncio.to_thread(lambda: refresh_jwt(user))
-                    if new_jwt:
-                        jwt = new_jwt
-                        # ngay khi refresh thành công ta lưu vào entry để các task khác nhìn thấy
-                        if current_entry is not None:
-                            current_entry["jwt"] = jwt
-                        # Optional: test token nhanh 1 lần để chắc chắn (có thể bỏ nếu bạn tin tưởng refresh_jwt)
-                        try:
-                            ok = await test_token(jwt, proxy_str)
-                        except Exception:
-                            ok = False
-
-                    if not ok:
-                        # nếu vẫn không ok -> báo lỗi token và thoát (nhưng không pop active_ws ở đây)
-                        await update_user_status(user, "Token Lỗi")
-                        print(f"🟥 [{user}] Token sai → 'Token Lỗi'")
-                        return
-
-                    # Lưu JWT mới cho lần reconnect sau (lưu DB qua API) -- chạy trong thread
-                    try:
-                        await _requests_put(f"/api/users/{user}", {"jwt": jwt}, timeout=5)
-                    except Exception:
-                        # không bắt buộc phải fail nếu API không reachable
-                        pass
+        # JWT OK → connect WS
+        print(f"🔐 [{user}] JWT OK, kết nối WS")
 
         # ===== 3) Kết nối WS =====
         try:
