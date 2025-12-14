@@ -91,12 +91,14 @@ async def handle_event(user, msg):
 
     # ------------------- Thông tin user -------------------
     if event == "your-info":
-        balance = data.get("balance", 0)
-        avatar = data.get("avatar", 0)
+        balance = data.get("money") or data.get("balance") or 0
+        print(f"💰 [{user}] Nhận balance từ your-info: {balance:,}")
         update_balance(user, balance)
+        
         entry = active_ws.get(user)
         if entry is not None:
             entry["last_info_at"] = time.time()
+        
         try:
             r = requests.get(f"{API_BASE}/api/users/{user}", timeout=3)
             if r.status_code == 200:
@@ -105,25 +107,24 @@ async def handle_event(user, msg):
                 if not nickname:
                     requests.put(f"{API_BASE}/api/users/{user}", json={
                         "nickname": data.get("nickname", ""),
-                        "avatar": avatar
+                        "avatar": data.get("avatar", 0)
                     })
                 else:
-                    requests.put(f"{API_BASE}/api/users/{user}", json={"avatar": avatar})
+                    requests.put(f"{API_BASE}/api/users/{user}", json={"avatar": data.get("avatar", 0)})
         except Exception as e:
             print(f"⚠️ [{user}] Lỗi lấy/cập nhật user: {e}")
 
-        try:
-            fetch_transactions(user, tx_type="DEPOSIT", limit=10)
-        except Exception as e:
-            print(f"⚠️ [{user}] Lỗi fetch deposit: {e}")
-
-        await asyncio.sleep(15)
-
-        try:
-            fetch_transactions(user, tx_type="WITHDRAW", limit=10)
-        except Exception as e:
-            print(f"⚠️ [{user}] Lỗi fetch withdraw: {e}")
-
+        # FIX: Dùng asyncio.create_task thay vì asyncio.run
+        async def fetch_bg():
+            try:
+                from fetch_transactions import fetch_transactions_async
+                await fetch_transactions_async(user, "DEPOSIT", 10)
+                await asyncio.sleep(1)
+                await fetch_transactions_async(user, "WITHDRAW", 10)
+            except Exception as e:
+                print(f"⚠️ [{user}] Lỗi fetch tx: {e}")
+        
+        asyncio.create_task(fetch_bg())  # Chạy trong event loop hiện tại, không tạo loop mới
         return
 
     # ------------------- Các event khác -------------------
