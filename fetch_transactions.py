@@ -103,7 +103,7 @@ async def fetch_transactions_async(username: str, tx_type: str = "DEPOSIT", limi
             elif save_resp.status_code == 409:
                 skipped += 1  # đã tồn tại
         
-        if saved or skipped:
+        if saved :
             label = "Nạp tiền" if tx_type == "DEPOSIT" else "Rút tiền"
             print(f"✅ [{username}] Lưu {len(saved)} giao dịch {label} mới (bỏ qua {skipped})")
         

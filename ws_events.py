@@ -92,39 +92,31 @@ async def handle_event(user, msg):
     # ------------------- Thông tin user -------------------
     if event == "your-info":
         balance = data.get("money") or data.get("balance") or 0
-        print(f"💰 [{user}] Nhận balance từ your-info: {balance:,}")
-        update_balance(user, balance)
-        
-        entry = active_ws.get(user)
-        if entry is not None:
-            entry["last_info_at"] = time.time()
-        
         try:
-            r = requests.get(f"{API_BASE}/api/users/{user}", timeout=3)
-            if r.status_code == 200:
-                acc = r.json()
-                nickname = acc.get("nickname")
-                if not nickname:
-                    requests.put(f"{API_BASE}/api/users/{user}", json={
-                        "nickname": data.get("nickname", ""),
-                        "avatar": data.get("avatar", 0)
-                    })
-                else:
-                    requests.put(f"{API_BASE}/api/users/{user}", json={"avatar": data.get("avatar", 0)})
-        except Exception as e:
-            print(f"⚠️ [{user}] Lỗi lấy/cập nhật user: {e}")
+            await asyncio.to_thread(
+                lambda: requests.put(f"{API_BASE}/api/users/{user}", json={"balance": int(balance)}, timeout=5)
+            )
+            print(f"💾 [{user}] Cập nhật Balance={int(balance)}")
+        except Exception:
+            pass
 
-        # FIX: Dùng asyncio.create_task thay vì asyncio.run
+        # Debounce: tránh fetch lặp trong 30s
+        entry = active_ws.get(user) or {}
+        now = time.time()
+        last_fetch = entry.get("last_fetch_at", 0)
+        if now - last_fetch < 30:
+            return
+        entry["last_fetch_at"] = now
+
         async def fetch_bg():
             try:
                 from fetch_transactions import fetch_transactions_async
                 await fetch_transactions_async(user, "DEPOSIT", 10)
-                await asyncio.sleep(1)
                 await fetch_transactions_async(user, "WITHDRAW", 10)
             except Exception as e:
                 print(f"⚠️ [{user}] Lỗi fetch tx: {e}")
-        
-        asyncio.create_task(fetch_bg())  # Chạy trong event loop hiện tại, không tạo loop mới
+
+        asyncio.create_task(fetch_bg())
         return
 
     # ------------------- Các event khác -------------------

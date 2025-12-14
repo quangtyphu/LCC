@@ -98,7 +98,6 @@ def run_ws_in_thread(acc: dict, username: str):
 @app.route("/api/force-check", methods=["POST"])
 def force_check():
     data = request.get_json() or {}
-    # Chấp nhận cả "username" lẫn "user" để tương thích
     username = data.get("username") or data.get("user")
     if not username:
         return jsonify({"error": "Thiếu username"}), 400
@@ -112,7 +111,7 @@ def force_check():
     proxy = user.get("proxy")
     jwt = user.get("jwt")
 
-    # 1) Kiểm tra proxy trước
+    # 1) Kiểm tra proxy
     if not proxy:
         update_status(username, "Proxy Lỗi")
         return jsonify({"error": "Thiếu proxy"}), 400
@@ -131,45 +130,7 @@ def force_check():
         update_status(username, "Proxy Lỗi")
         return jsonify({"error": "Proxy lỗi"}), 400
 
-    # 2) Nếu ĐÃ có WS đang chạy → HỦY WS CŨ & MỞ LẠI NGAY (ép server trả your-info)
-    entry = active_ws.get(username)
-    if entry and entry.get("task") and not entry["task"].done():
-        # (a) thử/refresh JWT để lần connect mới dùng token đúng
-        try:
-            ok = asyncio.run(test_token(jwt, proxy))
-        except Exception:
-            ok = False
-        if not ok:
-            print("❌ Token lỗi → Refresh JWT")
-            new_jwt = refresh_jwt(username)
-            if new_jwt:
-                jwt = new_jwt
-                try:
-                    requests.put(f"{API_BASE}/api/users/{username}", json={"jwt": jwt}, timeout=5)
-                except Exception:
-                    pass
-            else:
-                return jsonify({"ok": False, "error": "Không refresh được JWT"}), 400
-
-        # (b) Cancel WS cũ
-        try:
-            entry["task"].cancel()
-        except Exception:
-            pass
-
-        # (c) Đặt 'cọc' để watcher không mở trùng trong lúc mình mở lại
-        active_ws[username] = {"connecting": True}
-
-        # (d) Mở WS mới ngay (sẽ nhận your-info sau connect)
-        acc = user.copy()
-        acc["jwt"] = jwt
-        run_ws_in_thread(acc, username)
-        print(f"♻️ [{username}] Force-reconnect WS để cập nhật balance/transactions")
-
-        return jsonify({"ok": True, "mode": "force-reconnect"}), 200
-
-
-    # 3) CHƯA có WS → kiểm tra JWT (để tránh connect fail ngay)
+    # 2) Kiểm tra + refresh JWT nếu cần
     try:
         ok = asyncio.run(test_token(jwt, proxy))
     except Exception:
@@ -183,42 +144,31 @@ def force_check():
             return jsonify({"error": "Token lỗi, refresh thất bại"}), 400
         jwt = new_jwt
         try:
-            ok = asyncio.run(test_token(jwt, proxy))
-        except Exception:
-            ok = False
-        if not ok:
-            update_status(username, "Token Lỗi")
-            return jsonify({"error": "Token mới vẫn lỗi"}), 400
-
-        # Lưu token mới
-        try:
             requests.put(f"{API_BASE}/api/users/{username}", json={"jwt": jwt}, timeout=5)
         except Exception:
             pass
 
-    # 4) Lấy giao dịch gần nhất (không bắt buộc)
-    try:
-        fetch_transactions(username, "DEPOSIT", 10)
-        fetch_transactions(username, "WITHDRAW", 10)
-    except Exception as e:
-        print(f"⚠️ [{username}] Lỗi fetch tx: {e}")
+    # 3) Luôn force-reconnect (dù có WS hay không) để chắc chắn lấy balance
+    entry = active_ws.get(username)
+    if entry and entry.get("task") and not entry["task"].done():
+        # Hủy WS cũ
+        try:
+            entry["task"].cancel()
+            print(f"🔄 [{username}] Hủy WS cũ")
+        except Exception:
+            pass
 
-    # 5) Set tạm 'Đang Kết Nối' để tránh watcher đua và đặt 'cọc' trước khi spawn WS
-    update_status(username, "Đang Kết Nối")
-    # Đặt cọc để watcher không mở trùng nếu nó tick đúng lúc
+    # Đặt cọc
     active_ws[username] = {"connecting": True}
 
-    # 6) Mở WS mới (đơn-kết-nối) trên thread riêng
+    # Mở WS mới
     acc = user.copy()
     acc["jwt"] = jwt
     run_ws_in_thread(acc, username)
-    print(f"🟢 [{username}] WS đang khởi tạo để cập nhật balance")
+    
+    print(f"♻️ [{username}] Force-reconnect WS để cập nhật balance")
 
-    return jsonify({
-        "ok": True,
-        "mode": "spawn-new-ws",
-        "note": "Balance sẽ được cập nhật khi WS nhận event your-info"
-    }), 200
+    return jsonify({"ok": True, "mode": "force-reconnect"}), 200
 
 
 # 🧵 Chạy API song song
