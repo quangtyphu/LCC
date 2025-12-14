@@ -1,0 +1,463 @@
+import random
+import asyncio
+import requests
+import contextlib
+from typing import List, Tuple, Dict
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from chiaTien_Tho import distribute_for_devices
+from constants import active_ws, load_config
+from telegram_notifier import send_telegram
+
+API_BASE = "http://127.0.0.1:3000"  # server.js
+
+
+# ================= Helpers cấu hình theo khung giờ =================
+
+def _get_active_window(cfg: dict) -> dict:
+    """
+    Trả về nguyên window đang hiệu lực (inclusive start, exclusive end).
+    Hỗ trợ khoảng qua nửa đêm (start > end).
+    Không khớp thì trả {}
+    """
+    tz = ZoneInfo("Asia/Ho_Chi_Minh")
+    now = datetime.now(tz).time()
+    windows = cfg.get("TIME_WINDOWS") or []
+
+    # parse HH:MM
+    from datetime import datetime as dt
+    for w in windows:
+        s_raw, e_raw = w.get("start"), w.get("end")
+        if not s_raw or not e_raw:
+            continue
+        try:
+            s = dt.strptime(s_raw, "%H:%M").time()
+            e = dt.strptime(e_raw, "%H:%M").time()
+        except Exception:
+            continue
+
+        in_range = (s <= now < e) if s < e else (now >= s or now < e)
+        if in_range:
+            return w
+    return {}
+
+
+def _clean(lst):
+    # bỏ phần tử rỗng và strip khoảng trắng
+    return [str(x).strip() for x in lst if isinstance(x, str) and str(x).strip()]
+
+
+def _priority_users_from(cfg: dict, w: dict) -> List[str]:
+    lst = w.get("PRIORITY_USERS") or cfg.get("PRIORITY_USERS") or []
+    return [u for u in lst if u]
+
+def _priority_users_v2_from(cfg: dict, w: dict) -> List[str]:
+    lst = w.get("PRIORITY_USERS_V2") or cfg.get("PRIORITY_USERS_V2") or []
+    return _clean(lst)
+
+
+def _strategy_from(cfg: dict, w: dict, fallback: int = 1) -> int:
+    """
+    Ưu tiên ASSIGN_STRATEGY trong window nếu là số hợp lệ (1..9).
+    Nếu không có/không hợp lệ => dùng root; nếu root không hợp lệ => fallback.
+    """
+    win_val = w.get("ASSIGN_STRATEGY")
+    if isinstance(win_val, int) and 1 <= win_val <= 9:
+        return win_val
+    try:
+        root_val = int(cfg.get("ASSIGN_STRATEGY", fallback))
+        if 1 <= root_val <= 9:
+            return root_val
+    except Exception:
+        pass
+    return fallback
+
+
+# ================= Helpers khác =================
+
+def _fresh_balances_for_online(online_users: List[str]) -> Dict[str, int]:
+    balances = {}
+    for user in online_users:
+        try:
+            r = requests.get(f"{API_BASE}/api/users/{user}", timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                balance = int(data.get("balance") or 0)
+                balances[user] = balance
+
+                if balance < 10000:
+                    with contextlib.suppress(Exception):
+                        requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
+                    send_telegram(f"💸 User {user} đã hết tiền (Balance = {balance}). Đã cập nhật trạng thái 'Hết Tiền'.")
+                else:
+                    with contextlib.suppress(Exception):
+                        requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Đang Chơi"})
+            else:
+                balances[user] = 0
+                with contextlib.suppress(Exception):
+                    requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
+        except Exception as e:
+            print(f"⚠️ Lỗi lấy balance cho {user}: {e}")
+            balances[user] = 0
+            with contextlib.suppress(Exception):
+                requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
+    return balances
+
+
+def _fetch_today_bets_for_online(online_users: List[str]) -> Dict[str, int]:
+    """
+    Lấy tổng cược ngày cho các user online từ API /api/bet-totals.
+    Kết quả: {username: total_bet_today}
+    """
+    res: Dict[str, int] = {u: 0 for u in online_users}
+    try:
+        r = requests.get(f"{API_BASE}/api/bet-totals", params={"page": 1, "limit": 10000}, timeout=6)
+        if r.status_code != 200:
+            return res
+        data = r.json()
+        items = data.get("data") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            return res
+        for item in items:
+            try:
+                u = str(item.get("username") or item.get("user") or "").strip()
+                if u and u in res:
+                    total_val = (item.get("total_day")
+                                 or item.get("totalBet")
+                                 or item.get("total")
+                                 or item.get("today_bet")
+                                 or item.get("todayBet") or 0)
+                    res[u] = int(total_val or 0)
+            except Exception:
+                continue
+    except Exception:
+        return res
+    return res
+
+
+def _debug_strategy9_order(tag: str, ordered: List[str], today_bets: Dict[str, int], balances: Dict[str, int]):
+    print(f"🔎 strategy9[{tag}] order:")
+    for u in ordered:
+        tb = today_bets.get(u, 0)
+        bal = balances.get(u, 0)
+        print(f"   - {u}: today_bet={tb} | balance={bal}")
+
+
+# ================= Gán cược =================
+
+def assign_bets(
+    bets: List[Tuple[None, int, str]],
+    online_users: List[str],
+    strategy: int = None
+) -> List[Tuple[str, int, str, int]]:
+    """
+    Trả về list (username, amount, door, delay)
+    """
+    config = load_config()
+    window = _get_active_window(config)
+
+    # PAUSE theo khung giờ
+    if window.get("PAUSE"):
+        msg = "⏸️ PAUSE theo khung giờ: bỏ qua phiên gán cược."
+        print(msg)
+        return []
+
+    # Lấy PRIORITY_USERS/ASSIGN_STRATEGY theo giờ
+    PRIORITY_USERS = _priority_users_from(config, window)  # vẫn dùng cho các strategy khác
+    PRIORITY_USERS_V2 = _priority_users_v2_from(config, window)
+
+    balances = _fresh_balances_for_online(online_users)
+    today_bets = _fetch_today_bets_for_online(online_users) if strategy == 9 else {}
+
+    # sort giảm dần theo amount để nhận diện bet lớn nhất
+    to_assign = sorted([(amt, door) for (_dev, amt, door) in bets], key=lambda x: -x[0])
+
+    used = set()
+    final: List[Tuple[str, int, str, int]] = []
+
+    # ---------- TÍNH SẴN "protected_user/protected_amount" CHO CHIẾN LƯỢC 7 ----------
+    # Chọn 1 user có balance nhỏ nhất nhưng còn đủ ít nhất một mức trong to_assign;
+    # họ sẽ được gán vào "mức cao nhất ≤ balance" của chính họ.
+    protected_user = None
+    protected_amount = None
+    if strategy == 7 and online_users:
+        try:
+            amounts_desc = [a for (a, _d) in to_assign]
+            # Lọc user theo balance tăng dần, lấy người đầu tiên còn afford được ít nhất 1 mức
+            sorted_users_by_bal = sorted(online_users, key=lambda u: balances.get(u, float("inf")))
+            for u in sorted_users_by_bal:
+                bal_u = balances.get(u, 0)
+                affordable = [a for a in amounts_desc if a <= bal_u]
+                if affordable:
+                    protected_user = u
+                    protected_amount = max(affordable)
+                    break
+        except Exception:
+            protected_user = None
+            protected_amount = None
+
+    # ---------------------------- VÒNG GÁN ----------------------------
+    for idx, (amount, door) in enumerate(to_assign):
+        # ứng viên cho mức amount ở lượt này
+        candidates = []
+        for u in online_users:
+            if u in used:
+                continue
+            bal = balances.get(u, 0)
+            if bal >= amount:
+                candidates.append((bal - amount, u, bal))  # (after, username, bal)
+
+        if not candidates:
+            msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
+            print(msg)
+            send_telegram(msg)
+            return []
+
+        # -------------------- Chiến lược chọn account --------------------
+        if strategy == 1:
+            after, chosen, _bal = min(candidates, key=lambda t: t[0])  # AFTER thấp nhất
+
+        elif strategy == 2:
+            after, chosen, _bal = random.choice(candidates)  # Random
+
+        elif strategy == 3:
+            # Ưu tiên PRIORITY_USERS, fallback AFTER thấp nhất
+            chosen, after, _bal = None, None, None
+            for u in PRIORITY_USERS:
+                if u in online_users and u not in used:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
+            if chosen is None:
+                after, chosen, _bal = min(candidates, key=lambda t: t[0])
+            if chosen is None:
+                msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
+                print(msg)
+                send_telegram(msg)
+                return []
+
+        elif strategy == 4:
+            after, chosen, _bal = max(candidates, key=lambda t: t[0])  # AFTER cao nhất
+
+        elif strategy == 5:
+            # Ưu tiên PRIORITY_USERS, fallback Random
+            chosen, after, _bal = None, None, None
+            for u in PRIORITY_USERS:
+                if u in online_users and u not in used:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
+            if chosen is None:
+                after, chosen, _bal = random.choice(candidates)
+            if chosen is None:
+                msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
+                print(msg)
+                send_telegram(msg)
+                return []
+
+        elif strategy == 6:
+            # Bet lớn nhất -> account có BALANCE THỰC lớn nhất; còn lại random
+            if idx == 0:
+                after, chosen, _bal = max(candidates, key=lambda t: t[2])  # t[2] = balance thực
+            else:
+                after, chosen, _bal = random.choice(candidates)
+
+        elif strategy == 7:
+            # --- Bước A: Nếu đây chính là mức dành cho protected_user => GHÉP NGAY ---
+            if (protected_user is not None
+                and protected_amount is not None
+                and amount == protected_amount
+                and protected_user in online_users
+                and protected_user not in used
+                and balances.get(protected_user, 0) >= amount):
+                chosen = protected_user
+                _bal = balances.get(chosen, 0)
+                after = _bal - amount
+
+            else:
+                # --- Bước B: Lượt đầu ưu tiên PRIORITY_USERS (nếu có) ---
+                chosen, after, _bal = None, None, None
+                if idx == 0 and PRIORITY_USERS:
+                    for u in PRIORITY_USERS:
+                        if u in online_users and u not in used:
+                            bal = balances.get(u, 0)
+                            if bal >= amount:
+                                chosen = u
+                                _bal = bal
+                                after = bal - amount
+                                break
+
+                # --- Bước C: Nếu chưa chọn -> Random từ candidates ---
+                if chosen is None:
+                    after, chosen, _bal = random.choice(candidates)
+
+        elif strategy == 8:
+            # Gần amount*5 nhất (tie-break ưu tiên ≤ target)
+            target = amount * 5
+
+            def score(t):
+                bal = t[2]
+                dist = abs(bal - target)
+                prefer_lower = 0 if bal <= target else 1
+                return (dist, prefer_lower, bal)
+
+            after, chosen, _bal = min(candidates, key=score)
+
+        elif strategy == 9:
+            # nhóm ưu tiên mới
+            prio_online = [u for u in PRIORITY_USERS_V2 if u in online_users and u not in used]
+            prio_sorted = sorted(prio_online, key=lambda u: (today_bets.get(u, 0), balances.get(u, 0)))
+
+            others = [u for u in online_users if u not in prio_online and u not in used]
+            others_sorted = sorted(others, key=lambda u: balances.get(u, 0))
+
+            ordered = prio_sorted + others_sorted
+
+            chosen = None
+            after = None
+            _bal = None
+            for u in ordered:
+                bal = balances.get(u, 0)
+                if bal >= amount:
+                    chosen = u
+                    _bal = bal
+                    after = bal - amount
+                    break
+
+            if chosen is None:
+                msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
+                print(msg)
+                send_telegram(msg)
+                return []
+
+        else:
+            # fallback an toàn
+            after, chosen, _bal = random.choice(candidates)
+
+        # ----- Áp dụng quy tắc "dư < 10k thì đánh hết" (giữ nguyên như bản trước) -----
+        current_bal = balances[chosen]
+        if current_bal - amount < 10000:
+            amount = current_bal
+            after = 0
+
+        used.add(chosen)
+        balances[chosen] = after
+
+        delay = random.randint(5, 25)
+        final.append((chosen, amount, door, delay))
+
+        print(
+            f"➡️  User {chosen.ljust(20)} "
+            f"Balance={str(current_bal).rjust(8)} "
+            f"→ Đặt {door.ljust(3)} {str(amount).rjust(7)} "
+            f"(Còn lại {str(after).rjust(8)}) "
+            f"Sau {str(delay).rjust(3)}s"
+        )
+
+    return final
+
+
+def run_assigner(online_users: List[str], strategy: int = None) -> List[Tuple[str, int, str, int]]:
+    """
+    Nếu 'strategy' không truyền vào => sẽ lấy theo TIME_WINDOWS (nếu có), ngược lại dùng root config.
+    distribute_for_devices() đã tự xử lý PAUSE và BET_RANGE theo giờ.
+    """
+    cfg = load_config()
+    w = _get_active_window(cfg)
+
+    # Nếu khung giờ đang PAUSE, bỏ qua luôn từ đầu (đề phòng code chỗ khác gọi thẳng run_assigner)
+    if w.get("PAUSE"):
+        msg = "⏸️ PAUSE theo khung giờ: không chạy run_assigner."
+        print(msg)
+        return []
+
+    # Lấy strategy theo giờ nếu caller không truyền
+    if strategy is None:
+        strategy = _strategy_from(cfg, w, fallback=1)
+
+    # Lấy danh sách bets từ chiaTien_Tho (đã áp khung giờ & pause)
+    bets = distribute_for_devices([{}] * len(online_users))
+    if not bets:
+        # Không có bet để gán (pause hoặc BET_RANGE vô hiệu)
+        return []
+
+    final_bets = assign_bets(bets, online_users, strategy=strategy)
+    if not final_bets:
+        return []
+
+    total_tai = sum(amt for (_, amt, door, _) in final_bets if door.upper() == "TAI")
+    total_xiu = sum(amt for (_, amt, door, _) in final_bets if door.upper() == "XIU")
+
+    print(f"\n📊 Tổng Tài = {total_tai} | Tổng Xỉu = {total_xiu}")
+    return final_bets
+
+
+# ================= HÀNG ĐỢI BET & ENQUEUE API =================
+
+async def enqueue_bets(final_bets):
+    """
+    Đặt lịch đẩy lệnh bet vào queue bằng loop.call_later (không tạo task ngủ).
+    Lưu handles vào active_ws[user]["pending_schedules"] để dọn khi đóng WS.
+    """
+    if not final_bets:
+        return
+
+    loop = asyncio.get_running_loop()
+    max_delay = 0
+
+    for user, amount, door, delay in final_bets:
+        ws_entry = active_ws.get(user)
+        if not ws_entry:
+            print(f"⚠️ Không tìm thấy ws_entry cho user {user}")
+            continue
+
+        q: asyncio.Queue = ws_entry["queue"]
+        bet_type = "TAI" if door.upper() == "TAI" else "XIU"
+        payload = ("bet", {"type": bet_type, "amount": amount})
+
+        # Đặt lịch đẩy payload vào queue sau 'delay' giây
+        h = loop.call_later(delay, q.put_nowait, payload)
+        ws_entry.setdefault("pending_schedules", []).append(h)
+
+        if delay > max_delay:
+            max_delay = delay
+
+    try:
+        await asyncio.sleep(max_delay + 0.5)
+    except asyncio.CancelledError:
+        # Nếu bị hủy giữa chừng -> hủy mọi lịch đã đặt
+        for user, *_ in final_bets:
+            entry = active_ws.get(user)
+            if not entry:
+                continue
+            handles = entry.pop("pending_schedules", [])
+            for h in handles:
+                with contextlib.suppress(Exception):
+                    h.cancel()
+        raise
+
+
+if __name__ == "__main__":
+    online_users = ["trautuankiet", "mayman892", "taimom64", "t0569881312", "trandang64"]
+
+    print("\n=== Theo TIME_WINDOWS (nếu có) ===")
+    run_assigner(online_users)
+
+    print("\n=== Ép chiến lược 6 (bỏ qua TIME_WINDOWS) ===")
+    run_assigner(online_users, strategy=6)
+
+    print("\n=== Ép chiến lược 7 (bỏ qua TIME_WINDOWS) ===")
+    run_assigner(online_users, strategy=7)
+
+    print("\n=== Ép chiến lược 8 (bỏ qua TIME_WINDOWS) ===")
+    run_assigner(online_users, strategy=8)
+
+    print("\n=== Ép chiến lược 9 (bỏ qua TIME_WINDOWS) ===")
+    run_assigner(online_users, strategy=9)

@@ -1,0 +1,22 @@
+{
+  "ASSIGN_STRATEGY": 9,
+  "PRIORITY_USERS": ["hoahongden23420","","","",""],
+  "PRIORITY_USERS_V2": ["chidai2412", "susubeo013", "anhhai1414", "maimai15tuoi", "hamlozz16zz", "xinhgai18t", "thainguyen5617", "hoanggiang9819", "hoahongden23420", "", "", "", "", "", "", "", "", ""],
+  "BET_RANGE": { "START": 50, "STOP": 101, "STEP": 10 },
+  "PLAYER_COUNT": 10,
+
+  "TIME_WINDOWS": [
+    { "start": "00:00", "end": "00:30", "PRIORITY_USERS": [], "BET_RANGE": { "START": 50, "STOP": 201, "STEP": 10 } },
+    { "start": "00:30", "end": "01:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 50, "STOP": 101, "STEP": 10 } },
+    { "start": "01:00", "end": "02:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 20, "STOP": 71,  "STEP": 10 } },
+    { "start": "02:00", "end": "07:00", "PAUSE": true },
+
+    { "start": "07:00", "end": "09:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 20, "STOP": 71,  "STEP": 10 } },
+    { "start": "09:00", "end": "10:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 20, "STOP": 101, "STEP": 10 } },
+    { "start": "10:00", "end": "20:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 50, "STOP": 151, "STEP": 10 } },
+    { "start": "20:00", "end": "21:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 50, "STOP": 201, "STEP": 10 } },
+    { "start": "21:00", "end": "22:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 80, "STOP": 201, "STEP": 10 } },
+    { "start": "22:00", "end": "23:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 100, "STOP": 251, "STEP": 10 } },
+    { "start": "23:00", "end": "23:59", "PRIORITY_USERS": [], "BET_RANGE": { "START": 100, "STOP": 301, "STEP": 10 } }
+  ]
+}
