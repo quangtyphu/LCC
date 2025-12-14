@@ -59,15 +59,15 @@ def _priority_users_v2_from(cfg: dict, w: dict) -> List[str]:
 
 def _strategy_from(cfg: dict, w: dict, fallback: int = 1) -> int:
     """
-    Ưu tiên ASSIGN_STRATEGY trong window nếu là số hợp lệ (1..9).
+    Ưu tiên ASSIGN_STRATEGY trong window nếu là số hợp lệ (1..10).
     Nếu không có/không hợp lệ => dùng root; nếu root không hợp lệ => fallback.
     """
     win_val = w.get("ASSIGN_STRATEGY")
-    if isinstance(win_val, int) and 1 <= win_val <= 9:
+    if isinstance(win_val, int) and 1 <= win_val <= 10:
         return win_val
     try:
         root_val = int(cfg.get("ASSIGN_STRATEGY", fallback))
-        if 1 <= root_val <= 9:
+        if 1 <= root_val <= 10:
             return root_val
     except Exception:
         pass
@@ -168,7 +168,7 @@ def assign_bets(
     PRIORITY_USERS_V2 = _priority_users_v2_from(config, window)
 
     balances = _fresh_balances_for_online(online_users)
-    today_bets = _fetch_today_bets_for_online(online_users) if strategy == 9 else {}
+    today_bets = _fetch_today_bets_for_online(online_users) if strategy in (9, 10) else {}
 
     # sort giảm dần theo amount để nhận diện bet lớn nhất
     to_assign = sorted([(amt, door) for (_dev, amt, door) in bets], key=lambda x: -x[0])
@@ -337,6 +337,38 @@ def assign_bets(
                 send_telegram(msg)
                 return []
 
+        elif strategy == 10:
+            # Ưu tiên các user KHÔNG thuộc PRIORITY_USERS_V2 theo balance tăng dần;
+            # nếu thiếu thì dùng PRIORITY_USERS_V2 theo tổng cược ngày thấp nhất
+            others = [u for u in online_users if u not in PRIORITY_USERS_V2]
+            others_sorted = sorted(others, key=lambda u: balances.get(u, 0))
+
+            prio_sorted = sorted(
+                [u for u in PRIORITY_USERS_V2 if u in online_users],
+                key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
+            )
+
+            ordered = others_sorted + prio_sorted
+
+            chosen = None
+            after = None
+            _bal = None
+            for u in ordered:
+                if u in used:
+                    continue
+                bal = balances.get(u, 0)
+                if bal >= amount:
+                    chosen = u
+                    _bal = bal
+                    after = bal - amount
+                    break
+
+            if chosen is None:
+                msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
+                print(msg)
+                send_telegram(msg)
+                return []
+
         else:
             # fallback an toàn
             after, chosen, _bal = random.choice(candidates)
@@ -461,3 +493,6 @@ if __name__ == "__main__":
 
     print("\n=== Ép chiến lược 9 (bỏ qua TIME_WINDOWS) ===")
     run_assigner(online_users, strategy=9)
+
+    print("\n=== Ép chiến lược 10 (bỏ qua TIME_WINDOWS) ===")
+    run_assigner(online_users, strategy=10)

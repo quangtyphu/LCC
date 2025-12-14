@@ -12,7 +12,7 @@ from get_active_accounts import get_active_accounts
 from ws_connection import handle_ws, disconnect_user
 from token_utils import test_token
 from jwt_manager import refresh_jwt
-from fetch_transactions import fetch_transactions
+from fetch_transactions import check_all_transactions  # ← Đổi import
 
 API_BASE = "http://127.0.0.1:3000"  # URL CMS Node.js
 app = Flask(__name__)
@@ -31,11 +31,24 @@ async def watcher_loop():
         target_accounts = get_active_accounts()
         target = set(acc["username"] for acc in target_accounts)
 
-        # Ngắt user không còn trong target
-        for u in current - target:
-            await disconnect_user(u)
+        # ❌ BỎ: Ngắt user không còn trong target (không phụ thuộc trạng thái Đang Chơi nữa)
+        # for u in current - target:
+        #     await disconnect_user(u)
 
-        # Mở WS mới cho user chưa có (đã có cả trường hợp "connecting": True thì cũng coi là đã có)
+        # ✅ CHỈ NGẮT NẾU TRẠNG THÁI = "Token Lỗi"
+        try:
+            resp = requests.get(f"{API_BASE}/api/users", timeout=5)
+            if resp.status_code == 200:
+                users = resp.json()
+                for udoc in users:
+                    u = udoc.get("username")
+                    status = udoc.get("status")
+                    if u in current and status == "Token Lỗi":
+                        await disconnect_user(u)
+        except Exception:
+            pass
+
+        # Mở WS mới cho user chưa có (giữ nguyên)
         if target_accounts:
             for acc in target_accounts:
                 u = acc["username"]
@@ -43,9 +56,7 @@ async def watcher_loop():
                     print(f"➕ Mở WS mới cho {u}")
                     q = asyncio.Queue()
                     conn_id = uuid.uuid4().hex
-                    # Tạo entry TRƯỚC, gắn conn_id
                     active_ws[u] = {"queue": q, "task": None, "acc": acc, "conn_id": conn_id}
-                    # Sau đó mới tạo task, truyền đúng conn_id
                     task = asyncio.create_task(handle_ws(acc, conn_id))
                     active_ws[u]["task"] = task
 
@@ -169,6 +180,26 @@ def force_check():
     print(f"♻️ [{username}] Force-reconnect WS để cập nhật balance")
 
     return jsonify({"ok": True, "mode": "force-reconnect"}), 200
+
+
+# ============================================================
+# =============== API CHECK NẠP/RÚT + NHẬN QUÀ ===============
+# ============================================================
+@app.route("/api/check-transactions", methods=["POST"])
+def check_transactions():
+    data = request.get_json() or {}
+    username = data.get("username") or data.get("user")
+    if not username:
+        return jsonify({"error": "Thiếu username"}), 400
+
+    # Chạy trong thread riêng
+    threading.Thread(
+        target=check_all_transactions,
+        args=(username,),
+        daemon=True
+    ).start()
+    
+    return jsonify({"ok": True, "message": f"Đang check transactions + gift-box cho {username}"}), 200
 
 
 # 🧵 Chạy API song song

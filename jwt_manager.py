@@ -6,157 +6,179 @@
 # - (Tuỳ chọn) Fetch lịch sử nạp/rút sau login
 
 import requests
-import random
 import time
-from fetch_transactions import fetch_transactions
 
 API_BASE = "http://127.0.0.1:3000"  # URL server.js
-LOGIN_URL = "https://wlb.tele68.com/v1/lobby/auth/login?cp=R&cl=R&pf=web&at="
+LOGIN_URL = "https://wlb.tele68.com/v1/lobby/auth/login"
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Chrome/118.0.5993.88 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) Chrome/122.0.6261.57 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
 ]
 
 
-def refresh_jwt(
-    user_name: str,
-    *,
-    update_jwt: bool = True,        # True: ghi JWT mới vào DB; False: chỉ login để lấy balance (an toàn WS)
-    update_balance: bool = True,    # True: cập nhật balance từ response login
-    fetch_tx: bool = True           # True: fetch DEPOSIT rồi WITHDRAW (có delay 15s)
-) -> str | None:
+def _build_proxies(proxy_str: str):
+    """Tạo dict proxies cho requests"""
+    host, port, userp, passp = proxy_str.split(":")
+    proxy_auth = f"{userp}:{passp}@{host}:{port}"
+    proxy_url = f"socks5h://{proxy_auth}"
+    return {"http": proxy_url, "https": proxy_url}
+
+
+def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
     """
-    Login qua proxy để lấy JWT *và* balance ngay tại bước login.
-    - update_jwt=True  : hành vi refresh thật sự (ghi JWT mới).
-    - update_jwt=False : KHÔNG ghi JWT (chỉ kéo balance), tránh ảnh hưởng WS đang sống.
-    - update_balance   : có cập nhật balance từ (remoteLoginResp.money | money) hay không.
-    - fetch_tx         : có gọi fetch_transactions (DEPOSIT rồi WITHDRAW) sau login hay không.
-
-    Trả về:
-        - JWT string nếu update_jwt=True và server trả token
-        - None nếu update_jwt=False (vì bạn chỉ kéo balance) hoặc login lỗi.
+    Lấy JWT mới bằng cách login lại với accessToken.
+    Nếu 401 → tự động lấy accessToken mới và retry (max 2 lần).
     """
-
-    # 1) Lấy thông tin user (nickname, accessToken, proxy)
+    from game_login import get_access_token, update_access_token_to_db
+    
+    MAX_RETRY = 2
+    if _retry_count >= MAX_RETRY:
+        print(f"❌ [{username}] Đã retry {MAX_RETRY} lần, dừng lại")
+        return None
+    
     try:
-        resp = requests.get(f"{API_BASE}/api/users/{user_name}", timeout=7)
-        if resp.status_code != 200:
-            print(f"❌ [{user_name}] Không lấy được user (API {resp.status_code})")
+        # 1. Lấy user_profile (có nickname, proxy, accessToken, jwt)
+        resp_profile = requests.get(f"{API_BASE}/api/users/{username}", timeout=5)
+        if resp_profile.status_code != 200:
+            print(f"❌ [{username}] Không lấy được user_profile từ DB")
             return None
-        acc = resp.json()
-    except Exception as e:
-        print(f"❌ [{user_name}] Lỗi gọi API users: {e}")
-        return None
-
-    nick = acc.get("nickname")
-    token = acc.get("accessToken")
-    proxy = acc.get("proxy")
-
-    if not nick or not token:
-        print(f"⚠️ [{user_name}] Thiếu nickname/accessToken trong DB")
-        _update_status(user_name, "Token Lỗi")
-        return None
-    if not proxy:
-        print(f"⚠️ [{user_name}] Không có proxy trong DB")
-        _update_status(user_name, "Proxy Lỗi")
-        return None
-
-    # 2) Chuẩn bị proxy cho requests
-    try:
-        host, port, userp, passp = proxy.split(":")
-        proxy_auth = f"{userp}:{passp}@{host}:{port}"
-        proxy_url = f"socks5h://{proxy_auth}"
-        proxies = {"http": proxy_url, "https": proxy_url}
-    except Exception:
-        print(f"⚠️ [{user_name}] Proxy sai định dạng: {proxy}")
-        _update_status(user_name, "Proxy Lỗi")
-        return None
-
-    headers = {
-        "content-type": "application/json",
-        "origin": "https://play.lc79.bet",
-        "referer": "https://play.lc79.bet/",
-        "user-agent": random.choice(USER_AGENTS),
-    }
-    payload = {"nickName": nick, "accessToken": token}
-
-    # 3) Gọi login để lấy JWT + balance
-    try:
-        print(f"🔐 [{user_name}] Login qua proxy...")
-        r = requests.post(LOGIN_URL, json=payload, headers=headers, proxies=proxies, timeout=25)
-    except Exception as e:
-        print(f"❌ [{user_name}] Lỗi login: {e}")
-        _update_status(user_name, "Proxy Lỗi")
-        return None
-
-    if r.status_code == 401:
-        print(f"❌ [{user_name}] Login 401 Unauthorized → Token Lỗi")
-        _update_status(user_name, "Token Lỗi")
-        return None
-    if r.status_code != 200:
-        print(f"❌ [{user_name}] Login lỗi {r.status_code}: {r.text[:200]}")
-        _update_status(user_name, "Proxy Lỗi")
-        return None
-
-    try:
-        data = r.json()
-    except Exception:
-        print(f"⚠️ [{user_name}] Response login không phải JSON")
-        return None
-
-    # 4) Lấy JWT và Balance ngay tại bước login
-    jwt = data.get("token")
-    money = (data.get("remoteLoginResp") or {}).get("money") or data.get("money")
-
-    # 4.1) Cập nhật balance nếu có
-    if update_balance and money is not None:
-        try:
-            ub = requests.put(f"{API_BASE}/api/users/{user_name}", json={"balance": money}, timeout=7)
-            if ub.status_code == 200:
-                print(f"💰 [{user_name}] Balance cập nhật từ login = {money}")
-            else:
-                print(f"⚠️ [{user_name}] Update balance lỗi: {ub.status_code} {ub.text[:120]}")
-        except Exception as e:
-            print(f"⚠️ [{user_name}] Update balance exception: {e}")
-
-    # 4.2) Ghi JWT mới nếu được phép
-    if update_jwt:
-        if not jwt:
-            print(f"⚠️ [{user_name}] Login không trả về token → không thể cập nhật JWT")
+        
+        profile = resp_profile.json()
+        proxy_str = profile.get("proxy")
+        access_token = profile.get("accessToken")
+        nickname = profile.get("nickname") or username  # Lấy nickname từ user_profiles
+        
+        if not access_token:
+            print(f"⚠️ [{username}] Không có accessToken trong DB")
             return None
+        
+        # 2. Setup proxy
         try:
-            uj = requests.put(f"{API_BASE}/api/users/{user_name}", json={"jwt": jwt}, timeout=7)
-            if uj.status_code == 200:
-                print(f"🔑 [{user_name}] JWT đã cập nhật từ login")
-            else:
-                print(f"⚠️ [{user_name}] Update JWT lỗi: {uj.status_code} {uj.text[:120]}")
-        except Exception as e:
-            print(f"⚠️ [{user_name}] Update JWT exception: {e}")
-
-    # 5) (Tuỳ chọn) Fetch lịch sử nạp/rút
-    if fetch_tx:
-        try:
-            try:
-                fetch_transactions(user_name, tx_type="DEPOSIT", limit=10)
-            except Exception as e:
-                print(f"⚠️ [{user_name}] Fetch DEPOSIT lỗi: {e}")
-            time.sleep(35)
-            try:
-                fetch_transactions(user_name, tx_type="WITHDRAW", limit=10)
-            except Exception as e:
-                print(f"⚠️ [{user_name}] Fetch WITHDRAW lỗi: {e}")
+            proxies = _build_proxies(proxy_str)
         except Exception:
-            # Không có module hoặc bạn không muốn dùng -> bỏ qua yên lặng
-            pass
+            print(f"⚠️ [{username}] Proxy lỗi format")
+            return None
+        
+        # 3. Login
+        if _retry_count == 0:
+            print(f"🔐 [{username}] Login qua proxy (nickname: {nickname})...")
+        else:
+            print(f"🔐 [{username}] Retry login lần {_retry_count} (nickname: {nickname})...")
+        
+        params = {"cp": "R", "cl": "R", "pf": "web", "at": access_token}
+        headers = {
+            "accept": "*/*",
+            "authorization": "Bearer null",
+            "content-type": "application/json",
+            "origin": "https://play.lc79.bet",
+            "referer": "https://play.lc79.bet/",
+            "user-agent": USER_AGENTS[0],
+        }
+        payload = {"nickName": nickname, "accessToken": access_token}
+        
+        r = requests.post(
+            LOGIN_URL,
+            params=params,
+            headers=headers,
+            json=payload,
+            proxies=proxies,
+            timeout=20
+        )
+        
+        # === Xử lý 401 ===
+        if r.status_code == 401:
+            print(f"⚠️ [{username}] Login 401 → accessToken hết hạn")
+            
+            # Lấy password từ bảng accounts
+            resp_acc = requests.get(f"{API_BASE}/api/accounts/{username}", timeout=5)
+            if resp_acc.status_code != 200:
+                print(f"❌ [{username}] Không lấy được account từ DB")
+                return None
+            
+            account = resp_acc.json()
+            password = account.get("loginPass")
+            if not password:
+                print(f"❌ [{username}] Không có loginPass trong accounts")
+                return None
+            
+            # Lấy accessToken mới từ gateway
+            print(f"🔑 [{username}] Đang lấy accessToken mới từ gateway...")
+            old_token = access_token
+            new_access_token = get_access_token(username, password, proxy_str)
+            
+            if not new_access_token:
+                print(f"❌ [{username}] Gateway không trả về accessToken")
+                return None
+            
+            # Kiểm tra token mới khác token cũ
+            if new_access_token == old_token:
+                print(f"❌ [{username}] Gateway trả về token cũ → username/password SAI hoặc account bị KHÓA!")
+                print(f"   👉 Kiểm tra lại loginPass trong accounts: {password}")
+                return None
+            
+            print(f"✅ [{username}] Lấy được accessToken mới: {new_access_token[:20]}...")
+            
+            # Cập nhật DB
+            if not update_access_token_to_db(username, new_access_token):
+                print(f"⚠️ [{username}] Không cập nhật được accessToken vào DB")
+                return None
+            
+            print(f"💾 [{username}] Đã cập nhật accessToken vào DB")
+            
+            # Đợi 1s rồi retry
+            time.sleep(1)
+            print(f"🔄 [{username}] Retry login với accessToken mới...")
+            return refresh_jwt(username, _retry_count + 1)
+        
+        # === Xử lý response khác ===
+        if not r.ok:
+            print(f"❌ [{username}] Login {r.status_code} {r.reason}")
+            try:
+                err_data = r.json()
+                print(f"📄 [{username}] Error: {err_data.get('message', r.text[:150])}")
+            except:
+                print(f"📄 [{username}] Response: {r.text[:150]}")
+            return None
+        
+        # === Parse JWT ===
+        data = r.json()
+        
+        # Response format: {"token": "jwt...", "remoteLoginResp": {"money": 123, "code": 0}}
+        jwt_token = data.get("token")
+        remote_resp = data.get("remoteLoginResp", {})
+        
+        if jwt_token and remote_resp.get("code") == 0:
+            print(f"✅ [{username}] Login thành công!")
+            
+            # Cập nhật balance
+            balance = remote_resp.get("money", 0)
+            print(f"   💰 Balance: {balance:,}đ")
+            
+            try:
+                requests.put(
+                    f"{API_BASE}/api/users/{username}",
+                    json={"balance": balance},
+                    timeout=5
+                )
+                print(f"💾 [{username}] Đã cập nhật balance: {balance:,}đ")
+            except Exception as e:
+                print(f"⚠️ [{username}] Không cập nhật được balance: {e}")
+            
+            return jwt_token
+        
+        # Xử lý lỗi
+        print(f"❌ [{username}] Login thất bại")
+        print(f"📄 [{username}] Response: {data}")
+        return None
+        
+    except Exception as e:
+        print(f"❌ [{username}] Lỗi refresh JWT: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
-    # Trả về JWT mới nếu update_jwt=True, ngược lại None (vì bạn chỉ kéo balance)
-    return jwt if update_jwt else None
 
-
-# ------------------- Helper -------------------
 def _update_status(user: str, status: str):
     try:
         r = requests.put(f"{API_BASE}/api/users/{user}", json={"status": status}, timeout=5)
@@ -177,7 +199,6 @@ def login_for_balance(user_name: str) -> None:
 
 if __name__ == "__main__":
     uname = input("👤 Nhập username: ").strip()
-    # Mặc định: refresh thật sự (ghi JWT + balance + fetch tx)
-    new_jwt = refresh_jwt(uname, update_jwt=True, update_balance=True, fetch_tx=True)
+    new_jwt = refresh_jwt(uname)
     if new_jwt:
-        print(f"👉 JWT mới: {new_jwt[:30]}...{new_jwt[-30:]}")
+        print(f"👉 JWT: {new_jwt[:30]}...{new_jwt[-30:]}")

@@ -12,6 +12,7 @@ from constants import WS_URL, active_ws
 from token_utils import test_token
 from jwt_manager import refresh_jwt
 from ws_events import handle_event  # import xử lý event
+from game_login import get_access_token, update_access_token_to_db
 
 API_BASE = "http://127.0.0.1:3000"  # đổi thành URL server.js của bạn
 
@@ -125,25 +126,40 @@ async def handle_ws(acc, conn_id: str):
         try:
             # kết nối thử tới host thật để kiểm tra proxy
             sock.connect(("wtx.tele68.com", 443))
-            print(f"🔐 [{user}] Đã Kết Nối Proxy")
+            # print(f"🔐 [{user}] Đã Kết Nối Proxy")
         except Exception:
             print(f"🔐 [{user}] Đã Kết Nối Proxy ( Proxy Lỗi )")
             await update_user_status(user, "Proxy Lỗi")
             return
 
-        # ===== 2) Token check (1 lần, nếu lỗi thì dừng ngay) =====
+        # ===== 2) Token check & auto-refresh nếu lỗi =====
         jwt = acc.get("jwt")
         
-        # Test token nhanh (timeout 3s)
+        # Test token (timeout 3s)
         try:
             ok = await asyncio.wait_for(test_token(jwt, proxy_str), timeout=3)
         except Exception:
             ok = False
         
         if not ok:
-            print(f"⚠️ [{user}] JWT lỗi, dừng WS (watcher sẽ xử lý)")
-            await update_user_status(user, "Token Lỗi")
-            return  # không retry, để watcher refresh JWT và mở lại
+            print(f"⚠️ [{user}] JWT lỗi → refresh tự động")
+            
+            # Refresh JWT mới (tự động xử lý accessToken nếu cần)
+            try:
+                new_jwt = await asyncio.to_thread(lambda: refresh_jwt(user))
+                if new_jwt:
+                    jwt = new_jwt
+                    acc["jwt"] = jwt
+                    await _requests_put(f"/api/users/{user}", {"jwt": jwt}, timeout=5)
+                    print(f"🔑 [{user}] Đã refresh JWT mới")
+                else:
+                    print(f"❌ [{user}] Không refresh được JWT")
+                    await update_user_status(user, "Token Lỗi")
+                    return
+            except Exception as e:
+                print(f"❌ [{user}] Lỗi refresh JWT: {e}")
+                await update_user_status(user, "Token Lỗi")
+                return
 
         # JWT OK → connect WS
         print(f"🔐 [{user}] JWT OK, kết nối WS")
@@ -170,6 +186,21 @@ async def handle_ws(acc, conn_id: str):
 
                 # Khi WS đã ổn định -> set 'Đang Chơi'
                 await update_user_status(user, "Đang Chơi")
+
+                # 🎁 TỰ ĐỘNG CHECK NẠP/RÚT + NHẬN QUÀ SAU KHI KẾT NỐI THÀNH CÔNG
+                try:
+                    import threading
+                    from fetch_transactions import check_all_transactions
+                    
+                    def _delayed_check():
+                        import time
+                        time.sleep(3)
+                        # Bỏ log "Auto check transactions..."
+                        check_all_transactions(user)
+                    
+                    threading.Thread(target=_delayed_check, daemon=True).start()
+                except Exception as e:
+                    print(f"⚠️ [{user}] Lỗi khi schedule auto check: {e}")
 
                 last_msg_time = time.time()
                 last_ping_time = time.time()  # lưu lần cuối nhận "2"
@@ -297,8 +328,8 @@ async def handle_ws(acc, conn_id: str):
             # Gỡ khỏi active_ws
             active_ws.pop(user, None)
         else:
-            print(f"🧹 [{user}] Bỏ qua dọn dẹp (đã bị thay thế bởi WS khác).")
-
+                # print(f"🧹 [{user}] Bỏ qua dọn dẹp (đã bị thay thế bởi WS khác).")
+            pass
 
 # ------------------- Ngắt WS cho 1 user (không pop ngay) -------------------
 async def disconnect_user(user):
@@ -310,3 +341,52 @@ async def disconnect_user(user):
         if entry_task and not entry_task.done():
             entry_task.cancel()
         # không pop ở đây để tránh race condition
+
+# 🆕 Hàm refresh accessToken
+async def _refresh_access_token(username: str, proxy_str: str) -> bool:
+    """
+    Lấy lại accessToken từ gateway và cập nhật vào DB.
+    Trả về True nếu thành công.
+    """
+    try:
+        # Lấy password từ bảng accounts
+        resp = await asyncio.to_thread(
+            lambda: requests.get(f"{API_BASE}/api/accounts/{username}", timeout=5)
+        )
+        if resp.status_code != 200:
+            print(f"⚠️ [{username}] Không lấy được account từ DB")
+            return False
+        
+        account_data = resp.json()
+        password = account_data.get("loginPass")
+        if not password:
+            print(f"⚠️ [{username}] Không có loginPass trong DB")
+            return False
+        
+        # Gọi gateway để lấy accessToken mới
+        print(f"🔑 [{username}] Đang lấy accessToken mới từ gateway...")
+        access_token = await asyncio.to_thread(
+            lambda: get_access_token(username, password, proxy_str)
+        )
+        
+        if not access_token:
+            print(f"❌ [{username}] Gateway không trả về accessToken")
+            return False
+        
+        print(f"✅ [{username}] Lấy được accessToken mới: {access_token[:20]}...")
+        
+        # Cập nhật vào DB
+        success = await asyncio.to_thread(
+            lambda: update_access_token_to_db(username, access_token)
+        )
+        
+        if success:
+            print(f"💾 [{username}] Đã cập nhật accessToken vào DB")
+            return True
+        else:
+            print(f"⚠️ [{username}] Không cập nhật được accessToken vào DB")
+            return False
+            
+    except Exception as e:
+        print(f"❌ [{username}] Lỗi refresh accessToken: {e}")
+        return False

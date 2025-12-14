@@ -103,7 +103,8 @@ async def fetch_transactions_async(username: str, tx_type: str = "DEPOSIT", limi
             elif save_resp.status_code == 409:
                 skipped += 1  # đã tồn tại
         
-        if saved :
+        # Chỉ log khi có giao dịch mới
+        if saved:
             label = "Nạp tiền" if tx_type == "DEPOSIT" else "Rút tiền"
             print(f"✅ [{username}] Lưu {len(saved)} giao dịch {label} mới (bỏ qua {skipped})")
         
@@ -118,6 +119,7 @@ async def fetch_transactions_async(username: str, tx_type: str = "DEPOSIT", limi
 def fetch_transactions(username: str, tx_type: str = "DEPOSIT", limit: int = 50):
     """
     Wrapper sync: chạy async function trong thread riêng (có event loop mới).
+    Chỉ check nạp/rút, KHÔNG gọi gift-box ở đây nữa.
     """
     import asyncio
     
@@ -125,13 +127,40 @@ def fetch_transactions(username: str, tx_type: str = "DEPOSIT", limit: int = 50)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            return loop.run_until_complete(
+            result = loop.run_until_complete(
                 fetch_transactions_async(username, tx_type, limit)
             )
+            return result
         finally:
             loop.close()
     
     return _run()
+
+
+def check_all_transactions(username: str):
+    """
+    Check cả NẠP + RÚT, sau đó đợi 5s rồi check + nhận quà.
+    Chỉ log khi có dữ liệu mới.
+    """
+    # Bỏ log "Đang check giao dịch..."
+    
+    # 1. Check NẠP
+    fetch_transactions(username, "DEPOSIT")
+    
+    # 2. Check RÚT
+    fetch_transactions(username, "WITHDRAW")
+    
+    # 3. Đợi 5s rồi check hòm quà
+    import time
+    # Bỏ log "Đợi 5s..."
+    time.sleep(5)
+    
+    # Bỏ log "Checking gift-box..."
+    try:
+        from gift_box_api import auto_claim_gifts
+        auto_claim_gifts(username)
+    except Exception as e:
+        print(f"❌ [{username}] Lỗi check gift-box: {e}")
 
 
 # ================= MAIN =================
@@ -141,8 +170,4 @@ if __name__ == "__main__":
         print("❌ Username không được để trống")
         exit()
 
-    print(f"\n🔎 Đang lấy giao dịch NẠP cho {username}...")
-    fetch_transactions(username, "DEPOSIT")
-
-    print(f"\n🔎 Đang lấy giao dịch RÚT cho {username}...")
-    fetch_transactions(username, "WITHDRAW")
+    check_all_transactions(username)
