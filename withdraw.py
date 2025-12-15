@@ -83,15 +83,49 @@ def withdraw(
         if code == 0:
             # Thành công
             print(f"✅ [{username}] Rút tiền thành công!")
-            
-            # Lấy balance mới (nếu có trong response)
-            new_balance = data.get("data", {}).get("balance") or data.get("balance")
-            
-            # Cập nhật balance vào DB
+            # Lấy balance mới (ưu tiên data.balance, sau đó đến data.current_money)
+            new_balance = (
+                data.get("data", {}).get("balance")
+                or data.get("balance")
+                or data.get("current_money")
+            )
+            # Cập nhật balance vào DB nếu có trong response
             if new_balance is not None:
                 update_user_balance(username, float(new_balance))
                 print(f"💾 [{username}] Balance mới: {new_balance:,}đ")
-            
+
+            # Gọi check_withdraw_history định kỳ cho đến khi có giao dịch mới được lưu
+            try:
+                from check_withdraw_history import check_withdraw_history
+                intervals = [30, 30, 60, 120, 240]
+                found = False
+                for idx, wait_time in enumerate(intervals):
+                    print(f"[AutoCheck] Đang kiểm tra lịch sử rút tiền (lần {idx+1}/{len(intervals)})...")
+                    result = check_withdraw_history(username, limit=20, max_checks=1)
+                    if result:
+                        print(f"[AutoCheck] Đã phát hiện giao dịch rút tiền mới, dừng kiểm tra.")
+                        found = True
+                        break
+                    if idx < len(intervals) - 1:
+                        print(f"[AutoCheck] Chưa có giao dịch mới, đợi {wait_time}s...")
+                        time.sleep(wait_time)
+                else:
+                    print(f"[AutoCheck] Không phát hiện giao dịch rút tiền mới sau {len(intervals)} lần kiểm tra.")
+
+                # Nếu không có balance mới từ response, sau khi phát hiện giao dịch thành công thì lấy balance mới nhất từ DB hoặc API game và cập nhật vào DB
+                if found and new_balance is None:
+                    try:
+                        # Gọi API game để lấy balance mới nhất
+                        from get_balance import get_balance
+                        balance = get_balance(username)
+                        if balance is not None:
+                            update_user_balance(username, float(balance))
+                            print(f"💾 [{username}] Balance mới (sau check): {balance:,}đ")
+                    except Exception as e:
+                        print(f"[AutoCheck] Lỗi cập nhật balance sau khi rút tiền: {e}")
+            except Exception as e:
+                print(f"[AutoCheck] Lỗi khi kiểm tra lịch sử rút tiền: {e}")
+
             return {
                 "ok": True,
                 "message": message or "Rút tiền thành công",

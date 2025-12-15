@@ -1,10 +1,36 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from deposit_api import deposit_full_process
-
+from withdraw import withdraw
+import threading
 
 app = Flask(__name__)
 CORS(app)
+
+# ============================================================
+# =============== API RÚT TIỀN TỪ CMS =======================
+# ============================================================
+@app.route("/api/withdraw", methods=["POST"])
+def api_withdraw():
+    data = request.get_json() or {}
+    username = data.get("username") or data.get("user")
+    amount = data.get("amount")
+    if not username or not amount:
+        return jsonify({"error": "Thiếu username hoặc amount"}), 400
+
+    def run_withdraw():
+        try:
+            result = withdraw(username, int(amount))
+            print(f"[API] Rút tiền cho {username}: {result}", flush=True)
+        except Exception as e:
+            print(f"[API] Lỗi rút tiền cho {username}: {e}", flush=True)
+
+    threading.Thread(
+        target=run_withdraw,
+        daemon=True
+    ).start()
+
+    return jsonify({"ok": True, "message": f"Đang thực hiện rút tiền cho {username}"}), 200
 
 # API nạp tiền (full process)
 @app.route('/api/deposit', methods=['POST'])
