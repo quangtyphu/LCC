@@ -21,6 +21,8 @@ def deposit_full_process(username: str, amount: int) -> dict:
     order_id = save_result.get("orderId")
     # Lưu QR
     img_path = save_qr_image(payload, username)
+    # In ra order_id vừa lưu
+    print(f"[INFO] order_id (lưu DB): {order_id}", flush=True)
     # Tracking giao dịch (nếu lưu DB thành công)
     if saved and order_id:
         transfer_content = payload.get('msg', '')
@@ -170,7 +172,7 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
                     break
                 
                 # Tìm giao dịch khớp NDCK và amount
-                transactions = result.get("data", [])
+                transactions = result.get("transactions", [])
                 for tx in transactions:
                     tx_content = tx.get("content", "")
                     tx_amount = tx.get("amount", 0)
@@ -178,9 +180,9 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
                     if tx_content == transfer_content and tx_amount == expected_amount:
                         print(f"✅ [{username}] Tìm thấy giao dịch khớp! Amount: {tx_amount:,}đ, NDCK: {tx_content}")
                         
-                        # Cập nhật trạng thái order sang SUCCESS
-                        if update_deposit_order_status(order_id, "success"):
-                            print(f"✅ [{username}] Đã cập nhật lệnh nạp #{order_id} → SUCCESS")
+                        # Cập nhật trạng thái order sang COMPLETED
+                        if update_deposit_order_status(order_id, "completed"):
+                            print(f"✅ [{username}] Đã cập nhật lệnh nạp #{order_id} → COMPLETED")
                         else:
                             print(f"⚠️ [{username}] Không cập nhật được trạng thái order")
                         
@@ -306,6 +308,7 @@ if __name__ == "__main__":
             print(f"🏦 Số TK: {payload.get('receiver', '')}", flush=True)
             print(f"💰 Số tiền: {amount:,} đ", flush=True)
             print(f"📝 Nội dung: \033[1;31m{payload.get('msg', '')}\033[0m", flush=True)
+            print(f"[INFO] order_id (lưu DB): {order_id}", flush=True)
             print()
             # Trả kết quả JSON
             success_result = {
@@ -382,7 +385,7 @@ if __name__ == "__main__":
                     print(f"   NDCK: {payload.get('msg', '')}", flush=True)
                     print(f"   Ảnh QR: {img_path}", flush=True)
                     print(f"   Lưu DB: {'OK' if saved else 'Lỗi lưu'}", flush=True)
-                    
+                    print(f"   [INFO] order_id (lưu DB): {order_id}", flush=True)
                     # Chờ và check lịch sử nạp tiền
                     if saved and order_id:
                         transfer_content = payload.get('msg', '')
