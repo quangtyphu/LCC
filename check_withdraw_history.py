@@ -68,7 +68,6 @@ def check_withdraw_history(username, withdraw_id=None, limit=20, max_checks=5):
         found = False
         for tx in transactions:
             if withdraw_id is None or str(tx.get("id")) == str(withdraw_id):
-                print(f"✅ Giao dịch rút tiền {tx.get('id')} đã thành công!", flush=True)
                 found = True
                 break
         if found:

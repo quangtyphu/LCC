@@ -1,13 +1,22 @@
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from deposit_api import deposit_full_process
 from withdraw import withdraw
 import threading
-
+import time
+from user_full_check_service import user_full_check_logic
 app = Flask(__name__)
 CORS(app)
-
 # ============================================================
+@app.route('/api/user-full-check', methods=['POST'])
+def user_full_check():
+    data = request.get_json() or {}
+    username = data.get('username')
+    if not username:
+        return jsonify({'ok': False, 'error': 'Thiếu username'}), 400
+    results = user_full_check_logic(username)
+    return jsonify({'ok': True, 'results': results})
 # =============== API RÚT TIỀN TỪ CMS =======================
 # ============================================================
 @app.route("/api/withdraw", methods=["POST"])
