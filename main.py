@@ -29,8 +29,7 @@ def api_withdraw():
 
     def run_withdraw():
         try:
-            result = withdraw(username, int(amount))
-            print(f"[API] Rút tiền cho {username}: {result}", flush=True)
+            withdraw(username, int(amount))
         except Exception as e:
             print(f"[API] Lỗi rút tiền cho {username}: {e}", flush=True)
 
