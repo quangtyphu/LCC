@@ -31,9 +31,9 @@ def record_bet(username, game, amount, door, status="placed", balance=None, priz
     try:
         r = requests.post(f"{API_BASE}/api/bet-history", json=payload, timeout=3)
         if r.status_code != 200:
-            print(f"⚠️ Lỗi ghi bet-history: {r.text}")
+            print(f"⚠️ Lỗi ghi bet-history: {r.text}", flush=True)
     except Exception as e:
-        print(f"⚠️ Không kết nối được API bet-history: {e}")
+        print(f"⚠️ Không kết nối được API bet-history: {e}", flush=True)
 
 # ------------------- Cập nhật balance -------------------
 def update_balance(user, balance, *, silent=False):
@@ -42,11 +42,11 @@ def update_balance(user, balance, *, silent=False):
     try:
         r = requests.put(f"{API_BASE}/api/users/{user}", json={"balance": balance}, timeout=3)
         if r.status_code == 200 and not silent:
-            print(f"💾 [{user}] Cập nhật Balance={balance}")
+            print(f"💾 [{user}] Cập nhật Balance={balance}", flush=True)
         elif r.status_code != 200:
-            print(f"⚠️ Lỗi update balance API: {r.text}")
+            print(f"⚠️ Lỗi update balance API: {r.text}", flush=True)
     except Exception as e:
-        print(f"⚠️ Không kết nối được API users: {e}")
+        print(f"⚠️ Không kết nối được API users: {e}", flush=True)
 
 # ------------------- Cập nhật streak -------------------
 def update_streak(username, result):
@@ -70,19 +70,19 @@ def update_streak(username, result):
         }, timeout=3)
         # Bỏ log thành công; chỉ in lỗi khi API trả lỗi
         if r.status_code != 200:
-            print(f"⚠️ Lỗi update streak: {r.text}")
+            print(f"⚠️ Lỗi update streak: {r.text}", flush=True)
     except Exception as e:
-        print(f"⚠️ Không kết nối được API streaks: {e}")
+        print(f"⚠️ Không kết nối được API streaks: {e}", flush=True)
 # ------------------- Xử lý sự kiện -------------------
 async def handle_event(user, msg):
     try:
         arr = json.loads(msg[len("42/tx,"):])
     except Exception as e:
-        print(f"⚠️ [{user}] Lỗi parse JSON: {e} | raw={msg}")
+        print(f"⚠️ [{user}] Lỗi parse JSON: {e} | raw={msg}", flush=True)
         return
 
     if not isinstance(arr, list) or not arr:
-        print(f"⚠️ [{user}] Gói tin không hợp lệ: {arr}")
+        print(f"⚠️ [{user}] Gói tin không hợp lệ: {arr}", flush=True)
         return
 
     event, data, *rest = (arr + [None, {}])[:3]
@@ -96,7 +96,7 @@ async def handle_event(user, msg):
             await asyncio.to_thread(
                 lambda: requests.put(f"{API_BASE}/api/users/{user}", json={"balance": int(balance)}, timeout=5)
             )
-            print(f"💾 [{user}] Cập nhật Balance={int(balance)}")
+            print(f"💾 [{user}] Cập nhật Balance={int(balance)}", flush=True)
         except Exception:
             pass
 
@@ -114,7 +114,7 @@ async def handle_event(user, msg):
                 await fetch_transactions_async(user, "DEPOSIT", 10)
                 await fetch_transactions_async(user, "WITHDRAW", 10)
             except Exception as e:
-                print(f"⚠️ [{user}] Lỗi fetch tx: {e}")
+                print(f"⚠️ [{user}] Lỗi fetch tx: {e}", flush=True)
 
         asyncio.create_task(fetch_bg())
         return
@@ -128,7 +128,7 @@ async def handle_event(user, msg):
             if constants.session_seen == session_id:
                 return
             constants.session_seen = session_id
-            print(f"🆕 [{user}] xử lý phiên {session_id}")
+            print(f"🆕 [{user}] xử lý phiên {session_id}", flush=True)
 
             # --- Kiểm tra phiên trước để update lost nếu chưa nhận win ---
             if hasattr(constants, "last_session_id") and constants.last_session_id in prev_session_users:
@@ -149,7 +149,7 @@ async def handle_event(user, msg):
                         try:
                             update_streak(uname, "lost")
                         except Exception as e:
-                            print(f"⚠️ Failed update_streak for {uname}: {e}")
+                            print(f"⚠️ Failed update_streak for {uname}: {e}", flush=True)
 
                 asyncio.create_task(delayed_lost_check(normalized))
 
@@ -187,13 +187,15 @@ async def handle_event(user, msg):
                     f"✅ [{user.ljust(15)}] "
                     f"Đặt cược {bet_label.ljust(4)} "
                     f"- {str(amount).rjust(8)} "
-                    f"| Số dư mới = {str(post_balance).rjust(10)}"
+                    f"| Số dư mới = {str(post_balance).rjust(10)}",
+                    flush=True
                 )
             else:
                 print(
                     f"✅ [{user.ljust(15)}] "
                     f"Đặt cược {bet_label.ljust(4)} "
-                    f"- {str(amount).rjust(8)}"
+                    f"- {str(amount).rjust(8)}",
+                    flush=True
                 )
 
             record_bet(user, game="LC79", amount=amount, door=bet_label,
@@ -204,13 +206,13 @@ async def handle_event(user, msg):
             prize = data.get("prize", 0)
             dices = data.get("dices", [])
             update_balance(user, balance, silent=True)
-            print(f"🎲 [{user}] Thắng phiên | Dices={dices} | Prize={prize} | Balance={balance}")
+            print(f"🎲 [{user}] Thắng phiên | Dices={dices} | Prize={prize} | Balance={balance}", flush=True)
             record_bet(user, game="LC79",
                        amount=data.get("amount", 0),
                        door=data.get("door", ""),
                        status="won", balance=balance, prize=prize, dices=dices)
             # --- Xoá user khỏi list prev_session_users để không bị delayed lost ---
-            if constants.last_session_id in prev_session_users:
+            if hasattr(constants, "last_session_id") and constants.last_session_id in prev_session_users:
                 if user in prev_session_users[constants.last_session_id]:
                     prev_session_users[constants.last_session_id].remove(user)
             update_streak(user, "won")
@@ -220,7 +222,7 @@ async def handle_event(user, msg):
             prize = data.get("prize", 0)
             dices = data.get("dices", [])
             update_balance(user, balance, silent=True)
-            print(f"🎲 [{user}] Thua phiên | Dices={dices} | Prize={prize} | Balance={balance}")
+            print(f"🎲 [{user}] Thua phiên | Dices={dices} | Prize={prize} | Balance={balance}", flush=True)
             record_bet(user, game="LC79",
                        amount=data.get("amount", 0),
                        door=data.get("door", ""),

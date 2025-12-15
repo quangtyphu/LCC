@@ -1,4 +1,10 @@
 # ws_connection.py  (CẬP NHẬT)
+import os
+import sys
+os.environ['PYTHONUNBUFFERED'] = '1'
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 import asyncio
 import json
 import time
@@ -6,7 +12,6 @@ import socks
 import websockets
 import requests
 import contextlib
-import sys
 
 from constants import WS_URL, active_ws
 from token_utils import test_token

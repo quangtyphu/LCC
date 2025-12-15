@@ -1,3 +1,26 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from deposit_api import deposit_full_process
+
+
+app = Flask(__name__)
+CORS(app)
+
+# API nạp tiền (full process)
+@app.route('/api/deposit', methods=['POST'])
+def api_deposit():
+    data = request.get_json()
+    username = data.get('username')
+    amount = data.get('amount')
+    result = deposit_full_process(username, amount)
+    return jsonify(result)
+
+import os
+import sys
+os.environ['PYTHONUNBUFFERED'] = '1'
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 import asyncio
 import threading
 import uuid
@@ -15,7 +38,6 @@ from jwt_manager import refresh_jwt
 from fetch_transactions import check_all_transactions  # ← Đổi import
 
 API_BASE = "http://127.0.0.1:3000"  # URL CMS Node.js
-app = Flask(__name__)
 
 
 # ============================================================
@@ -53,7 +75,7 @@ async def watcher_loop():
             for acc in target_accounts:
                 u = acc["username"]
                 if u not in active_ws:
-                    print(f"➕ Mở WS mới cho {u}")
+                    print(f"➕ Mở WS mới cho {u}", flush=True)
                     q = asyncio.Queue()
                     conn_id = uuid.uuid4().hex
                     active_ws[u] = {"queue": q, "task": None, "acc": acc, "conn_id": conn_id}
@@ -113,7 +135,7 @@ def force_check():
     if not username:
         return jsonify({"error": "Thiếu username"}), 400
 
-    print(f"\n🚀 FORCE CHECK USER: {username}")
+    print(f"\n🚀 FORCE CHECK USER: {username}", flush=True)
 
     user = get_user(username)
     if not user:
@@ -135,9 +157,9 @@ def force_check():
         sock.settimeout(5)
         sock.connect(("wtx.tele68.com", 443))
         sock.close()
-        print(f"🔌 [{username}] Proxy OK")
+        print(f"🔌 [{username}] Proxy OK", flush=True)
     except Exception as e:
-        print(f"❌ [{username}] Proxy lỗi: {e}")
+        print(f"❌ [{username}] Proxy lỗi: {e}", flush=True)
         update_status(username, "Proxy Lỗi")
         return jsonify({"error": "Proxy lỗi"}), 400
 
@@ -148,7 +170,7 @@ def force_check():
         ok = False
 
     if not ok:
-        print("❌ Token lỗi → Refresh JWT")
+        print("❌ Token lỗi → Refresh JWT", flush=True)
         new_jwt = refresh_jwt(username)
         if not new_jwt:
             update_status(username, "Token Lỗi")
@@ -165,7 +187,7 @@ def force_check():
         # Hủy WS cũ
         try:
             entry["task"].cancel()
-            print(f"🔄 [{username}] Hủy WS cũ")
+            print(f"🔄 [{username}] Hủy WS cũ", flush=True)
         except Exception:
             pass
 
@@ -177,7 +199,7 @@ def force_check():
     acc["jwt"] = jwt
     run_ws_in_thread(acc, username)
     
-    print(f"♻️ [{username}] Force-reconnect WS để cập nhật balance")
+    print(f"♻️ [{username}] Force-reconnect WS để cập nhật balance", flush=True)
 
     return jsonify({"ok": True, "mode": "force-reconnect"}), 200
 
@@ -194,7 +216,7 @@ def check_transactions():
 
     # Chạy trong thread riêng
     threading.Thread(
-        target=check_all_transactions,
+        target=deposit_full_process,
         args=(username,),
         daemon=True
     ).start()
@@ -207,9 +229,16 @@ def run_api():
     app.run(host="0.0.0.0", port=5006, debug=False, use_reloader=False)
 
 
+def run_flask():
+    print("🚀 Flask API server đang chạy tại http://127.0.0.1:8080 ...", flush=True)
+    app.run(port=8080)
+
 if __name__ == "__main__":
-    threading.Thread(target=run_api, daemon=True).start()
+    import threading
+    # Chạy Flask ở thread riêng
+    threading.Thread(target=run_flask, daemon=True).start()
+    # Chạy watcher_loop như cũ
     try:
         asyncio.run(watcher_loop())
     except KeyboardInterrupt:
-        print("\n⏹ Đã dừng chương trình.")
+        print("\n⏹ Đã dừng chương trình.", flush=True)

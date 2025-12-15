@@ -1,28 +1,20 @@
 """
 Withdraw API - Rút tiền từ game về ngân hàng
 """
+import sys
+import io
+
+# Fix encoding cho Windows console
+if sys.platform == 'win32':
+    import os
+    os.system('chcp 65001 > nul')
+
 import requests
 import time
+from game_api_helper import game_request_with_retry, update_user_balance
 
 API_BASE = "http://127.0.0.1:3000"
 WITHDRAW_URL = "https://gameapi.tele68.com/v1/payment-app/cash-out/bank"
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0 Safari/537.36",
-]
-
-def _build_proxies(proxy_str: str):
-    """Tạo dict proxies cho requests"""
-    if not proxy_str:
-        return None
-    try:
-        host, port, userp, passp = proxy_str.split(":")
-        proxy_auth = f"{userp}:{passp}@{host}:{port}"
-        proxy_url = f"socks5h://{proxy_auth}"
-        return {"http": proxy_url, "https": proxy_url}
-    except Exception:
-        return None
 
 def withdraw(
     username: str,
@@ -47,20 +39,7 @@ def withdraw(
         {"ok": True, "message": "...", "balance": 123456} hoặc {"ok": False, "error": "..."}
     """
     try:
-        # 1. Lấy thông tin user từ DB
-        resp_user = requests.get(f"{API_BASE}/api/users/{username}", timeout=5)
-        if resp_user.status_code != 200:
-            return {"ok": False, "error": "Không lấy được user từ DB"}
-        
-        user = resp_user.json()
-        jwt = user.get("jwt")
-        access_token = user.get("accessToken")
-        proxy_str = user.get("proxy")
-        
-        if not jwt or not access_token:
-            return {"ok": False, "error": "Thiếu JWT hoặc accessToken"}
-        
-        # 2. Lấy thông tin ngân hàng từ accounts (nếu chưa truyền)
+        # Lấy thông tin ngân hàng từ accounts (nếu chưa truyền)
         if not bank_code or not account_number or not account_holder:
             resp_acc = requests.get(f"{API_BASE}/api/accounts/{username}", timeout=5)
             if resp_acc.status_code != 200:
@@ -74,28 +53,7 @@ def withdraw(
         if not bank_code or not account_number or not account_holder:
             return {"ok": False, "error": "Thiếu thông tin ngân hàng"}
         
-        # 3. Setup proxy
-        proxies = _build_proxies(proxy_str)
-        
-        # 4. Gửi request rút tiền
-        params = {
-            "cp": "R",
-            "cl": "R",
-            "pf": "web",
-            "at": access_token
-        }
-        
-        headers = {
-            "accept": "*/*",
-            "accept-language": "vi-VN,vi;q=0.9",
-            "authorization": f"Bearer {jwt}",
-            "cache-control": "no-cache",
-            "content-type": "application/json",
-            "origin": "https://play.lc79.bet",
-            "referer": "https://play.lc79.bet/",
-            "user-agent": USER_AGENTS[0],
-        }
-        
+        # Payload rút tiền
         payload = {
             "type": bank_code,
             "number": account_number,
@@ -106,14 +64,11 @@ def withdraw(
         
         print(f"💸 [{username}] Đang rút {amount:,}đ về {bank_code} {account_number}...")
         
-        r = requests.post(
-            WITHDRAW_URL,
-            params=params,
-            headers=headers,
-            json=payload,
-            proxies=proxies,
-            timeout=30
-        )
+        # Gọi API qua helper
+        r = game_request_with_retry(username, "POST", WITHDRAW_URL, json_data=payload)
+        
+        if not r:
+            return {"ok": False, "error": "Không gọi được API rút tiền"}
         
         if not r.ok:
             print(f"❌ [{username}] HTTP {r.status_code}: {r.text[:200]}")
@@ -134,15 +89,8 @@ def withdraw(
             
             # Cập nhật balance vào DB
             if new_balance is not None:
-                try:
-                    requests.put(
-                        f"{API_BASE}/api/users/{username}",
-                        json={"balance": new_balance},
-                        timeout=5
-                    )
-                    print(f"💾 [{username}] Balance mới: {new_balance:,}đ")
-                except Exception as e:
-                    print(f"⚠️ [{username}] Không cập nhật balance: {e}")
+                update_user_balance(username, float(new_balance))
+                print(f"💾 [{username}] Balance mới: {new_balance:,}đ")
             
             return {
                 "ok": True,
@@ -167,16 +115,59 @@ def withdraw(
 
 
 if __name__ == "__main__":
-    # Test CLI
-    username = input("👤 Username: ").strip()
-    amount = int(input("💰 Số tiền rút: ").strip())
+    import sys
+    import json
     
-    result = withdraw(username, amount)
+    # Nếu có arguments từ command line -> mode API (trả JSON)
+    if len(sys.argv) >= 3:
+        try:
+            username = sys.argv[1]
+            amount = int(sys.argv[2])
+            
+            # Parse optional arguments
+            bank_code = None
+            account_number = None
+            account_holder = None
+            otp = ""
+            
+            i = 3
+            while i < len(sys.argv):
+                if sys.argv[i] == '--bank' and i + 1 < len(sys.argv):
+                    bank_code = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == '--account' and i + 1 < len(sys.argv):
+                    account_number = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == '--holder' and i + 1 < len(sys.argv):
+                    account_holder = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == '--otp' and i + 1 < len(sys.argv):
+                    otp = sys.argv[i + 1]
+                    i += 2
+                else:
+                    i += 1
+            
+            result = withdraw(username, amount, bank_code, account_number, account_holder, otp)
+            
+            # In ra JSON để Node.js đọc
+            print(json.dumps(result, ensure_ascii=False))
+            sys.exit(0 if result.get('ok') else 1)
+            
+        except Exception as e:
+            print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            sys.exit(1)
     
-    if result["ok"]:
-        print(f"\n✅ Thành công!")
-        print(f"   Message: {result['message']}")
-        if result.get("balance"):
-            print(f"   Balance mới: {result['balance']:,}đ")
+    # Mode interactive (không có arguments)
     else:
-        print(f"\n❌ Thất bại: {result['error']}")
+        username = input("👤 Username: ").strip()
+        amount = int(input("💰 Số tiền rút: ").strip())
+        
+        result = withdraw(username, amount)
+        
+        if result["ok"]:
+            print(f"\n✅ Thành công!")
+            print(f"   Message: {result['message']}")
+            if result.get("balance"):
+                print(f"   Balance mới: {result['balance']:,}đ")
+        else:
+            print(f"\n❌ Thất bại: {result['error']}")

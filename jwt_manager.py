@@ -5,7 +5,7 @@
 # - Tùy chọn cập nhật JWT mới (update_jwt=True) hoặc KHÔNG cập nhật (update_jwt=False) để an toàn WS
 # - (Tuỳ chọn) Fetch lịch sử nạp/rút sau login
 
-import requests
+from curl_cffi import requests
 import time
 
 API_BASE = "http://127.0.0.1:3000"  # URL server.js
@@ -83,7 +83,8 @@ def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
             headers=headers,
             json=payload,
             proxies=proxies,
-            timeout=20
+            timeout=20,
+            impersonate="chrome120"
         )
         
         # === Xử lý 401 ===
@@ -188,13 +189,47 @@ def _update_status(user: str, status: str):
         print(f"⚠️ [{user}] Không gọi API update status được: {e}")
 
 
+def refresh_jwt_and_token(username: str) -> bool:
+    """
+    Wrapper function được gọi từ deposit_api.py và withdraw.py
+    Refresh JWT và accessToken, cập nhật vào DB.
+    
+    Returns:
+        True nếu refresh thành công, False nếu thất bại
+    """
+    try:
+        new_jwt = refresh_jwt(username)
+        if new_jwt:
+            # Cập nhật JWT vào DB
+            try:
+                resp = requests.put(
+                    f"{API_BASE}/api/users/{username}",
+                    json={"jwt": new_jwt},
+                    timeout=5
+                )
+                if resp.status_code == 200:
+                    print(f"💾 [{username}] Đã cập nhật JWT mới vào DB")
+                    return True
+                else:
+                    print(f"⚠️ [{username}] Không cập nhật được JWT vào DB")
+                    return False
+            except Exception as e:
+                print(f"⚠️ [{username}] Lỗi cập nhật JWT: {e}")
+                return False
+        else:
+            return False
+    except Exception as e:
+        print(f"❌ [{username}] Lỗi refresh_jwt_and_token: {e}")
+        return False
+
+
 # ------------------- Tiện ích: login chỉ để lấy balance (không ghi JWT) -------------------
 def login_for_balance(user_name: str) -> None:
     """
     Trường hợp muốn thay hẳn your-info:
     Gọi hàm này để login và cập nhật balance ngay, KHÔNG ghi JWT, KHÔNG fetch tx.
     """
-    refresh_jwt(user_name, update_jwt=False, update_balance=True, fetch_tx=False)
+    refresh_jwt(user_name)
 
 
 if __name__ == "__main__":
