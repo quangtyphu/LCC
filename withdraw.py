@@ -118,9 +118,9 @@ def withdraw(
                             update_user_balance(username, float(balance))
                             print(f"💾 [{username}] Balance mới (sau check): {balance:,}đ")
                     except Exception as e:
-                        print(f"[AutoCheck] Lỗi cập nhật balance sau khi rút tiền: {e}")
+                        print(f"[AutoCheck][{username}] Lỗi cập nhật balance sau khi rút tiền: {e}")
             except Exception as e:
-                print(f"[AutoCheck] Lỗi khi kiểm tra lịch sử rút tiền: {e}")
+                print(f"[AutoCheck][{username}] Lỗi khi kiểm tra lịch sử rút tiền: {e}")
 
             return {
                 "ok": True,
@@ -180,11 +180,11 @@ if __name__ == "__main__":
             result = withdraw(username, amount, bank_code, account_number, account_holder, otp)
             
             # In ra JSON để Node.js đọc
-            print(json.dumps(result, ensure_ascii=False))
+            print(f"[withdraw][{username}] {json.dumps(result, ensure_ascii=False)}")
             sys.exit(0 if result.get('ok') else 1)
             
         except Exception as e:
-            print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            print(f"[withdraw][{username}] {json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False)}")
             sys.exit(1)
     
     # Mode interactive (không có arguments)
@@ -195,10 +195,10 @@ if __name__ == "__main__":
         result = withdraw(username, amount)
         
         if result["ok"]:
-            print(f"\n✅ Thành công!")
-            print(f"   Message: {result['message']}")
+            print(f"\n✅ [{username}] Thành công!")
+            print(f"   [{username}] Message: {result['message']}")
             # Dòng lưu giao dịch mới sẽ được in từ check_withdraw_history nếu có
             if result.get("balance"):
-                print(f"   Balance mới: {result['balance']:,}đ")
+                print(f"   [{username}] Balance mới: {result['balance']:,}đ")
         else:
-            print(f"\n❌ Thất bại: {result['error']}")
+            print(f"\n❌ [{username}] Thất bại: {result['error']}")
