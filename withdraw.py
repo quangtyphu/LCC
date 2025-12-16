@@ -100,13 +100,12 @@ def withdraw(
                 intervals = [30, 30, 60, 120, 240]
                 found = False
                 for idx, wait_time in enumerate(intervals):
+                    time.sleep(wait_time)
                     result = check_withdraw_history(username, limit=20)
                     if result:
                         # Dòng log lưu giao dịch mới đã được in từ check_withdraw_history
                         found = True
                         break
-                    if idx < len(intervals) - 1:
-                        time.sleep(wait_time)
                 # Không cần else log nữa
 
                 # Nếu không có balance mới từ response, sau khi phát hiện giao dịch thành công thì lấy balance mới nhất từ DB hoặc API game và cập nhật vào DB
