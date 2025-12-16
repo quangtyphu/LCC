@@ -55,13 +55,13 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
             if resp2.status_code in (200, 201):
                 saved.append(record)
                 new_saved += 1
-                print(f"Đã lưu 1 giao dịch nạp {int(tx['amount']):,} với nội dung {tx['content']}", flush=True)
-                print(f"[DEBUG] Response lưu giao dịch: {resp2.text}", flush=True)
+                print(f"Đã lưu 1 giao dịch nạp {int(tx['amount']):,} cho [{username}] với nội dung {tx['content']}", flush=True)
+                print(f"[DEBUG][{username}] Response lưu giao dịch: {resp2.text}", flush=True)
                 try:
                     resp_json = resp2.json()
                     is_first = resp_json.get("isFirstDepositToday")
                     is_bonus = resp_json.get("isEligibleForBonus")
-                    print(f"[INFO] isFirstDepositToday: {is_first}, isEligibleForBonus: {is_bonus}", flush=True)
+                    print(f"[INFO][{username}] isFirstDepositToday: {is_first}, isEligibleForBonus: {is_bonus}", flush=True)
                     if (is_first or is_bonus) and float(tx["amount"]) >= 200000:
                         msg = resp_json.get("message") or "Nhận quà nạp đầu tiên >= 200k!"
                         print(f"🎉 [{username}] {msg}", flush=True)
@@ -74,12 +74,12 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
                 except Exception:
                     pass
             elif resp2.status_code != 409:
-                print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')}: {resp2.status_code} - {resp2.text}", flush=True)
+                print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')} cho [{username}]: {resp2.status_code} - {resp2.text}", flush=True)
         except Exception as e:
-            print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')}: {e}", flush=True)
+            print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')} cho [{username}]: {e}", flush=True)
 
     if new_saved == 0:
-        print("Không có lệnh nạp mới nào được lưu.", flush=True)
+        print(f"Không có lệnh nạp mới nào được lưu cho [{username}]!", flush=True)
     else:
         # Chỉ khi có giao dịch mới được lưu mới chuyển trạng thái
         try:
@@ -98,8 +98,8 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
 if __name__ == "__main__":
     username = input("Nhập username: ").strip()
     if not username:
-        print("❌ Username không được để trống")
+        print(f"❌ Username không được để trống [{username}]")
         exit(1)
     result = check_deposit_history(username)
-    print("\nKết quả:")
-    print(result)
+    print(f"\nKết quả cho [{username}]:")
+    print(f"[{username}] {result}")

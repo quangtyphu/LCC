@@ -6,6 +6,7 @@ from withdraw import withdraw
 import threading
 import time
 from user_full_check_service import user_full_check_logic
+from status_utils import update_status
 app = Flask(__name__)
 CORS(app)
 # ============================================================
@@ -101,6 +102,18 @@ async def watcher_loop():
                     status = udoc.get("status")
                     if u in current and status == "Token Lỗi":
                         await disconnect_user(u)
+                        # Tự động refresh JWT nếu status là Token Lỗi
+                        print(f"🔄 [{u}] Tự động refresh JWT do Token Lỗi", flush=True)
+                        new_jwt = refresh_jwt(u)
+                        if new_jwt:
+                            try:
+                                requests.put(f"{API_BASE}/api/users/{u}", json={"jwt": new_jwt}, timeout=5)
+                                update_status(u, "Đang Chơi")
+                                print(f"✅ [{u}] Đã refresh JWT và cập nhật trạng thái Đang Chơi", flush=True)
+                            except Exception as e:
+                                print(f"❌ [{u}] Lỗi khi cập nhật JWT mới: {e}", flush=True)
+                        else:
+                            print(f"❌ [{u}] Refresh JWT thất bại", flush=True)
         except Exception:
             pass
 
@@ -129,13 +142,6 @@ def get_user(username: str):
     except Exception:
         return None
 
-
-def update_status(username: str, status: str) -> bool:
-    try:
-        r = requests.put(f"{API_BASE}/api/users/{username}", json={"status": status}, timeout=5)
-        return r.status_code == 200
-    except Exception:
-        return False
 
 
 # main.py

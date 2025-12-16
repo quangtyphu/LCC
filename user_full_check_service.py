@@ -4,7 +4,9 @@ from check_withdraw_history import check_withdraw_history
 from gift_box_api import auto_claim_gifts
 from mission_api import auto_claim_missions
 from vip_point_api import check_and_claim_vip
+
 from get_balance import get_balance
+from status_utils import update_status
 
 def user_full_check_logic(username: str) -> dict:
     """
@@ -58,5 +60,12 @@ def user_full_check_logic(username: str) -> dict:
         results['balance'] = get_balance(username)
     except Exception as e:
         results['balance'] = f'Lỗi: {e}'
+
+    # 7. Cập nhật trạng thái Đang Chơi
+    try:
+        status_ok = update_status(username, "Đang Chơi")
+        results['update_status'] = 'OK' if status_ok else 'Lỗi khi cập nhật trạng thái'
+    except Exception as e:
+        results['update_status'] = f'Lỗi: {e}'
 
     return results
