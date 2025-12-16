@@ -60,21 +60,21 @@ def check_withdraw_history(username, withdraw_id=None, limit=20, max_checks=5):
             elif resp2.status_code == 409:
                 skipped += 1  # đã tồn tại
             else:
-                print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')}: {resp2.status_code} - {resp2.text}", flush=True)
+                print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')} cho [{username}]: {resp2.status_code} - {resp2.text}", flush=True)
         except Exception as e:
-            print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')}: {e}", flush=True)
+            print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')} cho [{username}]: {e}", flush=True)
 
     if new_saved:
         for tx in new_saved:
-            print(f"Đã lưu 1 giao dịch rút {int(tx['amount']):,} Thời gian: {tx.get('dateTime')} Nội dung: {tx.get('content')}", flush=True)
+            print(f"Đã lưu 1 giao dịch rút {int(tx['amount']):,} cho [{username}] Thời gian: {tx.get('dateTime')} ", flush=True)
         return True
     else:
-        print("Không thấy giao dịch rút tiền mới nào!", flush=True)
+        print(f"Không thấy giao dịch rút tiền mới nào cho [{username}]!", flush=True)
         return False
 
 if __name__ == "__main__":
     username = input("Nhập username: ").strip()
     if not username:
-        print("❌ Username không được để trống")
+        print(f"❌ Username không được để trống [{username}]")
         exit(1)
     check_withdraw_history(username)

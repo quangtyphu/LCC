@@ -97,7 +97,7 @@ def withdraw(
             # Gọi check_withdraw_history định kỳ cho đến khi có giao dịch mới được lưu
             try:
                 from check_withdraw_history import check_withdraw_history
-                intervals = [30, 30, 60, 120, 240]
+                intervals = [40, 30, 30, 120, 240]
                 found = False
                 for idx, wait_time in enumerate(intervals):
                     time.sleep(wait_time)

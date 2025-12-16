@@ -1,5 +1,6 @@
 
 from game_api_helper import game_request_with_retry, NODE_SERVER_URL
+from get_balance import get_balance
 
 def check_deposit_history(username, transfer_content=None, order_id=None, amount=None, limit=10, status=None):
 
@@ -81,7 +82,16 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
     if new_saved == 0:
         print(f"Không có lệnh nạp mới nào được lưu cho [{username}]!", flush=True)
     else:
-        # Chỉ khi có giao dịch mới được lưu mới chuyển trạng thái
+        # Khi có giao dịch mới, cập nhật balance trước khi chuyển trạng thái
+        try:
+            balance_result = get_balance(username)
+            if balance_result.get("ok"):
+                print(f"💾 [{username}] Đã cập nhật balance: {balance_result.get('balance', 'N/A')}đ", flush=True)
+            else:
+                print(f"⚠️ [{username}] Lỗi lấy balance: {balance_result.get('error')}", flush=True)
+        except Exception as e:
+            print(f"⚠️ [{username}] Lỗi khi cập nhật balance: {e}", flush=True)
+        # Chuyển trạng thái sang Đang Chơi
         try:
             resp_status = requests.put(f"{NODE_SERVER_URL}/api/users/{username}", json={"status": "Đang Chơi"}, timeout=5)
             if resp_status.status_code == 200:

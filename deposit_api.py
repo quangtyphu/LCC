@@ -151,7 +151,7 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
         True nếu tìm thấy giao dịch khớp, False nếu không
     """
     # Thời gian check: 30s, 60s, 90s, 120s, 600s (10 phút)
-    check_intervals = [30, 30, 60, 120, 480]  # Tổng: 30, 60, 90, 120, 600s
+    check_intervals = [50, 30, 30, 120, 480]  # Tổng: 30, 60, 90, 120, 600s
     
     print(f"⏳ [{username}] Bắt đầu theo dõi lệnh nạp (NDCK: {transfer_content})...")
     
