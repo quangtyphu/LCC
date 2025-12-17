@@ -441,38 +441,27 @@ async def enqueue_bets(final_bets):
     if not final_bets:
         return
 
-    loop = asyncio.get_running_loop()
-    max_delay = 0
-
-    for user, amount, door, delay in final_bets:
+    async def enqueue_one(user, amount, door, delay):
         ws_entry = active_ws.get(user)
         if not ws_entry:
             print(f"⚠️ Không tìm thấy ws_entry cho user {user}")
-            continue
-
+            return
         q: asyncio.Queue = ws_entry["queue"]
         bet_type = "TAI" if door.upper() == "TAI" else "XIU"
         payload = ("bet", {"type": bet_type, "amount": amount})
+        try:
+            await asyncio.sleep(delay)
+            q.put_nowait(payload)
+            # print(f"[ENQUEUE] {user} đã nhận lệnh bet {bet_type} {amount} sau {delay}s")
+        except Exception as e:
+            print(f"⚠️ Lỗi enqueue bet cho {user}: {e}")
 
-        # Đặt lịch đẩy payload vào queue sau 'delay' giây
-        h = loop.call_later(delay, q.put_nowait, payload)
-        ws_entry.setdefault("pending_schedules", []).append(h)
-
-        if delay > max_delay:
-            max_delay = delay
-
+    tasks = [asyncio.create_task(enqueue_one(user, amount, door, delay)) for user, amount, door, delay in final_bets]
     try:
-        await asyncio.sleep(max_delay + 0.5)
+        await asyncio.gather(*tasks)
     except asyncio.CancelledError:
-        # Nếu bị hủy giữa chừng -> hủy mọi lịch đã đặt
-        for user, *_ in final_bets:
-            entry = active_ws.get(user)
-            if not entry:
-                continue
-            handles = entry.pop("pending_schedules", [])
-            for h in handles:
-                with contextlib.suppress(Exception):
-                    h.cancel()
+        # Nếu bị hủy giữa chừng -> không ảnh hưởng các task đã chạy
+        print("⚠️ enqueue_bets bị cancel, một số lệnh bet có thể chưa được đẩy.")
         raise
 
 
