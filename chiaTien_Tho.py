@@ -177,7 +177,7 @@ def distribute_for_devices(devices: List[Dict]) -> List[Tuple[None, int, str]]:
         return []
 
     # số người chơi bên Tài random từ 1 đến total_players-1
-    n_tai = random.randint(3, total_players - 3)
+    n_tai = random.randint(4, total_players - 4)
     n_xiu = total_players - n_tai
 
     bet_range_cfg = get_bet_range()

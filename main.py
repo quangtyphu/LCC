@@ -88,11 +88,8 @@ async def watcher_loop():
         target_accounts = get_active_accounts()
         target = set(acc["username"] for acc in target_accounts)
 
-        # ❌ BỎ: Ngắt user không còn trong target (không phụ thuộc trạng thái Đang Chơi nữa)
-        # for u in current - target:
-        #     await disconnect_user(u)
 
-        # ✅ CHỈ NGẮT NẾU TRẠNG THÁI = "Token Lỗi"
+        # ✅ Ngắt WS nếu trạng thái KHÁC 'Đang Chơi' hoặc là 'Token Lỗi'
         try:
             resp = requests.get(f"{API_BASE}/api/users", timeout=5)
             if resp.status_code == 200:
@@ -100,9 +97,11 @@ async def watcher_loop():
                 for udoc in users:
                     u = udoc.get("username")
                     status = udoc.get("status")
-                    if u in current and status == "Token Lỗi":
+                    if u in current and status != "Đang Chơi":
                         await disconnect_user(u)
-                        # Tự động refresh JWT nếu status là Token Lỗi
+                        print(f"🔻 [{u}] Đã ngắt WS do trạng thái: {status}", flush=True)
+                    # Nếu là Token Lỗi thì vẫn tự động refresh JWT như cũ
+                    if u in current and status == "Token Lỗi":
                         print(f"🔄 [{u}] Tự động refresh JWT do Token Lỗi", flush=True)
                         new_jwt = refresh_jwt(u)
                         if new_jwt:

@@ -88,6 +88,18 @@ async def handle_ws(acc, conn_id: str):
         entry["queue"] = queue
 
     try:
+        # Gọi user_full_check_logic khi user kết nối WS thành công
+        try:
+            from user_full_check_service import user_full_check_logic
+            import threading
+            def _run_full_check():
+                try:
+                    user_full_check_logic(user)
+                except Exception as e:
+                    print(f"⚠️ [{user}] Lỗi khi chạy user_full_check_logic: {e}")
+            threading.Thread(target=_run_full_check, daemon=True).start()
+        except Exception as e:
+            print(f"⚠️ [{user}] Lỗi import hoặc chạy user_full_check_logic: {e}")
         proxy_str = acc.get("proxy")
         jwt = acc.get("jwt")
 
@@ -182,30 +194,8 @@ async def handle_ws(acc, conn_id: str):
 
                 # gửi token (authorize)
                 await ws.send(f"40/tx,{json.dumps({'token': jwt})}")
-
-                # ngay sau khi authorize, yêu cầu server gửi thông tin user (balance, history...) để đảm bảo cập nhật balance
-                try:
-                    await ws.send('42/tx,["your-info"]')
-                except Exception:
-                    pass
-
-                # Khi WS đã ổn định -> set 'Đang Chơi'
-                await update_user_status(user, "Đang Chơi")
-
-                # 🎁 TỰ ĐỘNG CHECK NẠP/RÚT + NHẬN QUÀ SAU KHI KẾT NỐI THÀNH CÔNG
-                try:
-                    import threading
-                    from fetch_transactions import check_all_transactions
-                    
-                    def _delayed_check():
-                        import time
-                        time.sleep(3)
-                        # Bỏ log "Auto check transactions..."
-                        check_all_transactions(user)
-                    
-                    threading.Thread(target=_delayed_check, daemon=True).start()
-                except Exception as e:
-                    print(f"⚠️ [{user}] Lỗi khi schedule auto check: {e}")
+                # Không gửi yêu cầu lấy your-info và không cập nhật trạng thái Đang Chơi ở đây nữa
+                # Đã chuyển toàn bộ check thưởng, cập nhật trạng thái vào user_full_check_logic
 
                 last_msg_time = time.time()
                 last_ping_time = time.time()  # lưu lần cuối nhận "2"
