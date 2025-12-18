@@ -9,8 +9,10 @@ from get_balance import get_balance
 from status_utils import update_status
 
 def user_full_check_logic(username: str) -> dict:
+
     """
     Thực hiện tuần tự các bước kiểm tra và nhận thưởng cho user:
+    0. Gửi tracking device (fake_device_tracking)
     1. Check lịch sử nạp
     2. Check lịch sử rút
     3. Check & nhận hòm quà
@@ -20,6 +22,16 @@ def user_full_check_logic(username: str) -> dict:
     Mỗi bước cách nhau 5s.
     """
     results = {}
+
+    # 0. Gửi tracking device (random uuid)
+    try:
+        from fake_device_tracking import fake_device_tracking
+        fake_device_tracking(username)
+        results['device_tracking'] = 'OK'
+    except Exception as e:
+        results['device_tracking'] = f'Lỗi: {e}'
+    time.sleep(2)
+
     # 1. Check lịch sử nạp
     try:
         results['deposit_history'] = check_deposit_history(username)
