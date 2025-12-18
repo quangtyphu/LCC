@@ -159,16 +159,20 @@ async def handle_event(user, msg):
             final_bets = run_assigner(online_users)
 
             if final_bets:
-                entry = active_ws.get(user)
-                if entry:
-                    old = entry.pop("assign_task", None)
-                    if old and not old.done():
-                        old.cancel()
-                        try:
-                            await old
-                        except Exception:
-                            pass
-                    entry["assign_task"] = asyncio.create_task(enqueue_bets(final_bets))
+
+                # --- Refactor: Mỗi user có 1 assign_task riêng ---
+                for u, amount, door, delay in final_bets:
+                    entry_u = active_ws.get(u)
+                    if entry_u:
+                        old = entry_u.pop("assign_task", None)
+                        if old and not old.done():
+                            old.cancel()
+                            try:
+                                await old
+                            except Exception:
+                                pass
+                        # Tạo task enqueue_bets chỉ cho user này
+                        entry_u["assign_task"] = asyncio.create_task(enqueue_bets([(u, amount, door, delay)]))
 
             # --- Lưu user cược của phiên hiện tại ---
             # lưu CHỈ username (chuỗi) để dễ xoá khi có win
