@@ -39,12 +39,22 @@ def user_full_check_logic(username: str) -> dict:
         results['deposit_history'] = f'Lỗi: {e}'
     time.sleep(5)
 
+
     # 2. Check lịch sử rút
     try:
         results['withdraw_history'] = check_withdraw_history(username)
     except Exception as e:
         results['withdraw_history'] = f'Lỗi: {e}'
     time.sleep(5)
+
+    # 2.5. Check & nhận thưởng x10
+    try:
+        from x10_mission_checker import check_and_claim_x10
+        check_and_claim_x10(username)
+        results['x10_mission'] = 'OK'
+    except Exception as e:
+        results['x10_mission'] = f'Lỗi: {e}'
+    time.sleep(2)
 
     # 3. Check & nhận hòm quà
     try:
