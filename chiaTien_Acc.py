@@ -55,7 +55,9 @@ def _priority_users_from(cfg: dict, w: dict) -> List[str]:
 def _priority_users_v2_from(cfg: dict, w: dict) -> List[str]:
     lst = w.get("PRIORITY_USERS_V2") or cfg.get("PRIORITY_USERS_V2") or []
     return _clean(lst)
-
+def _priority_users_v3_from(cfg: dict, w: dict) -> List[str]:
+    lst = w.get("PRIORITY_USERS_V3") or cfg.get("PRIORITY_USERS_V3") or []
+    return _clean(lst)
 
 def _strategy_from(cfg: dict, w: dict, fallback: int = 1) -> int:
     """
@@ -63,11 +65,11 @@ def _strategy_from(cfg: dict, w: dict, fallback: int = 1) -> int:
     Nếu không có/không hợp lệ => dùng root; nếu root không hợp lệ => fallback.
     """
     win_val = w.get("ASSIGN_STRATEGY")
-    if isinstance(win_val, int) and 1 <= win_val <= 10:
+    if isinstance(win_val, int) and 1 <= win_val <= 11:
         return win_val
     try:
         root_val = int(cfg.get("ASSIGN_STRATEGY", fallback))
-        if 1 <= root_val <= 10:
+        if 1 <= root_val <= 11:
             return root_val
     except Exception:
         pass
@@ -135,15 +137,6 @@ def _fetch_today_bets_for_online(online_users: List[str]) -> Dict[str, int]:
         return res
     return res
 
-
-def _debug_strategy9_order(tag: str, ordered: List[str], today_bets: Dict[str, int], balances: Dict[str, int]):
-    print(f"🔎 strategy9[{tag}] order:")
-    for u in ordered:
-        tb = today_bets.get(u, 0)
-        bal = balances.get(u, 0)
-        print(f"   - {u}: today_bet={tb} | balance={bal}")
-
-
 # ================= Gán cược =================
 
 def assign_bets(
@@ -166,9 +159,10 @@ def assign_bets(
     # Lấy PRIORITY_USERS/ASSIGN_STRATEGY theo giờ
     PRIORITY_USERS = _priority_users_from(config, window)  # vẫn dùng cho các strategy khác
     PRIORITY_USERS_V2 = _priority_users_v2_from(config, window)
+    PRIORITY_USERS_V3 = _priority_users_v3_from(config, window)
 
     balances = _fresh_balances_for_online(online_users)
-    today_bets = _fetch_today_bets_for_online(online_users) if strategy in (9, 10) else {}
+    today_bets = _fetch_today_bets_for_online(online_users) if strategy in (9, 10,11) else {}
 
     # sort giảm dần theo amount để nhận diện bet lớn nhất
     to_assign = sorted([(amt, door) for (_dev, amt, door) in bets], key=lambda x: -x[0])
@@ -356,6 +350,47 @@ def assign_bets(
             for u in ordered:
                 if u in used:
                     continue
+                bal = balances.get(u, 0)
+                if bal >= amount:
+                    chosen = u
+                    _bal = bal
+                    after = bal - amount
+                    break
+
+            if chosen is None:
+                msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
+                print(msg)
+                send_telegram(msg)
+                return []
+        elif strategy == 11:
+            # 1️⃣ User KHÔNG thuộc V2 & V3 → balance tăng dần
+            others = [
+                u for u in online_users
+                if u not in PRIORITY_USERS_V2
+                and u not in PRIORITY_USERS_V3
+                and u not in used
+            ]
+            others_sorted = sorted(others, key=lambda u: balances.get(u, 0))
+
+            # 2️⃣ PRIORITY_USERS_V2 → today_bet thấp nhất
+            v2_sorted = sorted(
+                [u for u in PRIORITY_USERS_V2 if u in online_users and u not in used],
+                key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
+            )
+
+            # 3️⃣ PRIORITY_USERS_V3 → today_bet thấp nhất
+            v3_sorted = sorted(
+                [u for u in PRIORITY_USERS_V3 if u in online_users and u not in used],
+                key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
+            )
+
+            ordered = others_sorted + v2_sorted + v3_sorted
+
+            chosen = None
+            after = None
+            _bal = None
+
+            for u in ordered:
                 bal = balances.get(u, 0)
                 if bal >= amount:
                     chosen = u

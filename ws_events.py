@@ -5,7 +5,6 @@ import time
 from constants import allowed_events, active_ws
 import constants  # dùng constants.session_seen (tránh global cục bộ)
 from chiaTien_Acc import run_assigner, enqueue_bets
-from fetch_transactions import fetch_transactions
 
 API_BASE = "http://127.0.0.1:3000"  # URL server.js của bạn
 

@@ -71,8 +71,8 @@ def main():
         return
     # Có thể chỉnh các tham số dưới đây nếu muốn
     dateoffset = 0
-    limit = 20
-    before_id = 80
+    limit = 30
+    before_id = 90
     check_top_tai_xiu(dateoffset=dateoffset, limit=limit, before_id=before_id, access_token=access_token, jwt=jwt)
 
 if __name__ == "__main__":
