@@ -4,6 +4,7 @@ Chứa các hàm tái sử dụng: proxy, auth, request wrapper
 """
 import sys
 import io
+import time
 
 # Fix encoding cho Windows console
 if sys.platform == 'win32':
@@ -164,10 +165,10 @@ def game_request_with_retry(
     if params:
         common_params.update(params)
     
-    # 4. Gọi API
-    try:
-        if method.upper() == "GET":
-            resp = requests.get(
+    def _do_request():
+        m = method.upper()
+        if m == "GET":
+            return requests.get(
                 url,
                 params=common_params,
                 headers=headers,
@@ -175,18 +176,8 @@ def game_request_with_retry(
                 timeout=timeout,
                 impersonate="chrome120"
             )
-        elif method.upper() == "POST":
-            resp = requests.post(
-                url,
-                params=common_params,
-                headers=headers,
-                json=json_data,
-                proxies=proxies,
-                timeout=timeout,
-                impersonate="chrome120"
-            )
-        elif method.upper() == "PUT":
-            resp = requests.put(
+        if m == "POST":
+            return requests.post(
                 url,
                 params=common_params,
                 headers=headers,
@@ -195,11 +186,41 @@ def game_request_with_retry(
                 timeout=timeout,
                 impersonate="chrome120"
             )
-        else:
-            print(f"❌ Method không hợp lệ: {method}", flush=True)
+        if m == "PUT":
+            return requests.put(
+                url,
+                params=common_params,
+                headers=headers,
+                json=json_data,
+                proxies=proxies,
+                timeout=timeout,
+                impersonate="chrome120"
+            )
+        print(f"❌ Method không hợp lệ: {method}", flush=True)
+        return None
+
+    resp = None
+    for attempt in range(1, 6):
+        try:
+            resp = _do_request()
+            break
+        except Exception as e:
+            msg = str(e).lower()
+            proxy_closed = "connection to proxy closed" in msg or "curl: (97" in msg
+            if proxy_closed:
+                print(f"❌ [{username}] Lỗi proxy (attempt {attempt}/5): {e}", flush=True)
+                if attempt == 5:
+                    try:
+                        requests.put(f"{NODE_SERVER_URL}/api/users/{username}", json={"status": "Proxy Lỗi"}, timeout=5)
+                    except Exception:
+                        pass
+                    print(f"⚠️ [{username}] Proxy Lỗi sau 5 lần thử", flush=True)
+                time.sleep(1)
+                continue
+            print(f"❌ [{username}] Lỗi request: {e}", flush=True)
             return None
-    except Exception as e:
-        print(f"❌ [{username}] Lỗi request: {e}", flush=True)
+
+    if resp is None:
         return None
     
     # 5. Auto-retry nếu 401/403

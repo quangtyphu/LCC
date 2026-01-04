@@ -1,12 +1,4 @@
-#!/usr/bin/env python3
-"""
-auto_get_token.py
-- Yêu cầu: pip install websocket-client requests
-- Usage: python3 auto_get_token.py
-- Mô tả: Kết nối tới Chrome DevTools (http://localhost:9222/json), chọn tab chứa play.lc79.bet,
-  bật Network, lắng nghe Network.responseReceived; khi thấy url chứa '/v1/lobby/auth/login'
-  script sẽ lấy body bằng Network.getResponseBody và in token (nếu có).
-"""
+
 
 import requests, json, time, websocket, threading, sys, traceback
 

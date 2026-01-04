@@ -20,6 +20,7 @@ from ws_events import handle_event  # import xử lý event
 from game_login import get_access_token, update_access_token_to_db
 
 API_BASE = "http://127.0.0.1:3000"  # đổi thành URL server.js của bạn
+MINIGAME_WS_URL = "wss://wlb.tele68.com/minigame/?EIO=4&transport=websocket"
 
 
 # Dùng selector loop trên Windows để hỗ trợ socks.socksocket
@@ -30,6 +31,54 @@ if sys.platform.startswith("win"):
 # ------------------- HỖ TRỢ: chạy requests blocking trong thread để không block event loop ----------
 async def _requests_put(path, json_data, timeout=5):
     return await asyncio.to_thread(lambda: requests.put(f"{API_BASE}{path}", json=json_data, timeout=timeout))
+
+
+# ------------------- Gửi tín hiệu minigame (1 lần sau khi TX online) -------------------
+async def _ping_minigame_once(user: str, proxy_str: str, jwt: str, delay: int = 120):
+    """Kết nối WS minigame 1 lần để báo online, nhận log DEPOSIT_DONE, rồi đóng."""
+    try:
+        await asyncio.sleep(delay)
+
+        try:
+            host, port, puser, ppass = proxy_str.split(":")
+            port = int(port)
+        except Exception:
+            print(f"⚠️ [{user}] Proxy sai định dạng (minigame)")
+            return
+
+        sock = socks.socksocket()
+        sock.set_proxy(socks.SOCKS5, host, port, True, puser, ppass)
+        sock.setblocking(False)
+        try:
+            sock.connect(("wlb.tele68.com", 443))
+        except Exception:
+            print(f"⚠️ [{user}] Proxy không kết nối được minigame")
+            with contextlib.suppress(Exception):
+                sock.close()
+            return
+
+        try:
+            async with websockets.connect(MINIGAME_WS_URL, sock=sock, ssl=True, ping_interval=None) as ws:
+                with contextlib.suppress(Exception):
+                    await ws.recv()
+                await ws.send(f"40/minigame,{json.dumps({'token': jwt})}")
+                # Đọc phản hồi trong cửa sổ ngắn (tối đa 8s), chỉ log DEPOSIT_DONE
+                end_time = time.time() + 15
+                while time.time() < end_time:
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=2)
+                    except asyncio.TimeoutError:
+                        continue
+                    except Exception as e:
+                        print(f"⚠️ [{user}] Minigame recv lỗi: {e}")
+                        break
+        except Exception as e:
+            print(f"⚠️ [{user}] Ping minigame lỗi: {e}")
+        finally:
+            with contextlib.suppress(Exception):
+                sock.close()
+    except asyncio.CancelledError:
+        return
 
 
 
@@ -185,6 +234,9 @@ async def handle_ws(acc, conn_id: str):
         try:
             async with websockets.connect(WS_URL, sock=sock, ssl=True, ping_interval=None) as ws:
                 print(f"✅ [{user}] WS connected (conn_id={conn_id[:8]})")
+
+                # Đặt lịch ping minigame sau 60s để báo online (chỉ 1 lần, không giữ kết nối)
+                asyncio.create_task(_ping_minigame_once(user, proxy_str, jwt, delay=60))
 
                 # Handshake/authorize
                 try:
