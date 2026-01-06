@@ -70,7 +70,6 @@ from get_active_accounts import get_active_accounts
 from ws_connection import handle_ws, disconnect_user
 from token_utils import test_token
 from jwt_manager import refresh_jwt
-from fetch_transactions import check_all_transactions  # ← Đổi import
 
 API_BASE = "http://127.0.0.1:3000"  # URL CMS Node.js
 

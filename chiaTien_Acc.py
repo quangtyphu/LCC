@@ -247,7 +247,31 @@ def assign_bets(
                 return []
 
         elif strategy == 4:
-            after, chosen, _bal = max(candidates, key=lambda t: t[0])  # AFTER cao nhất
+            # Ưu tiên balance cao → thấp cho users KHÔNG thuộc V2/V3, sau đó mới đến V2 rồi V3
+            others = [u for u in online_users if u not in used and u not in PRIORITY_USERS_V2 and u not in PRIORITY_USERS_V3]
+            others_sorted = sorted(others, key=lambda u: -balances.get(u, 0))
+
+            v2_sorted = sorted([u for u in PRIORITY_USERS_V2 if u in online_users and u not in used], key=lambda u: -balances.get(u, 0))
+            v3_sorted = sorted([u for u in PRIORITY_USERS_V3 if u in online_users and u not in used], key=lambda u: -balances.get(u, 0))
+
+            ordered = others_sorted + v2_sorted + v3_sorted
+
+            chosen = None
+            after = None
+            _bal = None
+            for u in ordered:
+                bal = balances.get(u, 0)
+                if bal >= amount:
+                    chosen = u
+                    _bal = bal
+                    after = bal - amount
+                    break
+
+            if chosen is None:
+                msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
+                print(msg)
+                send_telegram(msg)
+                return []
 
         elif strategy == 5:
             # Ưu tiên PRIORITY_USERS, fallback Random

@@ -80,7 +80,10 @@ def withdraw(
         code = data.get("code")
         message = data.get("message")
         
-        if code == 0:
+        print(f"🔍 [{username}] Withdraw response code: {code}, message: {message[:80] if message else 'N/A'}")
+        
+        # Code 0 và 1 đều là thành công (1 = đợi xử lý, 0 = thành công ngay)
+        if code in [0, 1]:
             # Thành công
             print(f"✅ [{username}] Rút tiền thành công!")
             # Lấy balance mới (ưu tiên data.balance, sau đó đến data.current_money)
@@ -93,6 +96,15 @@ def withdraw(
             if new_balance is not None:
                 update_user_balance(username, float(new_balance))
                 print(f"💾 [{username}] Balance mới: {new_balance:,}đ")
+            else:
+                # Nếu response không có balance (code 1), gọi get_balance để lấy
+                try:
+                    from get_balance import get_balance as get_balance_func
+                    balance_result = get_balance_func(username)
+                    if balance_result.get("ok"):
+                        new_balance = balance_result.get("balance")
+                except Exception as e:
+                    print(f"⚠️ [{username}] Không lấy được balance: {e}")
 
             # Gọi check_withdraw_history định kỳ cho đến khi có giao dịch mới được lưu
             try:

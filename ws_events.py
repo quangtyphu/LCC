@@ -5,6 +5,7 @@ import time
 from constants import allowed_events, active_ws
 import constants  # dùng constants.session_seen (tránh global cục bộ)
 from chiaTien_Acc import run_assigner, enqueue_bets
+from auto_withdraw_on_won_session import handle_won_session_auto_withdraw
 
 API_BASE = "http://127.0.0.1:3000"  # URL server.js của bạn
 
@@ -219,6 +220,14 @@ async def handle_event(user, msg):
                 if user in prev_session_users[constants.last_session_id]:
                     prev_session_users[constants.last_session_id].remove(user)
             update_streak(user, "won")
+            
+            # AUTO WITHDRAW khi won-session
+            try:
+                handle_won_session_auto_withdraw(user, balance)
+            except Exception as e:
+                print(f"❌ [{user}] Lỗi auto withdraw: {e}")
+                import traceback
+                traceback.print_exc()
 
         elif event == "lost-session":
             balance = data.get("balance")

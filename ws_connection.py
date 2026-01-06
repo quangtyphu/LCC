@@ -258,7 +258,6 @@ async def handle_ws(acc, conn_id: str):
                     # 🔒 Nếu bị thay thế bởi WS mới → thoát ngay
                     entry_now = active_ws.get(user)
                     if not entry_now or entry_now.get("conn_id") != conn_id:
-                        print(f"🔁 [{user}] Đã có WS mới thay thế (conn_id mismatch) → thoát WS cũ.")
                         break
 
                     # 🔎 Nếu /api/force-check yêu cầu cập nhật balance (poke)
@@ -308,6 +307,8 @@ async def handle_ws(acc, conn_id: str):
                                 # nếu sync thì hàm đã chạy
                             except Exception as e:
                                 print(f"⚠️ [{user}] Lỗi khi gọi handle_event: {e}")
+                                import traceback
+                                traceback.print_exc()
 
                     except asyncio.TimeoutError:
                         # Không sao, 0.2s không nhận được gì thì tiếp tục vòng lặp và đẩy queue ra WS
