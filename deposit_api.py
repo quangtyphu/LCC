@@ -16,7 +16,7 @@ def deposit_full_process(username: str, amount: int) -> dict:
         api_code = result.get("data", {}).get("code", "?")
         return {"ok": False, "error": f"[{api_code}] {api_error}"}
     # Lưu DB
-    save_result = save_deposit_to_db(username, result)
+    save_result = save_deposit_to_db(username, result, amount=amount)
     saved = save_result.get("ok")
     order_id = save_result.get("orderId")
     # Lưu QR
@@ -123,7 +123,7 @@ def update_deposit_order_status(order_id: int, status: str) -> bool:
     
     Args:
         order_id: ID của lệnh nạp trong deposit-orders
-        status: Trạng thái mới (success/failed)
+        status: Trạng thái mới ("Chờ Nạp"|"Đang Nạp"|"Đã Nạp"|"Thành Công"|"Thất Bại"|"Huỷ")
     """
     try:
         r = requests.put(
@@ -181,8 +181,8 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
                         print(f"✅ [{username}] Tìm thấy giao dịch khớp! Amount: {tx_amount:,}đ, NDCK: {tx_content}")
                         
                         # Cập nhật trạng thái order sang COMPLETED
-                        if update_deposit_order_status(order_id, "completed"):
-                            print(f"✅ [{username}] Đã cập nhật lệnh nạp #{order_id} → COMPLETED")
+                        if update_deposit_order_status(order_id, "Thành Công"):
+                            print(f"✅ [{username}] Đã cập nhật lệnh nạp #{order_id} → Thành Công")
                         else:
                             print(f"⚠️ [{username}] Không cập nhật được trạng thái order")
                         
@@ -206,8 +206,8 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
     # Hết 5 lần vẫn không thấy → Cập nhật trạng thái FAILED
     print(f"❌ [{username}] Không tìm thấy giao dịch sau 10 phút")
     
-    if update_deposit_order_status(order_id, "failed"):
-        print(f"❌ [{username}] Đã cập nhật lệnh nạp #{order_id} → FAILED")
+    if update_deposit_order_status(order_id, "Thất Bại"):
+        print(f"❌ [{username}] Đã cập nhật lệnh nạp #{order_id} → Thất Bại")
     else:
         print(f"⚠️ [{username}] Không cập nhật được trạng thái order")
     
@@ -247,7 +247,7 @@ def deposit(username: str, amount: int) -> dict:
         traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
-def save_deposit_to_db(username: str, api_result: dict, status: str = "pending") -> dict:
+def save_deposit_to_db(username: str, api_result: dict, status: str = "pending", amount: int = None) -> dict:
     """
     Lưu lệnh nạp tiền vào DB với trạng thái pending.
     
@@ -257,21 +257,25 @@ def save_deposit_to_db(username: str, api_result: dict, status: str = "pending")
     payload = api_result.get("data", {}).get("data", {}) or {}
     rec = {
         "username": username,
+        "amount": amount,
         "accountNumber": payload.get("receiver", ""),
         "accountHolder": payload.get("name", ""),
         "transferContent": payload.get("msg", ""),
-        "qrLink": payload.get("qr_link", ""),
-        "qrPageUrl": payload.get("url", ""),
-        # status = 'pending' mặc định ở server
     }
+    print(f"[DEBUG] save_deposit_to_db - payload gửi: {rec}", flush=True)
     try:
         r = requests.post(f"{NODE_SERVER_URL}/api/deposit-orders", json=rec, timeout=5)
+        print(f"[DEBUG] save_deposit_to_db - status: {r.status_code}", flush=True)
+        print(f"[DEBUG] save_deposit_to_db - response: {r.text[:500]}", flush=True)
         if r.status_code in (200, 201):
             data = r.json()
             return {"ok": True, "orderId": data.get("id")}
+        print(f"⚠️ Lưu DB thất bại - status {r.status_code}: {r.text}", flush=True)
         return {"ok": False}
     except Exception as e:
-        print(f"⚠️ Lỗi lưu DB: {e}")
+        print(f"⚠️ Lỗi lưu DB: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         return {"ok": False}
 
 if __name__ == "__main__":
@@ -297,7 +301,7 @@ if __name__ == "__main__":
                 print(json.dumps(error_result, ensure_ascii=False))
                 sys.exit(1)
             # Lưu DB và QR
-            save_result = save_deposit_to_db(username, result)
+            save_result = save_deposit_to_db(username, result, amount=amount)
             saved = save_result.get("ok")
             order_id = save_result.get("orderId")
             img_path = save_qr_image(payload, username)
@@ -370,7 +374,7 @@ if __name__ == "__main__":
                 api_code = result.get("data", {}).get("code", "?")
                 print(f"❌ Lỗi API: [{api_code}] {api_error}", flush=True)
             else:
-                save_result = save_deposit_to_db(u, result)
+                save_result = save_deposit_to_db(u, result, amount=amt)
                 saved = save_result.get("ok")
                 order_id = save_result.get("orderId")
                 

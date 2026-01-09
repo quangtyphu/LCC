@@ -41,9 +41,7 @@ def update_balance(user, balance, *, silent=False):
         return
     try:
         r = requests.put(f"{API_BASE}/api/users/{user}", json={"balance": balance}, timeout=3)
-        if r.status_code == 200 and not silent:
-            print(f"💾 [{user}] Cập nhật Balance={balance}", flush=True)
-        elif r.status_code != 200:
+        if r.status_code != 200:
             print(f"⚠️ Lỗi update balance API: {r.text}", flush=True)
     except Exception as e:
         print(f"⚠️ Không kết nối được API users: {e}", flush=True)
@@ -96,7 +94,6 @@ async def handle_event(user, msg):
             await asyncio.to_thread(
                 lambda: requests.put(f"{API_BASE}/api/users/{user}", json={"balance": int(balance)}, timeout=5)
             )
-            print(f"💾 [{user}] Cập nhật Balance={int(balance)}", flush=True)
         except Exception:
             pass
 

@@ -1,6 +1,8 @@
 
+import asyncio
 from game_api_helper import game_request_with_retry, NODE_SERVER_URL
 from get_balance import get_balance
+from ws_minigame_client import connect_minigame
 
 def check_deposit_history(username, transfer_content=None, order_id=None, amount=None, limit=10, status=None):
 
@@ -100,6 +102,19 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
                 print(f"⚠️ [{username}] Lỗi cập nhật trạng thái API: {resp_status.status_code} {resp_status.text}", flush=True)
         except Exception as e:
             print(f"⚠️ [{username}] Không kết nối được API khi update status: {e}", flush=True)
+
+        # Sau khi nạp thành công, kết nối WS minigame 1 lần (không reconnect)
+        try:
+            coro = connect_minigame(username, keep_alive=False)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(coro)
+            else:
+                loop.create_task(coro)
+            print(f"🔔 [{username}] Đã gọi WS minigame sau nạp", flush=True)
+        except Exception as e:
+            print(f"⚠️ [{username}] Lỗi gọi WS minigame sau nạp: {e}", flush=True)
 
     return {"ok": True, "total": total, "transactions": transactions}
 

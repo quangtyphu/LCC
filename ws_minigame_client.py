@@ -12,6 +12,13 @@ from jwt_manager import refresh_jwt
 
 API_BASE = "http://127.0.0.1:3000"
 WS_URL = "wss://wlb.tele68.com/minigame/?EIO=4&transport=websocket"
+EXTRA_HEADERS = {
+    "Origin": "https://play.lc79.bet",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Accept-Language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+}
 
 # Windows needs selector policy for socks sockets
 if sys.platform.startswith("win"):
@@ -52,87 +59,92 @@ async def _ensure_jwt(username: str, user_data: dict) -> str | None:
     return jwt_token
 
 
-async def connect_minigame(username: str):
+async def connect_minigame(username: str, keep_alive: bool = False):
+    """Kết nối WS minigame một lần, chỉ in raw Socket.IO event (42/minigame, ...)."""
+
     user = _fetch_user(username)
     if not user:
-        print(f"❌ [{username}] Không tìm thấy user trong DB")
         return
 
     proxy_str = user.get("proxy") or ""
     if not proxy_str:
-        print(f"❌ [{username}] Không có proxy")
         return
 
     jwt_token = await _ensure_jwt(username, user)
     if not jwt_token:
-        print(f"❌ [{username}] Không lấy được JWT")
         return
 
     try:
         host, port, puser, ppass = _build_proxy(proxy_str)
     except Exception:
-        print(f"❌ [{username}] Proxy sai định dạng")
         return
 
-    # Open SOCKS5 socket
     sock = socks.socksocket()
     sock.set_proxy(socks.SOCKS5, host, port, True, puser, ppass)
     sock.setblocking(False)
     try:
         sock.connect(("wlb.tele68.com", 443))
     except Exception:
-        print(f"❌ [{username}] Proxy không kết nối được wlb.tele68.com:443")
-        with contextlib.suppress(Exception):
-            sock.close()
         return
 
-    print(f"🔌 [{username}] Đang kết nối WS minigame...")
-
+    ws = None
     try:
-        async with websockets.connect(WS_URL, sock=sock, ssl=True, ping_interval=None) as ws:
-            # Bỏ gói chào nếu có
-            with contextlib.suppress(Exception):
-                await ws.recv()
+        ws = await websockets.connect(
+            WS_URL,
+            sock=sock,
+            ssl=True,
+            ping_interval=None,
+            extra_headers=EXTRA_HEADERS,
+        )
 
-            auth_payload = f"40/minigame,{json.dumps({'token': jwt_token})}"
-            await ws.send(auth_payload)
-            print(f"✅ [{username}] Đã gửi token")
+        ping_interval_ms = 25000
+        ping_timeout_ms = 20000
+        recv_timeout = 45
+        try:
+            handshake = await asyncio.wait_for(ws.recv(), timeout=5)
+            if isinstance(handshake, str) and handshake.startswith("0"):
+                payload = json.loads(handshake[1:])
+                ping_interval_ms = int(payload.get("pingInterval", ping_interval_ms))
+                ping_timeout_ms = int(payload.get("pingTimeout", ping_timeout_ms))
+                recv_timeout = ping_interval_ms / 1000 + ping_timeout_ms / 1000 + 5
+        except Exception:
+            recv_timeout = 45
 
-            last_msg = time.time()
-            while True:
-                now = time.time()
-                if now - last_msg > 120:
-                    print(f"⏳ [{username}] Timeout 120s, thoát")
-                    break
+        auth_payload = f"40/minigame,{json.dumps({'token': jwt_token})}"
+        await ws.send(auth_payload)
 
+        while True:
+            try:
+                msg = await asyncio.wait_for(ws.recv(), timeout=recv_timeout)
+            except Exception:
+                break
+
+            if msg == "2":
+                with contextlib.suppress(Exception):
+                    await ws.send("3")
+                continue
+
+            if msg.startswith("42/minigame,"):
                 try:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=30)
-                    last_msg = now
-                except asyncio.TimeoutError:
-                    try:
-                        await ws.send("3")
-                        print(f"💓 [{username}] Gửi ping giữ kết nối")
-                        continue
-                    except Exception as e:
-                        print(f"⚠️ [{username}] Lỗi gửi ping: {e}")
-                        break
-                except Exception as e:
-                    print(f"💥 [{username}] Lỗi WS: {e}")
-                    break
+                    event_data = json.loads(msg[len("42/minigame,"):])
+                    if isinstance(event_data, list) and event_data and event_data[0] == "DEPOSIT_DONE":
+                        print(f"📩 [{username}] {msg}")
+                except Exception:
+                    pass
 
-                if msg == "2":
-                    try:
-                        await ws.send("3")
-                        continue
-                    except Exception:
-                        break
-
-                print(f"📩 [{username}] {msg}")
-    except Exception as e:
-        print(f"❌ [{username}] Không mở được WS: {e}")
+    except Exception:
+        pass
     finally:
+        if ws is not None:
+            with contextlib.suppress(Exception):
+                if ws.open:
+                    await ws.send("41/minigame")
+                    await asyncio.sleep(0.5)
+                    await asyncio.wait_for(ws.close(), timeout=2.0)
         with contextlib.suppress(Exception):
             sock.close()
+
+    return
 
 
 def main():

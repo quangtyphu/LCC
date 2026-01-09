@@ -44,11 +44,23 @@ def api_withdraw():
 # API nạp tiền (full process)
 @app.route('/api/deposit', methods=['POST'])
 def api_deposit():
-    data = request.get_json()
-    username = data.get('username')
-    amount = data.get('amount')
-    result = deposit_full_process(username, amount)
-    return jsonify(result)
+    try:
+        data = request.get_json() or {}
+        username = data.get('username')
+        amount = data.get('amount')
+        
+        if not username:
+            return jsonify({"ok": False, "error": "Thiếu username"}), 400
+        if not amount or amount <= 0:
+            return jsonify({"ok": False, "error": "Thiếu amount hoặc amount không hợp lệ"}), 400
+        
+        result = deposit_full_process(username, amount)
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": f"Lỗi server: {error_msg}"}), 500
 
 import os
 import sys
@@ -262,6 +274,19 @@ def check_transactions():
     return jsonify({"ok": True, "message": f"Đang check transactions + gift-box cho {username}"}), 200
 
 
+# ============================================================
+# =============== THIRD PARTY DEPOSIT HANDLER ===============
+# ============================================================
+# Chạy Flask app từ third_party_deposit_handler.py trong thread riêng
+
+def run_third_party_handler():
+	"""
+	Chạy Flask app từ third_party_deposit_handler.py trong thread riêng.
+	"""
+	import third_party_deposit_handler
+	third_party_deposit_handler.app.run(host='127.0.0.1', port=5000, debug=False)
+
+
 # 🧵 Chạy API song song
 def run_api():
     app.run(host="0.0.0.0", port=5006, debug=False, use_reloader=False)
@@ -273,8 +298,14 @@ def run_flask():
 
 if __name__ == "__main__":
     import threading
-    # Chạy Flask ở thread riêng
+    from v2_v3_swapper import auto_swap_v2_v3_scheduler
+    
+    # Chạy Flask main ở thread riêng
     threading.Thread(target=run_flask, daemon=True).start()
+    # Chạy third_party_deposit_handler ở thread riêng
+    threading.Thread(target=run_third_party_handler, daemon=True).start()
+    # Chạy auto swap V2/V3 scheduler ở thread riêng
+    threading.Thread(target=auto_swap_v2_v3_scheduler, daemon=True).start()
     # Chạy watcher_loop như cũ
     try:
         asyncio.run(watcher_loop())
