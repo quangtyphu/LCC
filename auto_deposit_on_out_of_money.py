@@ -12,7 +12,7 @@ THIRD_PARTY_API_BASE = "http://127.0.0.1:5000"  # Third party deposit handler
 
 # Cache file để lưu username đã tạo lệnh nạp (tránh tạo 2 lệnh treo gần nhau)
 DEPOSIT_CACHE_FILE = "deposit_pending_cache.json"
-DEPOSIT_CACHE_DELAY_SECONDS = 120 * 60  # 120 phút = 7200 giây
+DEPOSIT_CACHE_DELAY_SECONDS = 60 * 60  # 120 phút = 7200 giây
 
 def load_deposit_cache():
     """
@@ -37,6 +37,20 @@ def save_deposit_cache(cache_dict):
             json.dump(cache_dict, f, indent=2, ensure_ascii=False)
     except Exception as e:
         print(f"[ERROR] Không lưu được cache file: {e}")
+
+def reset_deposit_cache():
+    """
+    Reset cache (xóa file cache) - dùng khi khởi động chương trình.
+    Giống như pending_withdrawals reset về {} khi restart.
+    """
+    try:
+        if os.path.exists(DEPOSIT_CACHE_FILE):
+            os.remove(DEPOSIT_CACHE_FILE)
+            print(f"[CACHE] Đã reset cache file khi khởi động chương trình")
+        else:
+            print(f"[CACHE] Cache file không tồn tại, không cần reset")
+    except Exception as e:
+        print(f"[WARN] Không reset được cache file: {e}")
 
 def remove_from_deposit_cache(username):
     """

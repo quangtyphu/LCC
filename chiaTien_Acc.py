@@ -198,7 +198,7 @@ def assign_bets(
 
     balances = _fresh_balances_for_online(online_users)
     today_bets = _fetch_today_bets_for_online(online_users) if strategy in (7, 8, 9, 10, 11) else {}
-    weekly_bets = _fetch_weekly_bets_for_online(online_users) if strategy in (7, 8) else {}
+    weekly_bets = _fetch_weekly_bets_for_online(online_users) if strategy in (6, 7, 8) else {}
 
     # sort giảm dần theo amount để nhận diện bet lớn nhất
     to_assign = sorted([(amt, door) for (_dev, amt, door) in bets], key=lambda x: -x[0])
@@ -298,11 +298,24 @@ def assign_bets(
                 return []
 
         elif strategy == 6:
-            # Bet lớn nhất -> account có BALANCE THỰC lớn nhất; còn lại random
-            if idx == 0:
-                after, chosen, _bal = max(candidates, key=lambda t: t[2])  # t[2] = balance thực
-            else:
-                after, chosen, _bal = random.choice(candidates)
+            # Ưu tiên PRIORITY_USERS, fallback tổng cược tuần thấp nhất
+            chosen, after, _bal = None, None, None
+            for u in PRIORITY_USERS:
+                if u in online_users and u not in used:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
+            if chosen is None:
+                candidates_sorted = sorted(candidates, key=lambda t: (weekly_bets.get(t[1], 0), t[2]))
+                after, chosen, _bal = candidates_sorted[0]
+            if chosen is None:
+                msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
+                print(msg)
+                send_telegram(msg)
+                return []
 
         elif strategy == 7:
             # Ưu tiên V2 -> V3 với tổng cược ngày thấp (giống 9/10/11), còn lại ưu tiên tổng cược tuần cao

@@ -299,6 +299,11 @@ def run_flask():
 if __name__ == "__main__":
     import threading
     from v2_v3_swapper import auto_swap_v2_v3_scheduler
+    from auto_deposit_on_out_of_money import reset_deposit_cache
+    
+    # Reset cache khi khởi động chương trình (giống như pending_withdrawals reset về {})
+    print("[INIT] Đang reset deposit cache...", flush=True)
+    reset_deposit_cache()
     
     # Chạy Flask main ở thread riêng
     threading.Thread(target=run_flask, daemon=True).start()
