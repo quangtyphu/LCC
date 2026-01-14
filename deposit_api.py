@@ -62,6 +62,7 @@ import os, re, base64, requests, time
 from datetime import datetime
 from game_api_helper import game_request_with_retry
 from check_deposit_history import check_deposit_history
+from telegram_notifier import send_telegram
 
 # Dùng cấu hình chung nếu có, fallback localhost
 try:
@@ -208,6 +209,23 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
     
     if update_deposit_order_status(order_id, "Thất Bại"):
         print(f"❌ [{username}] Đã cập nhật lệnh nạp #{order_id} → Thất Bại")
+        
+        # Gửi thông báo Telegram khi thất bại
+        try:
+            telegram_msg = (
+                f"❌ LỆNH NẠP TIỀN THẤT BẠI\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 Username: {username}\n"
+                f"🆔 Order ID: #{order_id}\n"
+                f"💰 Số tiền: {expected_amount:,}đ\n"
+                f"📝 NDCK: {transfer_content}\n"
+                f"⏰ Thời gian: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Không tìm thấy giao dịch sau 10 phút theo dõi."
+            )
+            send_telegram(telegram_msg)
+        except Exception as e:
+            print(f"⚠️ [{username}] Lỗi gửi Telegram: {e}")
     else:
         print(f"⚠️ [{username}] Không cập nhật được trạng thái order")
     
@@ -374,7 +392,7 @@ if __name__ == "__main__":
                 api_code = result.get("data", {}).get("code", "?")
                 print(f"❌ Lỗi API: [{api_code}] {api_error}", flush=True)
             else:
-                save_result = save_deposit_to_db(u, result, amount=amt)
+                save_result = save_deposit_to_db(u, result, amount=a)
                 saved = save_result.get("ok")
                 order_id = save_result.get("orderId")
                 

@@ -299,11 +299,15 @@ def run_flask():
 if __name__ == "__main__":
     import threading
     from v2_v3_swapper import auto_swap_v2_v3_scheduler
-    from auto_deposit_on_out_of_money import reset_deposit_cache
+    from auto_deposit_on_out_of_money import reset_deposit_cache, start_periodic_check
     
     # Reset cache khi khởi động chương trình (giống như pending_withdrawals reset về {})
     print("[INIT] Đang reset deposit cache...", flush=True)
     reset_deposit_cache()
+    
+    # Khởi động periodic check (mỗi 5 phút) để check và nạp tiền định kỳ
+    print("[INIT] Đang khởi động periodic check (5 phút)...", flush=True)
+    start_periodic_check(interval_seconds=300)  # 300 giây = 5 phút
     
     # Chạy Flask main ở thread riêng
     threading.Thread(target=run_flask, daemon=True).start()

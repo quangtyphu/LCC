@@ -91,12 +91,18 @@ def _fresh_balances_for_online(online_users: List[str]) -> Dict[str, int]:
                 if balance < 10000:
                     with contextlib.suppress(Exception):
                         requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
-                    # Gọi auto_deposit_on_out_of_money
-                    try:
-                        from auto_deposit_on_out_of_money import auto_deposit_for_user
-                        auto_deposit_for_user(user)
-                    except Exception as e:
-                        print(f"[ERROR] auto_deposit_for_user({user}): {e}")
+                    # Kiểm tra PAUSE trước khi gọi auto_deposit_on_out_of_money
+                    config = load_config()
+                    active_window = _get_active_window(config)
+                    if active_window.get("PAUSE"):
+                        print(f"[SKIP] {user} balance < 10000 nhưng đang trong khung giờ PAUSE ({active_window.get('start', 'N/A')}-{active_window.get('end', 'N/A')}), bỏ qua nạp tiền tự động.")
+                    else:
+                        # Gọi auto_deposit_on_out_of_money
+                        try:
+                            from auto_deposit_on_out_of_money import auto_deposit_for_user
+                            auto_deposit_for_user(user)
+                        except Exception as e:
+                            print(f"[ERROR] auto_deposit_for_user({user}): {e}")
                 # else:
                 #     with contextlib.suppress(Exception):
                 #         requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Đang Chơi"})
