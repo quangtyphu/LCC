@@ -132,7 +132,6 @@ async def watcher_loop():
             for acc in target_accounts:
                 u = acc["username"]
                 if u not in active_ws:
-                    print(f"➕ Mở WS mới cho {u}", flush=True)
                     q = asyncio.Queue()
                     conn_id = uuid.uuid4().hex
                     active_ws[u] = {"queue": q, "task": None, "acc": acc, "conn_id": conn_id}

@@ -123,7 +123,6 @@ async def handle_ws(acc, conn_id: str):
             try:
                 test_sock.connect(("wtx.tele68.com", 443))
                 proxy_ok = True
-                print(f"🔐 [{user}] Đã Kết Nối Proxy (attempt {attempt})")
                 break
             except Exception:
                 print(f"🔐 [{user}] Proxy lỗi (attempt {attempt})")
@@ -224,7 +223,6 @@ async def handle_ws(acc, conn_id: str):
                         try:
                             await ws.send("3")
                             last_ping_time = now  # reset watchdog
-                            print(f"💓 [{user}] Không thấy ping 30s → gửi pong chủ động")
                         except Exception as e:
                             print(f"⚠️ [{user}] Gửi pong lỗi: {e} → reconnect")
                             break
@@ -266,7 +264,6 @@ async def handle_ws(acc, conn_id: str):
                         raise
 
                     except Exception as e:
-                        print(f"💥 [{user}] Lỗi WS: {repr(e)} → reconnect")
                         break
 
                     finally:
@@ -296,8 +293,6 @@ async def handle_ws(acc, conn_id: str):
         # Chỉ dọn dẹp nếu mình vẫn là kết nối đang đăng ký
         entry = active_ws.get(user)
         if entry and entry.get("conn_id") == conn_id:
-            print(f"🔻 [{user}] Đóng WS (conn_id={conn_id[:8]})")
-
             # 🧹 Hủy job enqueue_bets (nếu còn)
             t = entry.pop("assign_task", None)
             if t and not t.done():

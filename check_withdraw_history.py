@@ -69,7 +69,6 @@ def check_withdraw_history(username, withdraw_id=None, limit=20, max_checks=5):
             print(f"Đã lưu 1 giao dịch rút {int(tx['amount']):,} cho [{username}] Thời gian: {tx.get('dateTime')} ", flush=True)
         return True
     else:
-        print(f"Không thấy giao dịch rút tiền mới nào cho [{username}]!", flush=True)
         return False
 
 if __name__ == "__main__":

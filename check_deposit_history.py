@@ -81,7 +81,7 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
             print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')} cho [{username}]: {e}", flush=True)
 
     if new_saved == 0:
-        print(f"Không có lệnh nạp mới nào được lưu cho [{username}]!", flush=True)
+        pass
     else:
         # Khi có giao dịch mới, cập nhật balance trước khi chuyển trạng thái
         try:
