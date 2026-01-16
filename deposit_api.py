@@ -240,10 +240,8 @@ def deposit(username: str, amount: int) -> dict:
     params = {"amount": int(amount)}
 
     print(f"💰 [{username}] Đang tạo lệnh nạp {amount:,}đ...", flush=True)
-    print(f"[DEBUG] Bắt đầu gọi game_request_with_retry", flush=True)
     try:
         resp = game_request_with_retry(username, "GET", DEPOSIT_URL, params=params, timeout=30)
-        print(f"[DEBUG] Kết thúc gọi game_request_with_retry", flush=True)
 
         if not resp:
             print(f"❌ [{username}] Không nhận được response từ API", flush=True)
@@ -256,7 +254,6 @@ def deposit(username: str, amount: int) -> dict:
             print(f"⚠️ [{username}] Không parse được JSON: {e}", flush=True)
             result["text"] = resp.text
 
-        print(f"[DEBUG] Đã xử lý xong response, chuẩn bị trả kết quả", flush=True)
         return result
 
     except Exception as e:
@@ -280,11 +277,8 @@ def save_deposit_to_db(username: str, api_result: dict, status: str = "pending",
         "accountHolder": payload.get("name", ""),
         "transferContent": payload.get("msg", ""),
     }
-    print(f"[DEBUG] save_deposit_to_db - payload gửi: {rec}", flush=True)
     try:
         r = requests.post(f"{NODE_SERVER_URL}/api/deposit-orders", json=rec, timeout=5)
-        print(f"[DEBUG] save_deposit_to_db - status: {r.status_code}", flush=True)
-        print(f"[DEBUG] save_deposit_to_db - response: {r.text[:500]}", flush=True)
         if r.status_code in (200, 201):
             data = r.json()
             return {"ok": True, "orderId": data.get("id")}

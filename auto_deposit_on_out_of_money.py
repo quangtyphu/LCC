@@ -346,7 +346,6 @@ def periodic_check_all_users():
     - So sánh với config để lấy user cần nạp tiền
     - Phân loại V2/V3 và outside, xử lý theo logic riêng
     """
-    print(f"[PERIODIC] Bắt đầu check định kỳ - {datetime.now(ZoneInfo('Asia/Ho_Chi_Minh')).strftime('%Y-%m-%d %H:%M:%S')}")
     
     try:
         config = load_config()
