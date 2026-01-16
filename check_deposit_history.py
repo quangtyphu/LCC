@@ -59,7 +59,6 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
                 saved.append(record)
                 new_saved += 1
                 print(f"Đã lưu 1 giao dịch nạp {int(tx['amount']):,} cho [{username}] với nội dung {tx['content']}", flush=True)
-                print(f"[DEBUG][{username}] Response lưu giao dịch: {resp2.text}", flush=True)
                 try:
                     resp_json = resp2.json()
                     is_first = resp_json.get("isFirstDepositToday")

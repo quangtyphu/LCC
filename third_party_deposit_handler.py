@@ -41,7 +41,6 @@ def create_deposit_order_with_real_qr(username: str, amount: int) -> dict:
 
 		# Gọi deposit_full_process (API chung) - đã bao gồm deposit, save DB, save QR
 		result = deposit_full_process(username, amount)
-		print(f"[DEBUG] deposit_full_process() result.ok: {result.get('ok')}", flush=True)
 
 		if not result.get("ok"):
 			return {"ok": False, "error": result.get("error", "Không gọi được API game")}
@@ -79,12 +78,6 @@ def create_deposit_order_with_real_qr(username: str, amount: int) -> dict:
 			except Exception:
 				pass
 
-		print(f"✅ Đã tạo order #{order_id}", flush=True)
-		print(f"   STK: {data.get('accountNumber', '')}", flush=True)
-		print(f"   Tên: {data.get('accountHolder', '')}", flush=True)
-		print(f"   NDCK: {data.get('transferContent', '')}", flush=True)
-		print(f"   QR: {'Có' if qr_base64 else 'Không có'}", flush=True)
-
 		return {
 			"ok": True,
 			"order_id": order_id,
@@ -117,21 +110,11 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict:
 		"accountNumber": order_data.get("account_number", ""),
 		"accountHolder": order_data.get("account_holder", "")
 	}
-
-	print("📤 Gửi cho bên thứ 3:", flush=True)
-	print(f"   Order ID: {order_id}", flush=True)
-	print(f"   Username: {username}", flush=True)
-	print(f"   Amount: {amount:,}đ", flush=True)
-	print(f"   NDCK: {order_data.get('transfer_content', '')}", flush=True)
-	print(f"   QR Base64: {'Có (' + str(len(qr_base64)) + ' chars)' if qr_base64 else 'Không có'}", flush=True)
-
 	try:
 		resp = requests.post(THIRD_PARTY_API_URL, json=payload, timeout=15)
 		data = resp.json()
 
 		if resp.ok and data.get("ok"):
-			print("✅ Bên thứ 3 nhận thành công!", flush=True)
-			print(f"   Queue file: {data.get('data', {}).get('queueFile', '')}", flush=True)
 			return {
 				"ok": True,
 				"transaction_id": data.get("data", {}).get("orderId", ""),
@@ -155,8 +138,6 @@ def receive_callback():
 	- Nếu status = "Đã Nạp" → bắt đầu check lịch sử 5 lần
 	"""
 	data = request.json
-	print(f"📥 Nhận callback từ bên thứ 3: {data}", flush=True)
-
 	# Hỗ trợ cả camelCase và snake_case
 	order_id = data.get("order_id") or data.get("orderId")
 	status = data.get("status")
@@ -175,11 +156,6 @@ def receive_callback():
 	# Cập nhật status vào DB (bất kể status nào)
 	print(f"📝 Cập nhật order #{order_id} → {status}", flush=True)
 	success = update_deposit_order_status(order_id, status)
-	if success:
-		print(f"✅ Đã cập nhật DB", flush=True)
-	else:
-		print(f"⚠️ Không cập nhật được DB", flush=True)
-
 	# Nếu status = "Đã Nạp" → bắt đầu check lịch sử
 	if status == "Đã Nạp":
 		print(f"💰 Bắt đầu check lịch sử nạp tiền cho order #{order_id}", flush=True)
@@ -206,11 +182,6 @@ def receive_callback():
 				remove_from_deposit_cache(username)
 			except Exception as e:
 				print(f"⚠️ Không xóa được khỏi cache: {e}", flush=True)
-		
-		print(f"   Username: {username}", flush=True)
-		print(f"   Amount: {amount:,}đ", flush=True)
-		print(f"   NDCK: {transfer_content}", flush=True)
-
 		# Check lịch sử trong thread nền (không block callback)
 		import threading
 		from deposit_api import wait_and_check_deposit
@@ -265,11 +236,6 @@ def create_deposit():
 		}), 500
 
 	# 3) Thành công
-	print("✅ Đã gửi cho bên thứ 3 thành công", flush=True)
-	print(f"   Order ID: {order_id}", flush=True)
-	print(f"   NDCK: {result.get('transfer_content')}", flush=True)
-	print("   Chờ bên thứ 3 xử lý...\n", flush=True)
-
 	return jsonify({
 		"ok": True,
 		"order_id": order_id,
@@ -303,4 +269,4 @@ if __name__ == '__main__':
 	print(f"📍 Third Party API: {THIRD_PARTY_API_URL}")
 	print("="*60 + "\n")
 
-	app.run(host='127.0.0.1', port=5000, debug=False)
+	app.run(host='0.0.0.0', port=5000, debug=False)

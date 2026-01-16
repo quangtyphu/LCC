@@ -284,7 +284,7 @@ def run_third_party_handler():
 	Chạy Flask app từ third_party_deposit_handler.py trong thread riêng.
 	"""
 	import third_party_deposit_handler
-	third_party_deposit_handler.app.run(host='127.0.0.1', port=5000, debug=False)
+	third_party_deposit_handler.app.run(host='0.0.0.0', port=5000, debug=False)
 
 
 # 🧵 Chạy API song song
@@ -293,8 +293,8 @@ def run_api():
 
 
 def run_flask():
-    print("🚀 Flask API server đang chạy tại http://127.0.0.1:8080 ...", flush=True)
-    app.run(port=8080)
+    print("🚀 Flask API server đang chạy tại http://0.0.0.0:8080 ...", flush=True)
+    app.run(host="0.0.0.0", port=8080, debug=False, use_reloader=False)
 
 if __name__ == "__main__":
     import threading
