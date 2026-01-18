@@ -130,6 +130,24 @@ def _get_active_window(cfg: dict) -> dict:
             return w
     return {}
 
+def _get_max_active_users_outside_v2_v3(cfg: dict) -> int:
+    """
+    Lấy MAX_ACTIVE_USERS_OUTSIDE_V2_V3 theo khung giờ hiện tại nếu có,
+    nếu không có thì dùng giá trị mặc định trong config.
+    """
+    active_window = _get_active_window(cfg) or {}
+    if isinstance(active_window, dict) and "MAX_ACTIVE_USERS_OUTSIDE_V2_V3" in active_window:
+        value = active_window.get("MAX_ACTIVE_USERS_OUTSIDE_V2_V3")
+    else:
+        value = cfg.get("MAX_ACTIVE_USERS_OUTSIDE_V2_V3", 3)
+
+    try:
+        if value is None:
+            raise ValueError("missing")
+        return int(value)
+    except (TypeError, ValueError):
+        return cfg.get("MAX_ACTIVE_USERS_OUTSIDE_V2_V3", 3)
+
 def get_all_users_from_config(config):
     """
     Lấy tất cả user từ config (PRIORITY_USERS, PRIORITY_USERS_V2, PRIORITY_USERS_V3).
@@ -240,10 +258,7 @@ def auto_deposit_for_user(user):
         active_count = len(active_outside_users)
         
         # 2. Lấy MAX_ACTIVE_USERS_OUTSIDE_V2_V3 từ TIME_WINDOWS nếu có, nếu không thì dùng giá trị mặc định
-        active_window = _get_active_window(config)
-        max_limit = active_window.get("MAX_ACTIVE_USERS_OUTSIDE_V2_V3")
-        if max_limit is None:
-            max_limit = config.get("MAX_ACTIVE_USERS_OUTSIDE_V2_V3", 3)
+        max_limit = _get_max_active_users_outside_v2_v3(config)
         
         print(f"[INFO] Active users outside V2/V3: {active_count}/{max_limit}")
         
@@ -414,10 +429,7 @@ def periodic_check_all_users():
                     active_count = len(active_outside_users)
                     
                     # 2. Lấy MAX_ACTIVE_USERS_OUTSIDE_V2_V3 từ TIME_WINDOWS nếu có, nếu không thì dùng giá trị mặc định
-                    active_window = _get_active_window(config)
-                    max_limit = active_window.get("MAX_ACTIVE_USERS_OUTSIDE_V2_V3")
-                    if max_limit is None:
-                        max_limit = config.get("MAX_ACTIVE_USERS_OUTSIDE_V2_V3", 3)
+                    max_limit = _get_max_active_users_outside_v2_v3(config)
                     
                     # 3. Nếu đã đủ limit → skip
                     if active_count < max_limit:

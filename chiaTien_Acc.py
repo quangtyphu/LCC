@@ -178,6 +178,36 @@ def _fetch_weekly_bets_for_online(online_users: List[str]) -> Dict[str, int]:
         return res
     return res
 
+
+def _fetch_monthly_bets_for_online(online_users: List[str]) -> Dict[str, int]:
+    """
+    Lấy tổng cược tháng cho các user online từ API /api/bet-totals.
+    Kết quả: {username: total_bet_month}
+    """
+    res: Dict[str, int] = {u: 0 for u in online_users}
+    try:
+        r = requests.get(f"{API_BASE}/api/bet-totals", params={"page": 1, "limit": 10000}, timeout=6)
+        if r.status_code != 200:
+            return res
+        data = r.json()
+        items = data.get("data") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            return res
+        for item in items:
+            try:
+                u = str(item.get("username") or item.get("user") or "").strip()
+                if u and u in res:
+                    total_val = (item.get("total_month")
+                                 or item.get("totalMonth")
+                                 or item.get("month_bet")
+                                 or item.get("monthBet") or 0)
+                    res[u] = int(total_val or 0)
+            except Exception:
+                continue
+    except Exception:
+        return res
+    return res
+
 # ================= Gán cược =================
 
 def assign_bets(
@@ -205,6 +235,7 @@ def assign_bets(
     balances = _fresh_balances_for_online(online_users)
     today_bets = _fetch_today_bets_for_online(online_users) if strategy in (7, 8, 9, 10, 11) else {}
     weekly_bets = _fetch_weekly_bets_for_online(online_users) if strategy in (6, 7, 8) else {}
+    monthly_bets = _fetch_monthly_bets_for_online(online_users) if strategy == 5 else {}
 
     # sort giảm dần theo amount để nhận diện bet lớn nhất
     to_assign = sorted([(amt, door) for (_dev, amt, door) in bets], key=lambda x: -x[0])
@@ -285,7 +316,7 @@ def assign_bets(
                 return []
 
         elif strategy == 5:
-            # Ưu tiên PRIORITY_USERS, fallback Random
+            # Ưu tiên PRIORITY_USERS, fallback tổng cược tháng thấp nhất
             chosen, after, _bal = None, None, None
             for u in PRIORITY_USERS:
                 if u in online_users and u not in used:
@@ -296,7 +327,8 @@ def assign_bets(
                         after = bal - amount
                         break
             if chosen is None:
-                after, chosen, _bal = random.choice(candidates)
+                candidates_sorted = sorted(candidates, key=lambda t: (monthly_bets.get(t[1], 0), t[2]))
+                after, chosen, _bal = candidates_sorted[0]
             if chosen is None:
                 msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
                 print(msg)

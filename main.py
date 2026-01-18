@@ -9,6 +9,10 @@ from user_full_check_service import user_full_check_logic
 from status_utils import update_status
 app = Flask(__name__)
 CORS(app)
+
+# Tắt log request của Flask/Werkzeug để tránh spam log từ thiết bị trong LAN
+import logging
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 # ============================================================
 @app.route('/api/user-full-check', methods=['POST'])
 def user_full_check():
