@@ -148,7 +148,7 @@ def withdraw(
                         continue
                     result = check_withdraw_history(
                         username,
-                        limit=20,
+                        limit=10,
                         status=None,
                         target_tx_id=latest_tx_id,
                         previous_status=latest_status,

@@ -85,7 +85,6 @@ def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
         
         # === Xử lý 401 ===
         if r.status_code == 401:
-            print(f"⚠️ [{username}] Login 401 → accessToken hết hạn")
             
             # Lấy password từ bảng accounts
             resp_acc = requests.get(f"{API_BASE}/api/accounts/{username}", timeout=5)
@@ -98,9 +97,8 @@ def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
             if not password:
                 print(f"❌ [{username}] Không có loginPass trong accounts")
                 return None
-            
-            # Lấy accessToken mới từ gateway
-            print(f"🔑 [{username}] Đang lấy accessToken mới từ gateway...")
+
+            # Bỏ log lấy accessToken mới
             old_token = access_token
             new_access_token = get_access_token(username, password, proxy_str)
             
@@ -114,18 +112,14 @@ def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
                 print(f"   👉 Kiểm tra lại loginPass trong accounts: {password}")
                 return None
             
-            print(f"✅ [{username}] Lấy được accessToken mới: {new_access_token[:20]}...")
-            
             # Cập nhật DB
             if not update_access_token_to_db(username, new_access_token):
                 print(f"⚠️ [{username}] Không cập nhật được accessToken vào DB")
                 return None
             
-            print(f"💾 [{username}] Đã cập nhật accessToken vào DB")
-            
             # Đợi 1s rồi retry
             time.sleep(1)
-            print(f"🔄 [{username}] Retry login với accessToken mới...")
+            # Bỏ log retry login
             return refresh_jwt(username, _retry_count + 1)
         
         # === Xử lý response khác ===

@@ -1,7 +1,7 @@
 {
   "ASSIGN_STRATEGY": 11,
   "PRIORITY_USERS": ["", "", "", "", ""],
-  "PRIORITY_USERS_V2": ["lunarkey", "vklmlem", "banhbeosan", "datplayer", "khoailangxanh", "xolop99", "phuctontai", "fulnex", "", "", "", "", "", "", "", ""],
+  "PRIORITY_USERS_V2": ["lunarkey", "vklmlem", "banhbeosan", "datplayer", "khoailangxanh", "xolop99", "", "fulnex", "ZeroMind", "", "", "", "", "", "", ""],
   "PRIORITY_USERS_V3": ["gautrangzz", "kexumi", "khongcoten123", "hoaanhhtuc", "daicaohihi", "chatspammer", "hoaaaaaaaaa", "trumdaoao", "", "", "", "", "", ""],
   "AUTO_DEPOSIT_V2_V3": 1,
   "AUTO_DEPOSIT_OUTSIDE_V2_V3": 1,
