@@ -42,7 +42,7 @@ def user_full_check_logic(username: str) -> dict:
 
     # 2. Check lịch sử rút
     try:
-        results['withdraw_history'] = check_withdraw_history(username)
+        results['withdraw_history'] = check_withdraw_history(username, limit=10)
     except Exception as e:
         results['withdraw_history'] = f'Lỗi: {e}'
     time.sleep(5)

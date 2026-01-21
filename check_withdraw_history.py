@@ -57,9 +57,9 @@ def _update_record(record):
 def check_withdraw_history(
     username,
     withdraw_id=None,
-    limit=20,
+    limit=10,
     max_checks=5,
-    status="SUCCESS",
+    status=None,
     save_latest_only=False,
     return_details=False,
     target_tx_id=None,
@@ -81,8 +81,7 @@ def check_withdraw_history(
         "channel_id": 2,
         "type": "WITHDRAW",
     }
-    if status is not None:
-        params["status"] = status
+    # Không lọc status
     resp = game_request_with_retry(username, "GET", api_url, params=params)
     if not resp or resp.status_code != 200:
         print(f"❌ [{username}] Lỗi lấy lịch sử: {resp.status_code if resp else 'No response'}", flush=True)
@@ -133,26 +132,20 @@ def check_withdraw_history(
         record = _build_record(username, tx)
         try:
             resp2 = _save_record(record)
-            if resp2 and resp2.status_code in (200, 201):
+            if resp2 is not None and resp2.status_code in (200, 201):
                 saved.append(record)
-            elif resp2 and resp2.status_code == 409:
+            elif resp2 is not None and resp2.status_code == 409:
                 skipped += 1  # đã tồn tại
                 if update_all_if_changed:
                     current = _get_record(record.get("transactionId"))
                     if current:
-                        fields_changed = (
-                            current.get("status") != record.get("status")
-                            or current.get("reason") != record.get("reason")
-                            or current.get("content") != record.get("content")
-                            or float(current.get("amount", 0)) != float(record.get("amount", 0))
-                            or current.get("time") != record.get("time")
-                        )
+                        fields_changed = current.get("status") != record.get("status")
                         if fields_changed:
                             resp3 = _update_record(record)
                             if resp3 and resp3.status_code in (200, 204):
                                 updated = True
                                 updated_tx = tx
-            elif resp2:
+            elif resp2 is not None:
                 print(
                     f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')} cho [{username}]: {resp2.status_code} - {resp2.text}",
                     flush=True,
@@ -178,7 +171,19 @@ def check_withdraw_history(
                     except Exception as e:
                         print(f"⚠️ [{username}] Lỗi cập nhật giao dịch {tx.get('id')}: {e}", flush=True)
 
-    # Không log khi cập nhật trạng thái, để tránh trùng log
+    if saved:
+        for record in saved:
+            if record.get("status") == "Thành công":
+                print(
+                    f"✅ Đã cập nhật trạng thái Thành công cho giao dịch rút {int(record['amount']):,} [{username}] Thời gian: {record.get('time')}",
+                    flush=True,
+                )
+
+    if updated and updated_tx and updated_tx.get("status") == "Thành công":
+        print(
+            f"✅ Đã cập nhật trạng thái Thành công cho giao dịch rút {int(updated_tx.get('amount', 0)):,} [{username}] Thời gian: {updated_tx.get('dateTime')}",
+            flush=True,
+        )
 
     if return_details:
         return {
