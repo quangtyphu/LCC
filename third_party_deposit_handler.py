@@ -37,7 +37,7 @@ def create_deposit_order_with_real_qr(username: str, amount: int) -> dict:
 	try:
 		from deposit_api import deposit_full_process
 
-		print("💰 Đang gọi API game để tạo lệnh nạp thật...", flush=True)
+		# Bỏ log gọi API game
 
 		# Gọi deposit_full_process (API chung) - đã bao gồm deposit, save DB, save QR
 		result = deposit_full_process(username, amount)

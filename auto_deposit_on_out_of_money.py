@@ -230,22 +230,22 @@ def auto_deposit_for_user(user):
                 result = r.json()
                 if result.get("ok"):
                     order_id = result.get("order_id", "N/A")
-                    print(f"[DEPOSIT] {user} (V2/V3) {amount} - OK | Order ID: {order_id} | Status: {result.get('status', 'PENDING')}")
+                    # Bỏ log DEPOSIT OK
                     # Lưu vào cache sau khi tạo lệnh thành công
                     cache = load_deposit_cache()
                     cache[user] = time.time()
                     save_deposit_cache(cache)
-                    print(f"[CACHE] Đã lưu {user} vào cache (120 phút)")
+                    # Bỏ log CACHE lưu
                 else:
                     error = result.get("error", "Unknown error")
-                    print(f"[DEPOSIT] {user} (V2/V3) {amount} - FAILED: {error}")
+                    # Bỏ log DEPOSIT FAILED
             else:
                 try:
                     error_data = r.json()
                     error_msg = error_data.get("error", r.text[:200])
                 except:
                     error_msg = r.text[:200]
-                print(f"[DEPOSIT] {user} (V2/V3) {amount} - status: {r.status_code}, error: {error_msg}")
+                # Bỏ log DEPOSIT status lỗi
         except Exception as e:
             print(f"[ERROR] Deposit for {user}: {e}")
     else:
@@ -332,22 +332,22 @@ def auto_deposit_for_user(user):
                         result = rr.json()
                         if result.get("ok"):
                             order_id = result.get("order_id", "N/A")
-                            print(f"[DEPOSIT] {acc_name} ({user_type}) {amount} - OK | Order ID: {order_id} | Status: {result.get('status', 'PENDING')}")
+                            # Bỏ log DEPOSIT OK
                             # Lưu vào cache sau khi tạo lệnh thành công
                             cache = load_deposit_cache()
                             cache[acc_name] = time.time()
                             save_deposit_cache(cache)
-                            print(f"[CACHE] Đã lưu {acc_name} vào cache (120 phút)")
+                            # Bỏ log CACHE lưu
                         else:
                             error = result.get("error", "Unknown error")
-                            print(f"[DEPOSIT] {acc_name} ({user_type}) {amount} - FAILED: {error}")
+                            # Bỏ log DEPOSIT FAILED
                     else:
                         try:
                             error_data = rr.json()
                             error_msg = error_data.get("error", rr.text[:200])
                         except:
                             error_msg = rr.text[:200]
-                        print(f"[DEPOSIT] {acc_name} ({user_type}) {amount} - status: {rr.status_code}, error: {error_msg}")
+                        # Bỏ log DEPOSIT status lỗi
                 except Exception as e:
                     print(f"[ERROR] Deposit for {acc_name}: {e}")
                     

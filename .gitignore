@@ -1,3 +1,15 @@
 # Bỏ qua file biên dịch Python và thư mục cache
 __pycache__/
 *.pyc
+
+# Bỏ qua file cấu hình và cache
+config.json
+deposit_pending_cache.json
+
+# Bỏ qua database files
+*.db
+
+# Bỏ qua thư mục output và cache
+qr_outputs/
+processed/
+queue/

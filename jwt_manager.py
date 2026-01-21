@@ -60,11 +60,7 @@ def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
             print(f"⚠️ [{username}] Proxy lỗi format")
             return None
         
-        # 3. Login
-        if _retry_count == 0:
-            print(f"🔐 [{username}] Login qua proxy (nickname: {nickname})...")
-        else:
-            print(f"🔐 [{username}] Retry login lần {_retry_count} (nickname: {nickname})...")
+        # 3. Login (bỏ log)
         
         params = {"cp": "R", "cl": "R", "pf": "web", "at": access_token}
         headers = {
@@ -150,8 +146,6 @@ def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
         remote_resp = data.get("remoteLoginResp", {})
         
         if jwt_token and remote_resp.get("code") == 0:
-            print(f"✅ [{username}] Login thành công!")
-            
             # Cập nhật balance
             balance = remote_resp.get("money", 0)
             print(f"   💰 Balance: {balance:,}đ")
@@ -208,7 +202,6 @@ def refresh_jwt_and_token(username: str) -> bool:
                     timeout=5
                 )
                 if resp.status_code == 200:
-                    print(f"💾 [{username}] Đã cập nhật JWT mới vào DB")
                     return True
                 else:
                     print(f"⚠️ [{username}] Không cập nhật được JWT vào DB")

@@ -329,7 +329,7 @@ def handle_won_session_auto_withdraw(username: str, balance: int):
                 result = handle_won_session_withdrawal(username, balance)
                 
                 if result.get("withdrew"):
-                    print(f"✅ [AutoWithdraw][{username}] Rút {result.get('amount'):,}đ thành công")
+                    print(f"✅ [{username}] Rút {result.get('amount'):,}đ thành công")
                 elif result.get("pending"):
                     print(f"📋 [AutoWithdraw][{username}] Cần cược thêm - Added to pending list")
                 elif not result.get("ok"):

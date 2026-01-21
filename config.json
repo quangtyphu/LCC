@@ -1,22 +1,32 @@
 {
-  "ASSIGN_STRATEGY": 9,
-  "PRIORITY_USERS": ["","","","",""],
-  "PRIORITY_USERS_V2": ["gintuankiet06", "cutun007", "trailang2808", "ditconme1109", "lauxanhff10", "kieuphonga11", "chidai2412", "subeobeo013", "", "", "", "", "", "", "", "", "", ""],
-  "BET_RANGE": { "START": 50, "STOP": 101, "STEP": 10 },
-  "PLAYER_COUNT": 9,
-
+  "ASSIGN_STRATEGY": 11,
+  "PRIORITY_USERS": ["", "", "", "", ""],
+  "PRIORITY_USERS_V2": ["lunarkey", "vklmlem", "banhbeosan", "datplayer", "khoailangxanh", "xolop99", "phuctontai", "fulnex", "", "", "", "", "", "", "", ""],
+  "PRIORITY_USERS_V3": ["gautrangzz", "kexumi", "khongcoten123", "hoaanhhtuc", "daicaohihi", "chatspammer", "hoaaaaaaaaa", "trumdaoao", "", "", "", "", "", ""],
+  "AUTO_DEPOSIT_V2_V3": 1,
+  "AUTO_DEPOSIT_OUTSIDE_V2_V3": 1,
+  "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 0,
+  "WITHDRAW_THRESHOLD_MIN": 510000,
+  "WITHDRAW_THRESHOLD_MIN_V1": 900000,
+  "BET_RANGE": {
+    "START": 50,
+    "STOP": 101,
+    "STEP": 10
+  },
+  "PLAYER_COUNT": 8,
   "TIME_WINDOWS": [
-    { "start": "00:00", "end": "00:30", "PRIORITY_USERS": [], "BET_RANGE": { "START": 50, "STOP": 251, "STEP": 10 } },
-    { "start": "00:30", "end": "01:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 50, "STOP": 101, "STEP": 10 } },
-    { "start": "01:00", "end": "02:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 20, "STOP": 71,  "STEP": 10 } },
-    { "start": "02:00", "end": "07:00", "PAUSE": true },
-
-    { "start": "07:00", "end": "09:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 20, "STOP": 71,  "STEP": 10 } },
-    { "start": "09:00", "end": "10:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 20, "STOP": 101, "STEP": 10 } },
-    { "start": "10:00", "end": "20:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 20, "STOP": 151, "STEP": 10 } },
-    { "start": "20:00", "end": "21:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 50, "STOP": 201, "STEP": 10 } },
-    { "start": "21:00", "end": "22:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 80, "STOP": 201, "STEP": 10 } },
-    { "start": "22:00", "end": "23:00", "PRIORITY_USERS": [], "BET_RANGE": { "START": 100, "STOP": 251, "STEP": 10 } },
-    { "start": "23:00", "end": "23:59", "PRIORITY_USERS": [], "BET_RANGE": { "START": 100, "STOP": 301, "STEP": 10 } }
-  ]
+    {"start": "00:00", "end": "00:30", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 251, "STEP": 10}},
+    {"start": "00:30", "end": "01:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 101, "STEP": 10}},
+    {"start": "01:00", "end": "02:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 20, "STOP": 71, "STEP": 10}},
+    {"start": "02:00", "end": "07:00", "PAUSE": true},
+    {"start": "07:00", "end": "09:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 20, "STOP": 71, "STEP": 10}},
+    {"start": "09:00", "end": "10:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 20, "STOP": 101, "STEP": 10}},
+    {"start": "10:00", "end": "20:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 20, "STOP": 150, "STEP": 10}},
+    {"start": "20:00", "end": "21:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 201, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 8},
+    {"start": "21:00", "end": "22:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 80, "STOP": 201, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 8},
+    {"start": "22:00", "end": "23:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 100, "STOP": 251, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 8},
+    {"start": "23:00", "end": "23:30", "PRIORITY_USERS": [], "BET_RANGE": {"START": 100, "STOP": 301, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 8},
+    {"start": "23:30", "end": "23:59", "PRIORITY_USERS": [], "BET_RANGE": {"START": 100, "STOP": 301, "STEP": 10}}
+  ],
+  "LAST_SWAP_DATE": "2026-01-20"
 }

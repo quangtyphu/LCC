@@ -225,8 +225,7 @@ def game_request_with_retry(
     
     # 5. Auto-retry nếu 401/403
     if resp.status_code in (401, 403):
-        print(f"⚠️ [{username}] Token hết hạn, đang refresh...", flush=True)
-        
+       
         if refresh_jwt_and_token(username):
             # Lấy lại token mới
             auth2 = get_user_auth(username)
@@ -266,7 +265,6 @@ def game_request_with_retry(
                             timeout=timeout,
                             impersonate="chrome120"
                         )
-                    print(f"✅ [{username}] Đã refresh token và retry", flush=True)
                 except Exception as e:
                     print(f"❌ [{username}] Lỗi retry: {e}", flush=True)
                     return None

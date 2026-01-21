@@ -62,7 +62,7 @@ def withdraw(
             "otp": otp
         }
         
-        print(f"💸 [{username}] Đang rút {amount:,}đ về {bank_code} {account_number}...")
+        # Bỏ log bắt đầu rút để tránh trùng log
         
         # Gọi API qua helper
         r = game_request_with_retry(username, "POST", WITHDRAW_URL, json_data=payload)
@@ -80,12 +80,26 @@ def withdraw(
         code = data.get("code")
         message = data.get("message")
         
-        print(f"🔍 [{username}] Withdraw response code: {code}, message: {message[:80] if message else 'N/A'}")
+        # Chỉ log một dòng theo yêu cầu
+        try:
+            import re
+            amount_line = None
+            if message:
+                for line in str(message).splitlines():
+                    if "Số tiền rút" in line:
+                        amount_line = line.strip()
+                        break
+            if amount_line:
+                print(f"🔍 [{username}] {amount_line} Mã Code: {code}", flush=True)
+            else:
+                print(f"🔍 [{username}] Số tiền rút: {amount:,}₫ Mã Code: {code}", flush=True)
+        except Exception:
+            print(f"🔍 [{username}] Số tiền rút: {amount:,}₫ Mã Code: {code}", flush=True)
         
         # Code 0 và 1 đều là thành công (1 = đợi xử lý, 0 = thành công ngay)
         if code in [0, 1]:
             # Thành công
-            print(f"✅ [{username}] Rút tiền thành công!")
+            # Không log tại đây để tránh trùng log
             # Lấy balance mới (ưu tiên data.balance, sau đó đến data.current_money)
             new_balance = (
                 data.get("data", {}).get("balance")
@@ -95,7 +109,7 @@ def withdraw(
             # Cập nhật balance vào DB nếu có trong response
             if new_balance is not None:
                 update_user_balance(username, float(new_balance))
-                print(f"💾 [{username}] Balance mới: {new_balance:,}đ")
+                # Bỏ log balance để tránh trùng log
             else:
                 # Nếu response không có balance (code 1), gọi get_balance để lấy
                 try:
@@ -106,18 +120,48 @@ def withdraw(
                 except Exception as e:
                     print(f"⚠️ [{username}] Không lấy được balance: {e}")
 
-            # Gọi check_withdraw_history định kỳ cho đến khi có giao dịch mới được lưu
+            # Gọi check_withdraw_history sau 2s để lấy ID giao dịch mới nhất
             try:
                 from check_withdraw_history import check_withdraw_history
-                intervals = [40, 30, 30, 120, 240]
-                found = False
-                for idx, wait_time in enumerate(intervals):
+                latest_tx_id = None
+                latest_status = None
+                time.sleep(2)
+                initial_result = check_withdraw_history(
+                    username,
+                    limit=20,
+                    status=None,
+                    save_latest_only=True,
+                    return_details=True,
+                )
+                transactions = initial_result.get("transactions") or []
+                if transactions:
+                    latest_tx = transactions[0]
+                    latest_tx_id = latest_tx.get("id")
+                    latest_status = latest_tx.get("status")
+
+                # Định kỳ như cũ để check lại trạng thái giao dịch
+                intervals = [40, 30,30,30,30, 30, 120, 240]
+                found = latest_tx_id is not None
+                for wait_time in intervals:
                     time.sleep(wait_time)
-                    result = check_withdraw_history(username, limit=20)
-                    if result:
-                        # Dòng log lưu giao dịch mới đã được in từ check_withdraw_history
+                    if not latest_tx_id:
+                        continue
+                    result = check_withdraw_history(
+                        username,
+                        limit=20,
+                        status=None,
+                        target_tx_id=latest_tx_id,
+                        previous_status=latest_status,
+                        update_if_changed=True,
+                        return_details=True,
+                    )
+                    matched = result.get("matched_tx")
+                    if matched:
+                        current_status = matched.get("status")
+                        if current_status != latest_status:
+                            latest_status = current_status
+                    if result.get("saved_count", 0) > 0:
                         found = True
-                        break
                 # Không cần else log nữa
 
                 # Nếu không có balance mới từ response, sau khi phát hiện giao dịch thành công thì lấy balance mới nhất từ DB hoặc API game và cập nhật vào DB
@@ -128,7 +172,6 @@ def withdraw(
                         balance = get_balance(username)
                         if balance is not None:
                             update_user_balance(username, float(balance))
-                            print(f"💾 [{username}] Balance mới (sau check): {balance:,}đ")
                     except Exception as e:
                         print(f"[AutoCheck][{username}] Lỗi cập nhật balance sau khi rút tiền: {e}")
             except Exception as e:
@@ -207,10 +250,6 @@ if __name__ == "__main__":
         result = withdraw(username, amount)
         
         if result["ok"]:
-            print(f"\n✅ [{username}] Thành công!")
-            print(f"   [{username}] Message: {result['message']}")
-            # Dòng lưu giao dịch mới sẽ được in từ check_withdraw_history nếu có
-            if result.get("balance"):
-                print(f"   [{username}] Balance mới: {result['balance']:,}đ")
+            pass
         else:
             print(f"\n❌ [{username}] Thất bại: {result['error']}")

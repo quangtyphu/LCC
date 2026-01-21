@@ -21,8 +21,7 @@ def deposit_full_process(username: str, amount: int) -> dict:
     order_id = save_result.get("orderId")
     # Lưu QR
     img_path = save_qr_image(payload, username)
-    # In ra order_id vừa lưu
-    print(f"[INFO] order_id (lưu DB): {order_id}", flush=True)
+    # Bỏ log order_id
     # Tracking giao dịch (nếu lưu DB thành công)
     if saved and order_id:
         transfer_content = payload.get('msg', '')
@@ -152,15 +151,14 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
         True nếu tìm thấy giao dịch khớp, False nếu không
     """
     # Thời gian check: 30s, 60s, 90s, 120s, 600s (10 phút)
-    check_intervals = [50, 30, 30, 120, 480]  # Tổng: 30, 60, 90, 120, 600s
+    check_intervals = [50, 30,30,30, 30, 120, 480]  # Tổng: 30, 60, 90, 120, 600s
     
-    print(f"⏳ [{username}] Bắt đầu theo dõi lệnh nạp (NDCK: {transfer_content})...")
+    # Bỏ log bắt đầu theo dõi
     
     for i, wait_time in enumerate(check_intervals, 1):
         time.sleep(wait_time)
         
         elapsed = sum(check_intervals[:i])
-        print(f"🔍 [{username}] Lần {i}/5 - Sau {elapsed}s: Đang check lịch sử nạp...")
         
         # Retry 3 lần nếu gặp lỗi SSL/network
         for retry in range(3):
@@ -239,7 +237,7 @@ def deposit(username: str, amount: int) -> dict:
     # Build params cho API nạp tiền
     params = {"amount": int(amount)}
 
-    print(f"💰 [{username}] Đang tạo lệnh nạp {amount:,}đ...", flush=True)
+    # Bỏ log tạo lệnh nạp
     try:
         resp = game_request_with_retry(username, "GET", DEPOSIT_URL, params=params, timeout=30)
 
@@ -324,7 +322,7 @@ if __name__ == "__main__":
             print(f"🏦 Số TK: {payload.get('receiver', '')}", flush=True)
             print(f"💰 Số tiền: {amount:,} đ", flush=True)
             print(f"📝 Nội dung: \033[1;31m{payload.get('msg', '')}\033[0m", flush=True)
-            print(f"[INFO] order_id (lưu DB): {order_id}", flush=True)
+            # Bỏ log order_id
             print()
             # Trả kết quả JSON
             success_result = {
@@ -401,7 +399,7 @@ if __name__ == "__main__":
                     print(f"   NDCK: {payload.get('msg', '')}", flush=True)
                     print(f"   Ảnh QR: {img_path}", flush=True)
                     print(f"   Lưu DB: {'OK' if saved else 'Lỗi lưu'}", flush=True)
-                    print(f"   [INFO] order_id (lưu DB): {order_id}", flush=True)
+                    # Bỏ log order_id
                     # Chờ và check lịch sử nạp tiền
                     if saved and order_id:
                         transfer_content = payload.get('msg', '')

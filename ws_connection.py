@@ -158,8 +158,6 @@ async def handle_ws(acc, conn_id: str):
             ok = False
         
         if not ok:
-            print(f"⚠️ [{user}] JWT lỗi → refresh tự động")
-            
             # Refresh JWT mới (tự động xử lý accessToken nếu cần)
             try:
                 new_jwt = await asyncio.to_thread(lambda: refresh_jwt(user))
