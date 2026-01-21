@@ -158,8 +158,7 @@ def receive_callback():
 	success = update_deposit_order_status(order_id, status)
 	# Nếu status = "Đã Nạp" → bắt đầu check lịch sử
 	if status == "Đã Nạp":
-		print(f"💰 Bắt đầu check lịch sử nạp tiền cho order #{order_id}", flush=True)
-		
+		pass
 		# Nếu callback không gửi username/transferContent → Lấy từ DB
 		if not username or not transfer_content:
 			print(f"📡 Lấy thông tin order từ DB...", flush=True)

@@ -128,7 +128,7 @@ async def connect_minigame(username: str, keep_alive: bool = False):
                 try:
                     event_data = json.loads(msg[len("42/minigame,"):])
                     if isinstance(event_data, list) and event_data and event_data[0] == "DEPOSIT_DONE":
-                        print(f"📩 [{username}] {msg}")
+                        pass
                 except Exception:
                     pass
 

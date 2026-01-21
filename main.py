@@ -114,7 +114,6 @@ async def watcher_loop():
                     status = udoc.get("status")
                     if u in current and status != "Đang Chơi":
                         await disconnect_user(u)
-                        print(f"🔻 [{u}] Đã ngắt WS do trạng thái: {status}", flush=True)
                     # Nếu là Token Lỗi thì vẫn tự động refresh JWT như cũ
                     if u in current and status == "Token Lỗi":
                         print(f"🔄 [{u}] Tự động refresh JWT do Token Lỗi", flush=True)

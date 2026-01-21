@@ -165,7 +165,6 @@ async def handle_ws(acc, conn_id: str):
                     jwt = new_jwt
                     acc["jwt"] = jwt
                     await _requests_put(f"/api/users/{user}", {"jwt": jwt}, timeout=5)
-                    print(f"🔑 [{user}] Đã refresh JWT mới")
                 else:
                     print(f"❌ [{user}] Không refresh được JWT")
                     await update_user_status(user, "Token Lỗi")
@@ -277,7 +276,6 @@ async def handle_ws(acc, conn_id: str):
             # Khi Ctrl+C/loop dừng, socket có thể bị reset → bỏ qua để tránh trace
             if isinstance(e, OSError) and getattr(e, "winerror", None) == 995:  # operation aborted
                 return
-            print(f"🔻 [{user}] WS connect reset/closed: {e}")
             return
         finally:
             with contextlib.suppress(Exception):
@@ -322,7 +320,6 @@ async def handle_ws(acc, conn_id: str):
 async def disconnect_user(user):
     entry = active_ws.get(user)
     if entry:
-        print(f"🔻 Ngắt WS của {user} (cancel task, giữ entry cho task tự dọn)")
         # cancel task; handle_ws sẽ dọn dẹp entry nếu conn_id khớp
         entry_task = entry.get("task")
         if entry_task and not entry_task.done():

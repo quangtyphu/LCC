@@ -175,13 +175,13 @@ def check_withdraw_history(
         for record in saved:
             if record.get("status") == "Thành công":
                 print(
-                    f"✅ Đã cập nhật trạng thái Thành công cho giao dịch rút {int(record['amount']):,} [{username}] Thời gian: {record.get('time')}",
+                    f"💰💰💰💰💰 Đã cập nhật trạng thái Thành công cho giao dịch rút {int(record['amount']):,}",
                     flush=True,
                 )
 
     if updated and updated_tx and updated_tx.get("status") == "Thành công":
         print(
-            f"✅ Đã cập nhật trạng thái Thành công cho giao dịch rút {int(updated_tx.get('amount', 0)):,} [{username}] Thời gian: {updated_tx.get('dateTime')}",
+            f"💰💰💰💰💰 Đã cập nhật trạng thái Thành công cho giao dịch rút {int(updated_tx.get('amount', 0)):,} ",
             flush=True,
         )
 

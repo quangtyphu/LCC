@@ -63,10 +63,7 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
                     resp_json = resp2.json()
                     is_first = resp_json.get("isFirstDepositToday")
                     is_bonus = resp_json.get("isEligibleForBonus")
-                    print(f"[INFO][{username}] isFirstDepositToday: {is_first}, isEligibleForBonus: {is_bonus}", flush=True)
                     if (is_first or is_bonus) and float(tx["amount"]) >= 200000:
-                        msg = resp_json.get("message") or "Nhận quà nạp đầu tiên >= 200k!"
-                        print(f"🎉 [{username}] {msg}", flush=True)
                         # Gọi nhận nhiệm vụ tự động
                         try:
                             from mission_api import auto_claim_missions
@@ -86,18 +83,14 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
         # Khi có giao dịch mới, cập nhật balance trước khi chuyển trạng thái
         try:
             balance_result = get_balance(username)
-            if balance_result.get("ok"):
-                print(f"💾 [{username}] Đã cập nhật balance: {balance_result.get('balance', 'N/A')}đ", flush=True)
-            else:
+            if not balance_result.get("ok"):
                 print(f"⚠️ [{username}] Lỗi lấy balance: {balance_result.get('error')}", flush=True)
         except Exception as e:
             print(f"⚠️ [{username}] Lỗi khi cập nhật balance: {e}", flush=True)
         # Chuyển trạng thái sang Đang Chơi
         try:
             resp_status = requests.put(f"{NODE_SERVER_URL}/api/users/{username}", json={"status": "Đang Chơi"}, timeout=5)
-            if resp_status.status_code == 200:
-                print(f"🎮 [{username}] Đã chuyển trạng thái → Đang Chơi (API OK)", flush=True)
-            else:
+            if resp_status.status_code != 200:
                 print(f"⚠️ [{username}] Lỗi cập nhật trạng thái API: {resp_status.status_code} {resp_status.text}", flush=True)
         except Exception as e:
             print(f"⚠️ [{username}] Không kết nối được API khi update status: {e}", flush=True)
@@ -111,7 +104,6 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
                 asyncio.run(coro)
             else:
                 loop.create_task(coro)
-            print(f"🔔 [{username}] Đã gọi WS minigame sau nạp", flush=True)
         except Exception as e:
             print(f"⚠️ [{username}] Lỗi gọi WS minigame sau nạp: {e}", flush=True)
 

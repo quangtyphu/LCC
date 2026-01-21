@@ -61,7 +61,7 @@ def remove_from_deposit_cache(username):
     if username in cache:
         del cache[username]
         save_deposit_cache(cache)
-        print(f"[CACHE] Đã xóa {username} khỏi cache")
+        pass
     else:
         print(f"[CACHE] {username} không có trong cache")
 

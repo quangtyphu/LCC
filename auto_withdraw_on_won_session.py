@@ -144,7 +144,6 @@ def if_user_reached_bet_target(username: str, target_total_bet: int) -> bool:
     current_total = get_total_bet_for_user(username)
     
     if current_total >= target_total_bet:
-        print(f"✅ [{username}] Đạt target! Current={current_total:,} >= Target={target_total_bet:,}")
         return True
     else:
         return False
@@ -188,8 +187,6 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
                     "withdrew": False,
                     "error": f"Balance {balance:,} quá cao hoặc quá thấp"
                 }
-            
-            print(f"🔄 [{username}] Đủ cược, thử rút {amount:,}đ (balance: {balance:,})...")
             
             try:
                 from withdraw import withdraw
@@ -331,7 +328,7 @@ def handle_won_session_auto_withdraw(username: str, balance: int):
                 if result.get("withdrew"):
                     print(f"✅ [{username}] Rút {result.get('amount'):,}đ thành công")
                 elif result.get("pending"):
-                    print(f"📋 [AutoWithdraw][{username}] Cần cược thêm - Added to pending list")
+                    pass
                 elif not result.get("ok"):
                     print(f"⚠️ [AutoWithdraw][{username}] Error: {result.get('error')}")
                     

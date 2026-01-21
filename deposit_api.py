@@ -177,11 +177,9 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
                     tx_amount = tx.get("amount", 0)
                     
                     if tx_content == transfer_content and tx_amount == expected_amount:
-                        print(f"✅ [{username}] Tìm thấy giao dịch khớp! Amount: {tx_amount:,}đ, NDCK: {tx_content}")
-                        
                         # Cập nhật trạng thái order sang COMPLETED
                         if update_deposit_order_status(order_id, "Thành Công"):
-                            print(f"✅ [{username}] Đã cập nhật lệnh nạp #{order_id} → Thành Công")
+                            pass
                         else:
                             print(f"⚠️ [{username}] Không cập nhật được trạng thái order")
                         
@@ -200,7 +198,7 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
         
         # Không tìm thấy, tiếp tục
         if i < len(check_intervals):
-            print(f"⏳ [{username}] Chưa thấy giao dịch, chờ thêm {check_intervals[i]}s...")
+            pass
     
     # Hết 5 lần vẫn không thấy → Cập nhật trạng thái FAILED
     print(f"❌ [{username}] Không tìm thấy giao dịch sau 10 phút")

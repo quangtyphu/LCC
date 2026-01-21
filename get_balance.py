@@ -31,8 +31,6 @@ def get_balance(username: str) -> dict:
         balance = data.get("balance")
         
         if balance is not None:
-            print(f"✅ [{username}] Balance: {balance:,}đ")
-            
             # Cập nhật balance vào DB
             update_user_balance(username, float(balance))
             

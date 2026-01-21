@@ -90,11 +90,11 @@ def withdraw(
                         amount_line = line.strip()
                         break
             if amount_line:
-                print(f"🔍 [{username}] {amount_line} Mã Code: {code}", flush=True)
+                print(f"💰💰💰💰💰 [{username}] {amount_line} 💰💰💰💰💰 Mã Code: {code}", flush=True)
             else:
-                print(f"🔍 [{username}] Số tiền rút: {amount:,}₫ Mã Code: {code}", flush=True)
+                print(f"💰💰💰💰💰 [{username}] Số tiền rút: {amount:,}₫ 💰💰💰💰💰 Mã Code: {code}", flush=True)
         except Exception:
-            print(f"🔍 [{username}] Số tiền rút: {amount:,}₫ Mã Code: {code}", flush=True)
+            print(f"💰💰💰💰💰 [{username}] Số tiền rút: {amount:,}₫ 💰💰💰💰💰 Mã Code: {code}", flush=True)
         
         # Code 0 và 1 đều là thành công (1 = đợi xử lý, 0 = thành công ngay)
         if code in [0, 1]:
