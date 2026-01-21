@@ -23,7 +23,7 @@ def user_full_check_logic(username: str) -> dict:
     """
     results = {}
 
-    # 0. Gửi tracking device (random uuid)
+    # 0. Đảm bảo user có uuid trong DB
     try:
         from fake_device_tracking import fake_device_tracking
         fake_device_tracking(username)
