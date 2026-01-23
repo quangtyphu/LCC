@@ -120,62 +120,66 @@ def withdraw(
                 except Exception as e:
                     print(f"⚠️ [{username}] Không lấy được balance: {e}")
 
-            # Gọi check_withdraw_history sau 2s để lấy ID giao dịch mới nhất
-            try:
-                from check_withdraw_history import check_withdraw_history
-                latest_tx_id = None
-                latest_status = None
-                time.sleep(2)
-                initial_result = check_withdraw_history(
-                    username,
-                    limit=20,
-                    status=None,
-                    save_latest_only=True,
-                    return_details=True,
-                )
-                transactions = initial_result.get("transactions") or []
-                if transactions:
-                    latest_tx = transactions[0]
-                    latest_tx_id = latest_tx.get("id")
-                    latest_status = latest_tx.get("status")
-
-                # Định kỳ như cũ để check lại trạng thái giao dịch
-                intervals = [40, 30,30,30,30, 30, 120, 240,480,960]
-                found = latest_tx_id is not None
-                for wait_time in intervals:
-                    time.sleep(wait_time)
-                    if not latest_tx_id:
-                        continue
-                    result = check_withdraw_history(
+            # Chạy check_withdraw_history ở background để không chặn luồng chính
+            def _check_withdraw_history_async():
+                try:
+                    from check_withdraw_history import check_withdraw_history
+                    latest_tx_id = None
+                    latest_status = None
+                    time.sleep(2)
+                    initial_result = check_withdraw_history(
                         username,
-                        limit=10,
+                        limit=20,
                         status=None,
-                        target_tx_id=latest_tx_id,
-                        previous_status=latest_status,
-                        update_if_changed=True,
+                        save_latest_only=True,
                         return_details=True,
                     )
-                    matched = result.get("matched_tx")
-                    if matched:
-                        current_status = matched.get("status")
-                        if current_status != latest_status:
-                            latest_status = current_status
-                    if result.get("saved_count", 0) > 0:
-                        found = True
-                # Không cần else log nữa
+                    transactions = initial_result.get("transactions") or []
+                    if transactions:
+                        latest_tx = transactions[0]
+                        latest_tx_id = latest_tx.get("id")
+                        latest_status = latest_tx.get("status")
 
-                # Nếu không có balance mới từ response, sau khi phát hiện giao dịch thành công thì lấy balance mới nhất từ DB hoặc API game và cập nhật vào DB
-                if found and new_balance is None:
-                    try:
-                        # Gọi API game để lấy balance mới nhất
-                        from get_balance import get_balance
-                        balance = get_balance(username)
-                        if balance is not None:
-                            update_user_balance(username, float(balance))
-                    except Exception as e:
-                        print(f"[AutoCheck][{username}] Lỗi cập nhật balance sau khi rút tiền: {e}")
-            except Exception as e:
-                print(f"[AutoCheck][{username}] Lỗi khi kiểm tra lịch sử rút tiền: {e}")
+                    # Định kỳ như cũ để check lại trạng thái giao dịch
+                    intervals = [40, 30,30,30,30, 30,30,60, 60,60,120,120,120, 240,480,960]
+                    found = latest_tx_id is not None
+                    for wait_time in intervals:
+                        time.sleep(wait_time)
+                        if not latest_tx_id:
+                            continue
+                        result = check_withdraw_history(
+                            username,
+                            limit=10,
+                            status=None,
+                            target_tx_id=latest_tx_id,
+                            previous_status=latest_status,
+                            update_if_changed=True,
+                            return_details=True,
+                        )
+                        matched = result.get("matched_tx")
+                        if matched:
+                            current_status = matched.get("status")
+                            if current_status != latest_status:
+                                latest_status = current_status
+                        if result.get("saved_count", 0) > 0:
+                            found = True
+                    # Không cần else log nữa
+
+                    # Nếu không có balance mới từ response, sau khi phát hiện giao dịch thành công thì lấy balance mới nhất từ DB hoặc API game và cập nhật vào DB
+                    if found and new_balance is None:
+                        try:
+                            # Gọi API game để lấy balance mới nhất
+                            from get_balance import get_balance
+                            balance = get_balance(username)
+                            if balance is not None:
+                                update_user_balance(username, float(balance))
+                        except Exception as e:
+                            print(f"[AutoCheck][{username}] Lỗi cập nhật balance sau khi rút tiền: {e}")
+                except Exception as e:
+                    print(f"[AutoCheck][{username}] Lỗi khi kiểm tra lịch sử rút tiền: {e}")
+
+            import threading
+            threading.Thread(target=_check_withdraw_history_async, daemon=True).start()
 
             return {
                 "ok": True,

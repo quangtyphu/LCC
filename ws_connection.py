@@ -12,6 +12,7 @@ import socks
 import websockets
 import requests
 import contextlib
+import uuid
 
 from constants import WS_URL, active_ws
 from token_utils import test_token
@@ -35,6 +36,11 @@ async def _requests_put(path, json_data, timeout=5):
 
 # ------------------- Cập nhật trạng thái user qua API (async) -------------------
 async def update_user_status(user, status):
+    connected_ws = False
+    intentional_close = False
+    should_fast_reconnect = False
+    exit_reason = None
+
     try:
         # gọi trong thread để tránh block
         resp = await _requests_put(f"/api/users/{user}", {"status": status}, timeout=3)
@@ -180,6 +186,7 @@ async def handle_ws(acc, conn_id: str):
         # ===== 3) Kết nối WS =====
         try:
             async with websockets.connect(WS_URL, sock=sock, ssl=True, ping_interval=None) as ws:
+                connected_ws = True
                 # Handshake/authorize
                 try:
                     await ws.recv()  # bỏ gói chào nếu server gửi
@@ -200,6 +207,8 @@ async def handle_ws(acc, conn_id: str):
                     # 🔒 Nếu bị thay thế bởi WS mới → thoát ngay
                     entry_now = active_ws.get(user)
                     if not entry_now or entry_now.get("conn_id") != conn_id:
+                        intentional_close = True
+                        exit_reason = "replaced"
                         break
 
                     # 🔎 Nếu /api/force-check yêu cầu cập nhật balance (poke)
@@ -213,6 +222,7 @@ async def handle_ws(acc, conn_id: str):
                     # 🧭 1. Timeout toàn cục: không có bất kỳ msg nào trong 120s → reconnect
                     if now - last_msg_time > 120:
                         print(f"⏳ [{user}] Timeout 120s → reconnect")
+                        exit_reason = "timeout"
                         break
 
                     # 🧭 2. Nếu 30s không nhận được ping "2" → gửi "3" để giữ kết nối
@@ -222,6 +232,7 @@ async def handle_ws(acc, conn_id: str):
                             last_ping_time = now  # reset watchdog
                         except Exception as e:
                             print(f"⚠️ [{user}] Gửi pong lỗi: {e} → reconnect")
+                            exit_reason = "send_error"
                             break
 
                     recv_task = None
@@ -261,6 +272,7 @@ async def handle_ws(acc, conn_id: str):
                         raise
 
                     except Exception as e:
+                        exit_reason = "recv_error"
                         break
 
                     finally:
@@ -271,13 +283,16 @@ async def handle_ws(acc, conn_id: str):
                                 await recv_task
 
         except asyncio.CancelledError:
+            intentional_close = True
             raise
         except (ConnectionResetError, OSError) as e:
             # Khi Ctrl+C/loop dừng, socket có thể bị reset → bỏ qua để tránh trace
             if isinstance(e, OSError) and getattr(e, "winerror", None) == 995:  # operation aborted
                 return
-            return
+            exit_reason = "connection_error"
         finally:
+            if connected_ws and not intentional_close and exit_reason:
+                should_fast_reconnect = True
             with contextlib.suppress(Exception):
                 sock.close()
 
@@ -315,6 +330,15 @@ async def handle_ws(acc, conn_id: str):
         else:
                 # print(f"🧹 [{user}] Bỏ qua dọn dẹp (đã bị thay thế bởi WS khác).")
             pass
+
+        # ✅ Nếu WS đang kết nối mà bị rớt → reconnect ngay (không chờ 20s)
+        if should_fast_reconnect and user not in active_ws:
+            new_conn_id = uuid.uuid4().hex
+            q = asyncio.Queue()
+            active_ws[user] = {"queue": q, "task": None, "acc": acc, "conn_id": new_conn_id}
+            task = asyncio.create_task(handle_ws(acc, new_conn_id))
+            active_ws[user]["task"] = task
+            print(f"♻️ [{user}] Mất kết nối WS → reconnect ngay")
 
 # ------------------- Ngắt WS cho 1 user (không pop ngay) -------------------
 async def disconnect_user(user):

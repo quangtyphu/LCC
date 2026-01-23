@@ -194,7 +194,6 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
                 
                 if result.get("ok"):
                     # Success!
-                    print(f"✅ [{username}] Rút {amount:,}đ thành công!")
                     
                     # Remove from pending
                     del pending_withdrawals[username]
@@ -245,8 +244,6 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
     
     if result.get("ok"):
         # Success!
-        print(f"✅ [{username}] Rút tiền thành công!")
-        
         return {
             "ok": True,
             "withdrew": True,
@@ -325,9 +322,7 @@ def handle_won_session_auto_withdraw(username: str, balance: int):
             try:
                 result = handle_won_session_withdrawal(username, balance)
                 
-                if result.get("withdrew"):
-                    print(f"✅ [{username}] Rút {result.get('amount'):,}đ thành công")
-                elif result.get("pending"):
+                if result.get("pending"):
                     pass
                 elif not result.get("ok"):
                     print(f"⚠️ [AutoWithdraw][{username}] Error: {result.get('error')}")

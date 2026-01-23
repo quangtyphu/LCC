@@ -40,6 +40,7 @@ def deposit_full_process(username: str, amount: int) -> dict:
             "accountNumber": payload.get('receiver', ''),
             "accountHolder": payload.get('name', ''),
             "transferContent": payload.get('msg', ''),
+            "qrBase64": payload.get('qr_base64') or payload.get('qr', ''),
             "qrLink": payload.get('qr_link', ''),
             "qrImagePath": img_path,
             "savedToDB": saved,
@@ -151,7 +152,7 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
         True nếu tìm thấy giao dịch khớp, False nếu không
     """
     # Thời gian check: 30s, 60s, 90s, 120s, 600s (10 phút)
-    check_intervals = [50, 30,30,30, 30, 120, 480]  # Tổng: 30, 60, 90, 120, 600s
+    check_intervals = [50, 30,30,30, 30, 120,240,240]  # Tổng: 30, 60, 90, 120, 600s
     
     # Bỏ log bắt đầu theo dõi
     
@@ -332,6 +333,7 @@ if __name__ == "__main__":
                     "accountNumber": payload.get('receiver', ''),
                     "accountHolder": payload.get('name', ''),
                     "transferContent": payload.get('msg', ''),
+                    "qrBase64": payload.get('qr_base64') or payload.get('qr', ''),
                     "qrLink": payload.get('qr_link', ''),
                     "qrImagePath": img_path,
                     "savedToDB": saved,
