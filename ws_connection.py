@@ -36,11 +36,6 @@ async def _requests_put(path, json_data, timeout=5):
 
 # ------------------- Cập nhật trạng thái user qua API (async) -------------------
 async def update_user_status(user, status):
-    connected_ws = False
-    intentional_close = False
-    should_fast_reconnect = False
-    exit_reason = None
-
     try:
         # gọi trong thread để tránh block
         resp = await _requests_put(f"/api/users/{user}", {"status": status}, timeout=3)
@@ -92,6 +87,12 @@ async def handle_ws(acc, conn_id: str):
     if queue is None:
         queue = asyncio.Queue()
         entry["queue"] = queue
+
+    # Cờ theo dõi để phân biệt đóng chủ động vs rớt kết nối
+    connected_ws = False
+    intentional_close = False
+    should_fast_reconnect = False
+    exit_reason = None
 
     try:
         # Gọi user_full_check_logic khi user kết nối WS thành công
