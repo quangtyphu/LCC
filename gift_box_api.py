@@ -85,7 +85,7 @@ def auto_claim_gifts(username: str):
 
         # Delay 3s
         if i < len(unclaimed):
-            time.sleep(3)
+            time.sleep(1)
 
 if __name__ == "__main__":
     """

@@ -37,7 +37,7 @@ def user_full_check_logic(username: str) -> dict:
         results['deposit_history'] = check_deposit_history(username)
     except Exception as e:
         results['deposit_history'] = f'Lỗi: {e}'
-    time.sleep(5)
+    time.sleep(2)
 
 
     # 2. Check lịch sử rút
@@ -45,7 +45,13 @@ def user_full_check_logic(username: str) -> dict:
         results['withdraw_history'] = check_withdraw_history(username, limit=10)
     except Exception as e:
         results['withdraw_history'] = f'Lỗi: {e}'
-    time.sleep(5)
+    time.sleep(2)
+    # 3. Check & nhận hòm quà
+    try:
+        results['gift_box'] = auto_claim_gifts(username)
+    except Exception as e:
+        results['gift_box'] = f'Lỗi: {e}'
+    time.sleep(2)
 
     # 2.5. Check & nhận thưởng x10
     try:
@@ -56,26 +62,20 @@ def user_full_check_logic(username: str) -> dict:
         results['x10_mission'] = f'Lỗi: {e}'
     time.sleep(2)
 
-    # 3. Check & nhận hòm quà
-    try:
-        results['gift_box'] = auto_claim_gifts(username)
-    except Exception as e:
-        results['gift_box'] = f'Lỗi: {e}'
-    time.sleep(5)
 
     # 4. Check & nhận nhiệm vụ
     try:
         results['missions'] = auto_claim_missions(username)
     except Exception as e:
         results['missions'] = f'Lỗi: {e}'
-    time.sleep(5)
+    time.sleep(2)
 
     # 5. Check & nhận VIP
     try:
         results['vip'] = check_and_claim_vip(username)
     except Exception as e:
         results['vip'] = f'Lỗi: {e}'
-    time.sleep(5)
+    time.sleep(2)
 
     # 6. Check balance
     try:

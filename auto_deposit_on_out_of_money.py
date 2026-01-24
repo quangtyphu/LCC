@@ -8,6 +8,8 @@ from queue import Queue
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from constants import load_config
+from status_utils import update_status
+from user_full_check_service import user_full_check_logic
 
 API_BASE = "http://127.0.0.1:3000"  # Node.js server
 THIRD_PARTY_API_BASE = "http://127.0.0.1:5000"  # Third party deposit handler
@@ -140,6 +142,8 @@ def _perform_deposit_request(user, amount):
                 cache = load_deposit_cache()
                 cache[user] = time.time()
                 save_deposit_cache(cache)
+                update_status(user, "Đang Chơi")
+                user_full_check_logic(user)
                 # Bỏ log CACHE lưu
             else:
                 error = result.get("error", "Unknown error")
