@@ -487,8 +487,8 @@ if __name__ == "__main__":
     # Reset cache khi khởi động
     reset_deposit_cache()
     
-    # Khởi động periodic check (mỗi 5 phút)
-    start_periodic_check(interval_seconds=300)  # 300 giây = 5 phút
+    # Khởi động periodic check (mỗi 60 giây)
+    start_periodic_check(interval_seconds=60)  # 60 giây = 1 phút
     
     # Giữ chương trình chạy
     try:

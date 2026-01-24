@@ -333,7 +333,9 @@ async def handle_ws(acc, conn_id: str):
             pass
 
         # ✅ Nếu WS đang kết nối mà bị rớt → reconnect ngay (không chờ 20s)
-        if should_fast_reconnect and user not in active_ws:
+        # Guard để tránh lỗi nếu task bị hủy khi đang shutdown
+        should_reconnect = locals().get("should_fast_reconnect", False)
+        if should_reconnect and user not in active_ws:
             new_conn_id = uuid.uuid4().hex
             q = asyncio.Queue()
             active_ws[user] = {"queue": q, "task": None, "acc": acc, "conn_id": new_conn_id}
