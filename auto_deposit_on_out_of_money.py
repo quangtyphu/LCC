@@ -4,6 +4,7 @@ import json
 import time
 import os
 import threading
+from queue import Queue
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from constants import load_config
@@ -14,6 +15,15 @@ THIRD_PARTY_API_BASE = "http://127.0.0.1:5000"  # Third party deposit handler
 # Cache file để lưu username đã tạo lệnh nạp (tránh tạo 2 lệnh treo gần nhau)
 DEPOSIT_CACHE_FILE = "deposit_pending_cache.json"
 DEPOSIT_CACHE_DELAY_SECONDS = 15 * 60  # 15 phút = 900 giây
+DEPOSIT_QUEUE_INTERVAL_SECONDS = 60  # Khoảng cách giữa 2 lệnh nạp liên tục
+
+_deposit_queue = Queue()
+_deposit_worker_thread = None
+_deposit_worker_lock = threading.Lock()
+_enqueued_users = set()
+_enqueued_lock = threading.Lock()
+_last_deposit_time = 0.0
+_last_deposit_lock = threading.Lock()
 
 def load_deposit_cache():
     """
@@ -94,6 +104,99 @@ def can_create_deposit_order(username):
     cleanup_deposit_cache()  # Xóa các entry cũ trước khi check
     cache = load_deposit_cache()
     return username not in cache
+
+def _wait_for_deposit_slot():
+    """
+    Đảm bảo khoảng cách tối thiểu giữa 2 lệnh nạp liên tục.
+    Không quan tâm kết quả lệnh trước đó.
+    """
+    global _last_deposit_time
+    with _last_deposit_lock:
+        now = time.time()
+        wait_seconds = DEPOSIT_QUEUE_INTERVAL_SECONDS - (now - _last_deposit_time)
+
+    if wait_seconds > 0:
+        time.sleep(wait_seconds)
+
+    with _last_deposit_lock:
+        _last_deposit_time = time.time()
+
+def _perform_deposit_request(user, amount):
+    """
+    Gọi API nạp tiền và xử lý cache giống logic cũ.
+    """
+    try:
+        r = requests.post(
+            f"{THIRD_PARTY_API_BASE}/create-deposit",
+            json={"username": user, "amount": amount},
+            timeout=30
+        )
+        if r.status_code == 200:
+            result = r.json()
+            if result.get("ok"):
+                order_id = result.get("order_id", "N/A")
+                # Bỏ log DEPOSIT OK
+                # Lưu vào cache sau khi tạo lệnh thành công
+                cache = load_deposit_cache()
+                cache[user] = time.time()
+                save_deposit_cache(cache)
+                # Bỏ log CACHE lưu
+            else:
+                error = result.get("error", "Unknown error")
+                # Bỏ log DEPOSIT FAILED
+        else:
+            try:
+                error_data = r.json()
+                error_msg = error_data.get("error", r.text[:200])
+            except Exception:
+                error_msg = r.text[:200]
+            # Bỏ log DEPOSIT status lỗi
+    except Exception as e:
+        print(f"[ERROR] Deposit for {user}: {e}")
+
+def _deposit_queue_worker():
+    while True:
+        user = None
+        task_taken = False
+        try:
+            task = _deposit_queue.get()
+            task_taken = True
+            if not task:
+                continue
+            user = task
+            _wait_for_deposit_slot()
+            amount = random_amount()
+            _perform_deposit_request(user, amount)
+        except Exception as e:
+            print(f"[ERROR] Deposit queue worker: {e}")
+        finally:
+            if task_taken:
+                try:
+                    _deposit_queue.task_done()
+                except Exception:
+                    pass
+            if user:
+                with _enqueued_lock:
+                    _enqueued_users.discard(user)
+
+def _ensure_deposit_worker():
+    global _deposit_worker_thread
+    with _deposit_worker_lock:
+        if _deposit_worker_thread and _deposit_worker_thread.is_alive():
+            return
+        _deposit_worker_thread = threading.Thread(target=_deposit_queue_worker, daemon=True)
+        _deposit_worker_thread.start()
+
+def enqueue_deposit_order(user):
+    """
+    Đưa lệnh nạp vào hàng chờ để đảm bảo cách nhau 60s.
+    """
+    _ensure_deposit_worker()
+    with _enqueued_lock:
+        if user in _enqueued_users:
+            return
+        _enqueued_users.add(user)
+    _deposit_queue.put(user)
 
 def is_in_v2_v3(user, config):
     v2 = config.get("PRIORITY_USERS_V2", [])
@@ -222,32 +325,8 @@ def auto_deposit_for_user(user):
             print(f"[SKIP] {user} đang có lệnh treo trong cache, bỏ qua")
             return
         
-        amount = random_amount()
-        # Call third party deposit API for V2/V3 user
-        try:
-            r = requests.post(f"{THIRD_PARTY_API_BASE}/create-deposit", json={"username": user, "amount": amount}, timeout=30)
-            if r.status_code == 200:
-                result = r.json()
-                if result.get("ok"):
-                    order_id = result.get("order_id", "N/A")
-                    # Bỏ log DEPOSIT OK
-                    # Lưu vào cache sau khi tạo lệnh thành công
-                    cache = load_deposit_cache()
-                    cache[user] = time.time()
-                    save_deposit_cache(cache)
-                    # Bỏ log CACHE lưu
-                else:
-                    error = result.get("error", "Unknown error")
-                    # Bỏ log DEPOSIT FAILED
-            else:
-                try:
-                    error_data = r.json()
-                    error_msg = error_data.get("error", r.text[:200])
-                except:
-                    error_msg = r.text[:200]
-                # Bỏ log DEPOSIT status lỗi
-        except Exception as e:
-            print(f"[ERROR] Deposit for {user}: {e}")
+        # Call third party deposit API for V2/V3 user (qua hàng chờ 60s)
+        enqueue_deposit_order(user)
     else:
         if config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) != 1:
             print(f"[SKIP] {user} not in V2/V3, AUTO_DEPOSIT_OUTSIDE_V2_V3 is off.")
@@ -323,33 +402,9 @@ def auto_deposit_for_user(user):
                     print(f"[SKIP] {acc_name} đang có lệnh treo trong cache, bỏ qua")
                     continue
                 
-                amount = random_amount()
                 # Xác định loại user để log
                 user_type = "V2/V3" if acc_name in v2_v3_set else "outside V2/V3"
-                try:
-                    rr = requests.post(f"{THIRD_PARTY_API_BASE}/create-deposit", json={"username": acc_name, "amount": amount}, timeout=30)
-                    if rr.status_code == 200:
-                        result = rr.json()
-                        if result.get("ok"):
-                            order_id = result.get("order_id", "N/A")
-                            # Bỏ log DEPOSIT OK
-                            # Lưu vào cache sau khi tạo lệnh thành công
-                            cache = load_deposit_cache()
-                            cache[acc_name] = time.time()
-                            save_deposit_cache(cache)
-                            # Bỏ log CACHE lưu
-                        else:
-                            error = result.get("error", "Unknown error")
-                            # Bỏ log DEPOSIT FAILED
-                    else:
-                        try:
-                            error_data = rr.json()
-                            error_msg = error_data.get("error", rr.text[:200])
-                        except:
-                            error_msg = rr.text[:200]
-                        # Bỏ log DEPOSIT status lỗi
-                except Exception as e:
-                    print(f"[ERROR] Deposit for {acc_name}: {e}")
+                enqueue_deposit_order(acc_name)
                     
         except Exception as e:
             print(f"[ERROR] Fetch out-of-money: {e}")
