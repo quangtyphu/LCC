@@ -340,9 +340,11 @@ def auto_deposit_for_user(user):
         # 2. Lấy MAX_ACTIVE_USERS_OUTSIDE_V2_V3 từ TIME_WINDOWS nếu có, nếu không thì dùng giá trị mặc định
         max_limit = _get_max_active_users_outside_v2_v3(config)
         
+        print(f"[INFO] Active users outside V2/V3: {active_count}/{max_limit}")
        
         # 3. Nếu đã đủ limit → skip
         if active_count >= max_limit:
+            print(f"[SKIP] Đã đủ {active_count} user ngoài V2/V3 đang active (limit: {max_limit}), không nạp thêm.")
             return
         
         # 4. Tính số user cần nạp
