@@ -322,18 +322,15 @@ def auto_deposit_for_user(user):
     config = load_config()
     if is_in_v2_v3(user, config):
         if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
-            print(f"[SKIP] {user} in V2/V3, AUTO_DEPOSIT_V2_V3 is off.")
             return
         # Check xem có thể tạo lệnh nạp không (không có lệnh treo)
         if not can_create_deposit_order(user):
-            print(f"[SKIP] {user} đang có lệnh treo trong cache, bỏ qua")
             return
         
         # Call third party deposit API for V2/V3 user (qua hàng chờ 60s)
         enqueue_deposit_order(user)
     else:
         if config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) != 1:
-            print(f"[SKIP] {user} not in V2/V3, AUTO_DEPOSIT_OUTSIDE_V2_V3 is off.")
             return
         
         # 1. Kiểm tra số user đang active ngoài V2/V3
@@ -343,16 +340,13 @@ def auto_deposit_for_user(user):
         # 2. Lấy MAX_ACTIVE_USERS_OUTSIDE_V2_V3 từ TIME_WINDOWS nếu có, nếu không thì dùng giá trị mặc định
         max_limit = _get_max_active_users_outside_v2_v3(config)
         
-        print(f"[INFO] Active users outside V2/V3: {active_count}/{max_limit}")
-        
+       
         # 3. Nếu đã đủ limit → skip
         if active_count >= max_limit:
-            print(f"[SKIP] Đã đủ {active_count} user ngoài V2/V3 đang active (limit: {max_limit}), không nạp thêm.")
             return
         
         # 4. Tính số user cần nạp
         need_deposit = max_limit - active_count
-        print(f"[INFO] Cần nạp thêm {need_deposit} user để đạt limit {max_limit}")
         
         # 5. Lấy danh sách user "Hết Tiền" từ API
         try:
@@ -394,16 +388,13 @@ def auto_deposit_for_user(user):
                     break
             
             if not users_to_deposit:
-                print(f"[SKIP] Không có user nào trong danh sách 'Hết Tiền' để nạp")
                 return
             
-            print(f"[INFO] Sẽ nạp tiền cho {len(users_to_deposit)} user: {users_to_deposit}")
             
             # 8. Nạp tiền cho từng user
             for acc_name in users_to_deposit:
                 # Check xem có thể tạo lệnh nạp không (không có lệnh treo)
                 if not can_create_deposit_order(acc_name):
-                    print(f"[SKIP] {acc_name} đang có lệnh treo trong cache, bỏ qua")
                     continue
                 
                 # Xác định loại user để log
