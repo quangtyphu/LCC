@@ -302,6 +302,8 @@ if __name__ == "__main__":
     import threading
     from v2_v3_swapper import auto_swap_v2_v3_scheduler
     from auto_deposit_on_out_of_money import reset_deposit_cache, start_periodic_check
+    from daily_active_no_deposit_scheduler import auto_active_no_deposit_scheduler
+    from streak_deposit_scheduler import auto_het_tien_streak_scheduler
     
     # Reset cache khi khởi động chương trình (giống như pending_withdrawals reset về {})
     print("[INIT] Đang reset deposit cache...", flush=True)
@@ -317,6 +319,10 @@ if __name__ == "__main__":
     threading.Thread(target=run_third_party_handler, daemon=True).start()
     # Chạy auto swap V2/V3 scheduler ở thread riêng
     threading.Thread(target=auto_swap_v2_v3_scheduler, daemon=True).start()
+    # Chạy scheduler nạp tiền user chưa nạp hôm nay (23:00)
+    threading.Thread(target=auto_active_no_deposit_scheduler, daemon=True).start()
+    # Chạy scheduler nạp tiền cho user Hết Tiền có streak (22:00-23:30)
+    threading.Thread(target=auto_het_tien_streak_scheduler, daemon=True).start()
     # Chạy watcher_loop như cũ
     try:
         asyncio.run(watcher_loop())

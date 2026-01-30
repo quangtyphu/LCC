@@ -2,6 +2,8 @@ import json
 import asyncio
 import requests
 import time
+import contextlib
+from get_balance import get_balance as fetch_balance
 from constants import allowed_events, active_ws
 import constants  # dùng constants.session_seen (tránh global cục bộ)
 from chiaTien_Acc import run_assigner, enqueue_bets
@@ -45,6 +47,49 @@ def update_balance(user, balance, *, silent=False):
             print(f"⚠️ Lỗi update balance API: {r.text}", flush=True)
     except Exception as e:
         print(f"⚠️ Không kết nối được API users: {e}", flush=True)
+
+# ------------------- Yêu cầu refresh balance qua WS -------------------
+def request_balance_refresh(user, reason=""):
+    entry = active_ws.get(user)
+    if not entry:
+        return
+    entry["poke_balance"] = True
+    if reason:
+        print(f"🔎 [{user}] {reason} -> yêu cầu your-info để cập nhật balance", flush=True)
+    else:
+        print(f"🔎 [{user}] Yêu cầu your-info để cập nhật balance", flush=True)
+
+
+async def refresh_balance_via_api(user, reason=""):
+    if reason:
+        print(f"🔎 [{user}] {reason} -> gọi get_balance API", flush=True)
+    else:
+        print(f"🔎 [{user}] Gọi get_balance API", flush=True)
+    try:
+        result = await asyncio.to_thread(lambda: fetch_balance(user))
+    except Exception as e:
+        print(f"⚠️ [{user}] get_balance lỗi: {e}", flush=True)
+        result = {"ok": False}
+    if not result or not result.get("ok"):
+        # fallback: poke WS your-info
+        request_balance_refresh(user, "get_balance thất bại")
+        return
+    balance = result.get("balance")
+    print(f"✅ [{user}] get_balance OK: {balance}", flush=True)
+
+
+async def _check_bet_success_later(user, session_id, delay_sec=30):
+    await asyncio.sleep(delay_sec)
+    entry = active_ws.get(user)
+    if not entry:
+        return
+    pending = entry.get("pending_bet")
+    if not pending or pending.get("session_id") != session_id:
+        return
+    if pending.get("resolved"):
+        return
+    pending["resolved"] = True
+    asyncio.create_task(refresh_balance_via_api(user, "Không thấy bet-result"))
 
 # ------------------- Cập nhật streak -------------------
 def update_streak(username, result):
@@ -125,6 +170,7 @@ async def handle_event(user, msg):
             if constants.session_seen == session_id:
                 return
             constants.session_seen = session_id
+            session_started_at = time.time()
             print(f"🆕 [{user}] xử lý phiên {session_id}", flush=True)
 
             # --- Kiểm tra phiên trước để update lost nếu chưa nhận win ---
@@ -170,6 +216,23 @@ async def handle_event(user, msg):
                                 pass
                         # Tạo task enqueue_bets chỉ cho user này
                         entry_u["assign_task"] = asyncio.create_task(enqueue_bets([(u, amount, door, delay)]))
+                        # Gắn pending bet để check nếu không có bet-result
+                        entry_u["pending_bet"] = {
+                            "session_id": session_id,
+                            "assigned_at": time.time(),
+                            "amount": amount,
+                            "door": door,
+                            "resolved": False,
+                        }
+                        old_check = entry_u.pop("pending_bet_task", None)
+                        if old_check and not old_check.done():
+                            old_check.cancel()
+                            with contextlib.suppress(Exception):
+                                await old_check
+                        delay_sec = max(0, 30 - (time.time() - session_started_at))
+                        entry_u["pending_bet_task"] = asyncio.create_task(
+                            _check_bet_success_later(u, session_id, delay_sec=delay_sec)
+                        )
 
             # --- Lưu user cược của phiên hiện tại ---
             # lưu CHỈ username (chuỗi) để dễ xoá khi có win
@@ -182,6 +245,9 @@ async def handle_event(user, msg):
             post_balance = data.get("postBalance")
 
             update_balance(user, post_balance, silent=True)
+            entry_u = active_ws.get(user)
+            if entry_u and entry_u.get("pending_bet"):
+                entry_u["pending_bet"]["resolved"] = True
 
             if post_balance is not None:
                 print(
@@ -201,6 +267,44 @@ async def handle_event(user, msg):
 
             record_bet(user, game="LC79", amount=amount, door=bet_label,
                        status="success", balance=post_balance)
+
+        elif event == "bet_refund":
+            amount = data.get("amount")
+            bet_type = data.get("type", "").upper()
+            bet_label = "Tài" if bet_type == "TAI" else "Xỉu"
+            post_balance = data.get("postBalance") or data.get("balance")
+
+            update_balance(user, post_balance, silent=True)
+            entry_u = active_ws.get(user)
+            matched_pending = False
+            if entry_u and entry_u.get("pending_bet"):
+                pending = entry_u["pending_bet"]
+                pending_door = str(pending.get("door") or "").upper()
+                pending_amount = pending.get("amount")
+                if pending_door == bet_type and (pending_amount is None or pending_amount == amount):
+                    pending["resolved"] = True
+                    matched_pending = True
+                else:
+                    print(
+                        f"⚠️ [{user}] Bet refund không khớp pending "
+                        f"(pending={pending_door} {pending_amount}, refund={bet_type} {amount})",
+                        flush=True
+                    )
+
+            print(
+                f"⚠️ [{user.ljust(15)}] "
+                f"Bet refund {bet_label.ljust(4)} "
+                f"- {str(amount).rjust(8)} "
+                f"| Balance={str(post_balance).rjust(10)}",
+                flush=True
+            )
+
+            record_bet(user, game="LC79", amount=amount, door=bet_label,
+                       status="refund", balance=post_balance)
+
+            # Chỉ refresh nếu thiếu post_balance và refund khớp pending
+            if post_balance is None and matched_pending:
+                asyncio.create_task(refresh_balance_via_api(user, "Bet refund"))
 
         elif event == "won-session":
             balance = data.get("balance")

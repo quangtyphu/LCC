@@ -54,6 +54,19 @@ def _update_record(record):
         timeout=5,
     )
 
+def _error_details(error_message):
+    return {
+        "ok": False,
+        "error": error_message,
+        "saved_count": 0,
+        "skipped": 0,
+        "saved": [],
+        "matched_tx": None,
+        "updated": False,
+        "updated_tx": None,
+        "transactions": [],
+    }
+
 def check_withdraw_history(
     username,
     withdraw_id=None,
@@ -84,7 +97,10 @@ def check_withdraw_history(
     # Không lọc status
     resp = game_request_with_retry(username, "GET", api_url, params=params)
     if not resp or resp.status_code != 200:
-        print(f"❌ [{username}] Lỗi lấy lịch sử: {resp.status_code if resp else 'No response'}", flush=True)
+        error_message = f"Lỗi lấy lịch sử: {resp.status_code if resp else 'No response'}"
+        print(f"❌ [{username}] {error_message}", flush=True)
+        if return_details:
+            return _error_details(error_message)
         return False
     try:
         transactions_raw = resp.json()
@@ -99,7 +115,10 @@ def check_withdraw_history(
                 "reason": tx.get("reason")
             })
     except Exception as e:
-        print(f"❌ [{username}] Lỗi parse lịch sử: {e}", flush=True)
+        error_message = f"Lỗi parse lịch sử: {e}"
+        print(f"❌ [{username}] {error_message}", flush=True)
+        if return_details:
+            return _error_details(error_message)
         return False
 
     # Lọc hoặc lấy giao dịch mới nhất

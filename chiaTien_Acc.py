@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from chiaTien_Tho import distribute_for_devices
 from constants import active_ws, load_config
 from telegram_notifier import send_telegram
+from auto_withdraw_on_won_session import is_user_waiting_to_withdraw
 
 API_BASE = "http://127.0.0.1:3000"  # server.js
 
@@ -533,9 +534,15 @@ def assign_bets(
             # fallback an toàn
             after, chosen, _bal = random.choice(candidates)
 
-        # ----- Áp dụng quy tắc "dư < 10k thì đánh hết" (giữ nguyên như bản trước) -----
         current_bal = balances[chosen]
-        if current_bal - amount < 10000:
+        cfg = load_config()
+        try:
+            all_in_flag = int(cfg.get("ALL_IN_IF_REMAIN_LT_10K", 1))
+        except Exception:
+            all_in_flag = 1
+
+        # ----- Áp dụng quy tắc "dư < 10k thì đánh hết" (tắt nếu config = 0) -----
+        if all_in_flag == 1 and current_bal - amount < 10000:
             amount = current_bal
             after = 0
 
@@ -568,6 +575,11 @@ def run_assigner(online_users: List[str], strategy: int = None) -> List[Tuple[st
     if w.get("PAUSE"):
         msg = "⏸️ PAUSE theo khung giờ: không chạy run_assigner."
         print(msg)
+        return []
+
+    # Lọc user đang chờ rút để không đặt cược nữa
+    online_users = [u for u in online_users if not is_user_waiting_to_withdraw(u)]
+    if not online_users:
         return []
 
     # Lấy strategy theo giờ nếu caller không truyền

@@ -38,6 +38,7 @@ def deposit_full_process(username: str, amount: int) -> dict:
             "username": username,
             "amount": amount,
             "accountNumber": payload.get('receiver', ''),
+            "bank": payload.get('type', ''),
             "accountHolder": payload.get('name', ''),
             "transferContent": payload.get('msg', ''),
             "qrBase64": payload.get('qr_base64') or payload.get('qr', ''),
@@ -271,6 +272,7 @@ def save_deposit_to_db(username: str, api_result: dict, status: str = "pending",
         "username": username,
         "amount": amount,
         "accountNumber": payload.get("receiver", ""),
+        "bank": payload.get("type", ""),
         "accountHolder": payload.get("name", ""),
         "transferContent": payload.get("msg", ""),
     }
@@ -331,6 +333,7 @@ if __name__ == "__main__":
                     "username": username,
                     "amount": amount,
                     "accountNumber": payload.get('receiver', ''),
+                    "bank": payload.get('type', ''),
                     "accountHolder": payload.get('name', ''),
                     "transferContent": payload.get('msg', ''),
                     "qrBase64": payload.get('qr_base64') or payload.get('qr', ''),
@@ -395,6 +398,7 @@ if __name__ == "__main__":
                     print("✅ Nạp thành công (đã lưu lệnh pending).", flush=True)
                     print(f"   Username: {u}", flush=True)
                     print(f"   STK nhận: {payload.get('receiver', '')}", flush=True)
+                    print(f"   Ngân hàng: {payload.get('type', '')}", flush=True)
                     print(f"   Tên: {payload.get('name', '')}", flush=True)
                     print(f"   NDCK: {payload.get('msg', '')}", flush=True)
                     print(f"   Ảnh QR: {img_path}", flush=True)

@@ -1,0 +1,104 @@
+"""
+Scheduler nạp tiền cho user Hết Tiền có streak >= min trong ngày
+chạy trong khoảng 22:00 - 23:30.
+"""
+
+import time
+from datetime import datetime
+
+import requests
+
+from constants import load_config
+from auto_deposit_on_out_of_money import (
+    can_create_deposit_order,
+    enqueue_deposit_order,
+    is_in_v2_v3,
+    _is_v2_auto_deposit_blocked,
+)
+
+API_BASE = "http://127.0.0.1:3000"
+
+
+def _normalize_username(item) -> str:
+    if isinstance(item, dict):
+        return str(item.get("username") or item.get("user") or item.get("id") or "").strip()
+    return str(item).strip()
+
+
+def fetch_het_tien_streak_users(min_streak: int):
+    try:
+        r = requests.get(
+            f"{API_BASE}/api/users/het-tien-streak",
+            params={"min": min_streak},
+            timeout=8
+        )
+        if r.status_code != 200:
+            print(f"[STREAK] ❌ API het-tien-streak lỗi: {r.status_code}", flush=True)
+            return []
+        data = r.json()
+        items = data.get("data", data) if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            return []
+        users = []
+        for item in items:
+            u = _normalize_username(item)
+            if u:
+                users.append(u)
+        return users
+    except Exception as e:
+        print(f"[STREAK] ❌ Lỗi gọi het-tien-streak: {e}", flush=True)
+        return []
+
+
+def deposit_het_tien_streak_users():
+    config = load_config()
+    if not config:
+        print("[STREAK] ❌ Không đọc được config", flush=True)
+        return
+
+    min_streak = int(config.get("HET_TIEN_STREAK_MIN", 5) or 5)
+    users = fetch_het_tien_streak_users(min_streak)
+    if not users:
+        return
+
+    for user in users:
+        if is_in_v2_v3(user, config):
+            if user in config.get("PRIORITY_USERS_V2", []) and _is_v2_auto_deposit_blocked(config):
+                continue
+            if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
+                continue
+        else:
+            if config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) != 1:
+                continue
+
+        # Chờ nạp / đang nạp -> bỏ qua
+        if not can_create_deposit_order(user):
+            continue
+
+        enqueue_deposit_order(user)
+
+
+def auto_het_tien_streak_scheduler(interval_seconds=300):
+    """
+    Chạy mỗi interval_seconds trong khoảng 22:00 - 23:30.
+    """
+    print("[STREAK] 🕐 Đã khởi động scheduler (22:00-23:30)", flush=True)
+    last_run_at = 0.0
+
+    while True:
+        try:
+            now = datetime.now()
+            current_time = now.strftime("%H:%M")
+
+            in_window = ("22:00" <= current_time < "23:30")
+            if in_window:
+                if time.time() - last_run_at >= interval_seconds:
+                    deposit_het_tien_streak_users()
+                    last_run_at = time.time()
+
+            time.sleep(60)
+
+        except Exception as e:
+            print(f"[STREAK] ❌ Lỗi scheduler: {e}", flush=True)
+            time.sleep(60)
+
