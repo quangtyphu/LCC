@@ -205,7 +205,8 @@ def enqueue_deposit_order(user):
 def is_in_v2_v3(user, config):
     v2 = config.get("PRIORITY_USERS_V2", [])
     v3 = config.get("PRIORITY_USERS_V3", [])
-    return user in v2 or user in v3
+    p1 = config.get("PRIORITY_USERS", [])
+    return user in v2 or user in v3 or user in p1
 
 def random_amount():
     return random.choice([i for i in range(200_000, 300_000, 10_000)])
@@ -285,8 +286,8 @@ def get_all_users_from_config(config):
 
 def get_active_users_outside_v2_v3(config):
     """
-    Gọi API /api/active-users-with-deposits và lọc ra các user ngoài V2/V3.
-    Returns: list of usernames (strings) ngoài V2/V3
+    Gọi API /api/active-users-with-deposits và lọc ra các user ngoài V2/V3/PRIORITY_USERS.
+    Returns: list of usernames (strings) ngoài V2/V3/PRIORITY_USERS
     """
     try:
         r = requests.get(f"{API_BASE}/api/active-users-with-deposits", timeout=5)
@@ -299,9 +300,10 @@ def get_active_users_outside_v2_v3(config):
         
         v2 = config.get("PRIORITY_USERS_V2", [])
         v3 = config.get("PRIORITY_USERS_V3", [])
-        v2_v3_set = set([u for u in v2 + v3 if u and u.strip()])
+        p1 = config.get("PRIORITY_USERS", [])
+        v2_v3_set = set([u for u in v2 + v3 + p1 if u and u.strip()])
         
-        # Lọc user ngoài V2/V3
+        # Lọc user ngoài V2/V3/PRIORITY_USERS
         outside_users = []
         for user_item in users:
             # Parse username từ response (có thể là string hoặc dict)
@@ -333,7 +335,7 @@ def auto_deposit_for_user(user):
         if config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) != 1:
             return
         
-        # 1. Kiểm tra số user đang active ngoài V2/V3
+        # 1. Kiểm tra số user đang active ngoài V2/V3/PRIORITY_USERS
         active_outside_users = get_active_users_outside_v2_v3(config)
         active_count = len(active_outside_users)
         
@@ -361,7 +363,8 @@ def auto_deposit_for_user(user):
             accounts = data if isinstance(data, list) else data.get("data", [])
             v2 = config.get("PRIORITY_USERS_V2", [])
             v3 = config.get("PRIORITY_USERS_V3", [])
-            v2_v3_set = set([u for u in v2 + v3 if u and u.strip()])
+            p1 = config.get("PRIORITY_USERS", [])
+            v2_v3_set = set([u for u in v2 + v3 + p1 if u and u.strip()])
             
             # 6. Duyệt danh sách từ đầu, nạp V2/V3 và đủ số lượng outside
             users_to_deposit = []
@@ -400,7 +403,7 @@ def auto_deposit_for_user(user):
                     continue
                 
                 # Xác định loại user để log
-                user_type = "V2/V3" if acc_name in v2_v3_set else "outside V2/V3"
+                user_type = "V2/V3/PRIORITY" if acc_name in v2_v3_set else "outside V2/V3/PRIORITY"
                 enqueue_deposit_order(acc_name)
                     
         except Exception as e:
@@ -411,16 +414,17 @@ def periodic_check_all_users():
     Hàm check định kỳ mỗi 5 phút:
     - Gọi API /api/accounts/out-of-money để lấy user có trạng thái "Hết Tiền"
     - So sánh với config để lấy user cần nạp tiền
-    - Phân loại V2/V3 và outside, xử lý theo logic riêng
+    - Phân loại V2/V3/PRIORITY và outside, xử lý theo logic riêng
     """
     
     try:
         config = load_config()
         
-        # Lấy danh sách V2/V3 từ config để phân loại
+        # Lấy danh sách V2/V3/PRIORITY từ config để phân loại
         v2 = config.get("PRIORITY_USERS_V2", [])
         v3 = config.get("PRIORITY_USERS_V3", [])
-        v2_v3_set = set([u for u in v2 + v3 if u and u.strip()])
+        p1 = config.get("PRIORITY_USERS", [])
+        v2_v3_set = set([u for u in v2 + v3 + p1 if u and u.strip()])
         
         
         # Gọi API để lấy danh sách user có trạng thái "Hết Tiền"
@@ -437,7 +441,7 @@ def periodic_check_all_users():
                 return
             
             
-            # Phân loại user: V2/V3 và outside (lấy TẤT CẢ user từ API, không filter theo config)
+            # Phân loại user: V2/V3/PRIORITY và outside (lấy TẤT CẢ user từ API, không filter theo config)
             v2_v3_users = []
             outside_users = []
             
@@ -451,15 +455,15 @@ def periodic_check_all_users():
                 if not acc_name:
                     continue
                 
-                # Phân loại V2/V3 hoặc outside dựa vào config
+                # Phân loại V2/V3/PRIORITY hoặc outside dựa vào config
                 if acc_name in v2_v3_set:
                     v2_v3_users.append(acc_name)
                 else:
-                    # Tất cả user không phải V2/V3 đều là outside
+                    # Tất cả user không phải V2/V3/PRIORITY đều là outside
                     outside_users.append(acc_name)
             
             
-            # ========== Xử lý V2/V3 ==========
+            # ========== Xử lý V2/V3/PRIORITY ==========
             if v2_v3_users:
                 if config.get("AUTO_DEPOSIT_V2_V3", 0) == 1:
                     for user in v2_v3_users:
@@ -471,7 +475,7 @@ def periodic_check_all_users():
                             # Nếu không có trong cache → gọi auto_deposit_for_user
                             auto_deposit_for_user(user)
                         except Exception as e:
-                            print(f"[PERIODIC] Lỗi khi nạp tiền cho {user} (V2/V3): {e}")
+                            print(f"[PERIODIC] Lỗi khi nạp tiền cho {user} (V2/V3/PRIORITY): {e}")
             
             # ========== Xử lý outside ==========
             if outside_users:
