@@ -8,6 +8,7 @@ from constants import allowed_events, active_ws
 import constants  # dùng constants.session_seen (tránh global cục bộ)
 from chiaTien_Acc import run_assigner, enqueue_bets
 from auto_withdraw_on_won_session import handle_won_session_auto_withdraw
+from jackpot_history_notifier import check_and_notify_jackpot
 
 API_BASE = "http://127.0.0.1:3000"  # URL server.js của bạn
 
@@ -234,9 +235,25 @@ async def handle_event(user, msg):
                             _check_bet_success_later(u, session_id, delay_sec=delay_sec)
                         )
 
+            # --- Lưu tổng cược theo phiên (dùng cho thông báo nổ hũ) ---
+            try:
+                total_tai = sum(amt for (_, amt, door, _) in final_bets if str(door).upper() == "TAI")
+                total_xiu = sum(amt for (_, amt, door, _) in final_bets if str(door).upper() == "XIU")
+                total_any = max(total_tai, total_xiu)
+                constants.session_bet_totals[session_id] = {
+                    "tai": int(total_tai),
+                    "xiu": int(total_xiu),
+                    "total": int(total_any),
+                }
+                if len(constants.session_bet_totals) > 500:
+                    constants.session_bet_totals.clear()
+            except Exception:
+                pass
+
             # --- Lưu user cược của phiên hiện tại ---
             # lưu CHỈ username (chuỗi) để dễ xoá khi có win
             prev_session_users[session_id] = [str(u) for u, *_ in final_bets]
+
 
         elif event == "bet-result":
             amount = data.get("amount")
@@ -316,6 +333,17 @@ async def handle_event(user, msg):
                        amount=data.get("amount", 0),
                        door=data.get("door", ""),
                        status="won", balance=balance, prize=prize, dices=dices)
+            # Fallback: check 111/666 on won-session, then notify jackpot
+            try:
+                dices_str = "".join(str(int(x)) for x in dices) if isinstance(dices, (list, tuple)) else ""
+                if dices_str in ("111", "666"):
+                    session_payload = dict(data) if isinstance(data, dict) else {}
+                    if "session_id" not in session_payload and "sessionId" not in session_payload:
+                        if hasattr(constants, "last_session_id"):
+                            session_payload["session_id"] = constants.last_session_id
+                    asyncio.create_task(asyncio.to_thread(check_and_notify_jackpot, user, session_payload))
+            except Exception as e:
+                print(f"⚠️ [{user}] Lỗi xử lý won-session jackpot: {e}", flush=True)
             # --- Xoá user khỏi list prev_session_users để không bị delayed lost ---
             if hasattr(constants, "last_session_id") and constants.last_session_id in prev_session_users:
                 if user in prev_session_users[constants.last_session_id]:
@@ -329,14 +357,3 @@ async def handle_event(user, msg):
                 print(f"❌ [{user}] Lỗi auto withdraw: {e}")
                 import traceback
                 traceback.print_exc()
-
-        elif event == "lost-session":
-            balance = data.get("balance")
-            prize = data.get("prize", 0)
-            dices = data.get("dices", [])
-            update_balance(user, balance, silent=True)
-            print(f"🎲 [{user}] Thua phiên | Dices={dices} | Prize={prize} | Balance={balance}", flush=True)
-            record_bet(user, game="LC79",
-                       amount=data.get("amount", 0),
-                       door=data.get("door", ""),
-                       status="lost", balance=balance, prize=prize, dices=dices)

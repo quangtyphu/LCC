@@ -61,7 +61,9 @@ def deposit_active_no_deposit_users():
             continue
 
         if is_in_v2_v3(user, config):
-            if user in config.get("PRIORITY_USERS_V2", []) and _is_v2_auto_deposit_blocked(config):
+            v2_users = config.get("PRIORITY_USERS_V2", [])
+            v3_users = config.get("PRIORITY_USERS_V3", [])
+            if (user in v2_users or user in v3_users) and _is_v2_auto_deposit_blocked(config):
                 continue
             if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
                 continue

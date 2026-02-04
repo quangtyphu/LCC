@@ -1,4 +1,4 @@
-def deposit_full_process(username: str, amount: int) -> dict:
+def deposit_full_process(username: str, amount: int, track_history: bool = True) -> dict:
     """
     Thực hiện đầy đủ quy trình nạp tiền:
     - Gọi deposit
@@ -23,7 +23,7 @@ def deposit_full_process(username: str, amount: int) -> dict:
     img_path = save_qr_image(payload, username)
     # Bỏ log order_id
     # Tracking giao dịch (nếu lưu DB thành công)
-    if saved and order_id:
+    if track_history and saved and order_id:
         transfer_content = payload.get('msg', '')
         import threading
         threading.Thread(
@@ -181,7 +181,12 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
                     if tx_content == transfer_content and tx_amount == expected_amount:
                         # Cập nhật trạng thái order sang COMPLETED
                         if update_deposit_order_status(order_id, "Thành Công"):
-                            pass
+                            # Chỉ xóa cache khi đã confirm tiền vào (Thành Công)
+                            try:
+                                from auto_deposit_on_out_of_money import remove_from_deposit_cache
+                                remove_from_deposit_cache(username)
+                            except Exception as e:
+                                print(f"⚠️ [{username}] Không xóa được khỏi cache: {e}")
                         else:
                             print(f"⚠️ [{username}] Không cập nhật được trạng thái order")
                         
@@ -207,6 +212,12 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
     
     if update_deposit_order_status(order_id, "Thất Bại"):
         print(f"❌ [{username}] Đã cập nhật lệnh nạp #{order_id} → Thất Bại")
+        # Thất bại thì xóa cache để cho phép tạo lại
+        try:
+            from auto_deposit_on_out_of_money import remove_from_deposit_cache
+            remove_from_deposit_cache(username)
+        except Exception as e:
+            print(f"⚠️ [{username}] Không xóa được khỏi cache: {e}")
         
         # Gửi thông báo Telegram khi thất bại
         try:

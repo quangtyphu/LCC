@@ -14,6 +14,9 @@ active_ws = {}
 # Task global chịu trách nhiệm enqueue cho 1 phiên
 assign_task = None
 
+# Lưu tổng cược theo phiên: {session_id: {"tai": int, "xiu": int, "total": int}}
+session_bet_totals = {}
+
 # Lock để tránh race khi nhiều connection cùng tạo/hủy assign_task
 import asyncio
 assign_lock = asyncio.Lock()

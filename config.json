@@ -1,8 +1,8 @@
 {
   "ASSIGN_STRATEGY": 11,
   "PRIORITY_USERS": ["", "", "", "", ""],
-  "PRIORITY_USERS_V3": ["nohdinaoz1", "kimsangxic", "saomoinoia2", "khoailangxanh", "gautrangzz", "khongcoten123", "fulnex", "kexumi", "changbiettengi", "", "", "", "", ""],
-  "PRIORITY_USERS_V2": ["gaunguyencon", "maimaikkk", "ZeroMind", "contutuzz", "duachuotbb", "chidau32432", "mekiep32432", "cusuhaoz1", "lanokuzz", "", "", "", "", "", ""],
+  "PRIORITY_USERS_V3": ["gaunguyencon", "maimaikkk", "ZeroMind", "contutuzz", "duachuotbb", "chidau32432", "mekiep32432", "cusuhaoz1", "lanokuzz", "", "", "", "", "", ""],
+  "PRIORITY_USERS_V2": ["nohdinaoz1", "kimsangxic", "saomoinoia2", "khoailangxanh", "gautrangzz", "khongcoten123", "fulnex", "kexumi", "changbiettengi", "", "", "", "", ""],
   "AUTO_DEPOSIT_V2_V3": 1,
   "AUTO_DEPOSIT_OUTSIDE_V2_V3": 1,
   "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 0,
@@ -15,7 +15,7 @@
   },
   "V2_TIME_RULES": [
     {
-      "start": "23:40",
+      "start": "23:45",
       "end": "23:59",
       "auto_deposit_allow": 0,
       "withdraw_min": 310000,
@@ -38,6 +38,6 @@
     {"start": "23:00", "end": "23:30", "PRIORITY_USERS": [], "BET_RANGE": {"START": 100, "STOP": 301, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 0},
     {"start": "23:30", "end": "23:59", "PRIORITY_USERS": [], "BET_RANGE": {"START": 100, "STOP": 301, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 0}
   ],
-  "LAST_SWAP_DATE": "2026-02-02",
-  "LAST_ACTIVE_NO_DEPOSIT_RUN": "2026-02-02"
+  "LAST_SWAP_DATE": "2026-02-03",
+  "LAST_ACTIVE_NO_DEPOSIT_RUN": "2026-02-03"
 }

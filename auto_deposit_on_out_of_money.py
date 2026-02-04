@@ -214,7 +214,7 @@ def random_amount():
 
 def _is_v2_auto_deposit_blocked(cfg: dict) -> bool:
     """
-    Trả True nếu trong khung giờ V2 không cho auto nạp.
+    Trả True nếu trong khung giờ V2_TIME_RULES không cho auto nạp (áp dụng V2/V3).
     """
     from datetime import datetime as dt
     tz = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -352,7 +352,9 @@ def auto_deposit_for_user(user):
     if is_in_v2_v3(user, config):
         if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
             return
-        if user in config.get("PRIORITY_USERS_V2", []) and _is_v2_auto_deposit_blocked(config):
+        v2_users = config.get("PRIORITY_USERS_V2", [])
+        v3_users = config.get("PRIORITY_USERS_V3", [])
+        if (user in v2_users or user in v3_users) and _is_v2_auto_deposit_blocked(config):
             return
         # Check xem có thể tạo lệnh nạp không (không có lệnh treo)
         if not can_create_deposit_order(user):

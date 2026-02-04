@@ -37,6 +37,18 @@ pending_worker_thread: Optional[threading.Thread] = None
 
 # ================= HELPER FUNCTIONS =================
 
+def _is_pending_worker_enabled() -> bool:
+    """
+    Cho phép worker tự retry pending hay không.
+    Mặc định tắt để chỉ rút khi có won-session.
+    """
+    config = load_config()
+    try:
+        return int(config.get("AUTO_WITHDRAW_PENDING_WORKER", 0)) == 1
+    except Exception:
+        return False
+
+
 def load_config() -> dict:
     """Lấy cấu hình từ config.json"""
     try:
@@ -68,10 +80,9 @@ def get_withdraw_threshold(group: str = "DEFAULT") -> int:
     config = load_config()
 
     if group in ("V2", "V3"):
-        if group == "V2":
-            v2_min = _get_v2_withdraw_min(config)
-            if v2_min is not None:
-                return v2_min
+        v2_min = _get_v2_withdraw_min(config)
+        if v2_min is not None:
+            return v2_min
         return int(config.get("WITHDRAW_THRESHOLD_MIN_V1", config.get("WITHDRAW_THRESHOLD_MIN", 300000)))
 
     return int(config.get("WITHDRAW_THRESHOLD_MIN", 300000))
@@ -79,7 +90,7 @@ def get_withdraw_threshold(group: str = "DEFAULT") -> int:
 
 def _get_v2_withdraw_min(cfg: dict) -> Optional[int]:
     """
-    Lấy min rút riêng cho V2 theo khung giờ (nếu có).
+    Lấy min rút theo khung giờ V2_TIME_RULES (áp dụng cho V2/V3).
     """
     from datetime import datetime as dt
     tz = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -250,6 +261,7 @@ def _mark_pending_ready(username: str, balance: int, reason: str = "balance_read
         "reason": reason,
         "last_balance": balance,
     }
+    # Luôn bật worker khi có pending để đảm bảo retry rút
     _ensure_pending_worker_running()
     return amount
 
@@ -291,18 +303,21 @@ def _process_pending_withdrawals():
     )
 
     for username, pending in candidates:
-        status = pending.get("status") or ("need_bet" if pending.get("target_total_bet") else "ready")
-        if status == "need_bet":
-            target_bet = pending.get("target_total_bet")
-            if not target_bet:
-                continue
-            if not if_user_reached_bet_target(username, target_bet):
-                continue
+        status = pending.get("status") or "ready"
+        if status != "ready":
+            _cancel_pending_withdrawal(username, f"invalid pending status: {status}")
+            continue
 
         # Lấy balance mới nhất nếu có
         balance = _get_latest_balance(username)
         if balance is None:
             balance = pending.get("last_balance", 0)
+
+        # Không rút nếu balance chưa đạt ngưỡng (theo group)
+        user_group = get_user_group(username)
+        threshold = get_withdraw_threshold(user_group)
+        if balance <= threshold:
+            continue
 
         amount = find_nearest_withdraw_amount(balance) or pending.get("amount")
         if not amount:
@@ -314,37 +329,10 @@ def _process_pending_withdrawals():
         if result.get("cooldown"):
             return
 
-        if result.get("ok"):
+        # Đã thực hiện lệnh rút => xóa khỏi pending để user chơi tiếp
+        if username in pending_withdrawals:
             del pending_withdrawals[username]
-            return
-
-        # Nếu lỗi -10 thì cập nhật pending sang cần cược thêm
-        response_data = result.get("response", {})
-        error_code = response_data.get("code")
-        full_message = response_data.get("message", "")
-
-        if error_code == -14:
-            _cancel_pending_withdrawal(username, "[-14] Số dư không đủ")
-            continue
-
-        if error_code == -10 and "chưa đủ điều kiện" in str(full_message).lower():
-            required_additional = parse_required_bet_from_error(full_message)
-            if required_additional and required_additional > 0:
-                current_total = get_total_bet_for_user(username)
-                target_total_bet = current_total + required_additional
-                pending_withdrawals[username] = {
-                    "amount": amount,
-                    "target_total_bet": target_total_bet,
-                    "added_at": time.time(),
-                    "status": "need_bet",
-                    "reason": "need_bet_after_-10",
-                    "last_balance": balance,
-                }
-            continue
-
-        # Lỗi khác: giữ pending để thử lại sau
-        _cancel_pending_withdrawal(username, f"Code {error_code}")
-        continue
+        return
 
 # ================= WITHDRAW LOGIC =================
 
@@ -377,86 +365,15 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
     # 4. CHECK: User có trong pending list không?
     if username in pending_withdrawals:
         pending = pending_withdrawals[username]
-        status = pending.get("status") or ("need_bet" if pending.get("target_total_bet") else "ready")
+        status = pending.get("status") or "ready"
+        if status != "ready":
+            _cancel_pending_withdrawal(username, f"invalid pending status: {status}")
+            return {
+                "ok": True,
+                "withdrew": False,
+                "message": "Pending status không hợp lệ, đã hủy"
+            }
 
-        if status == "need_bet":
-            target_bet = pending.get("target_total_bet")
-            if not target_bet:
-                return {
-                    "ok": False,
-                    "withdrew": False,
-                    "error": "Pending list thiếu target_total_bet"
-                }
-
-            # Check xem đã đủ cược chưa
-            if if_user_reached_bet_target(username, target_bet):
-                # Đủ rồi → Tính lại amount từ balance MỚI
-                amount = find_nearest_withdraw_amount(balance)
-                if not amount:
-                    return {
-                        "ok": False,
-                        "withdrew": False,
-                        "error": f"Balance {balance:,} quá cao hoặc quá thấp"
-                    }
-                
-                try:
-                    result = _withdraw_with_global_cooldown(username, amount)
-                    if result.get("cooldown"):
-                        _mark_pending_ready(username, balance, reason="cooldown_wait")
-                        return {
-                            "ok": True,
-                            "withdrew": False,
-                            "pending": True,
-                            "message": "Global cooldown active, added to pending list"
-                        }
-                    
-                    if result.get("ok"):
-                        # Success!
-                        
-                        # Remove from pending
-                        del pending_withdrawals[username]
-                        
-                        return {
-                            "ok": True,
-                            "withdrew": True,
-                            "amount": amount,
-                            "message": "Rút tiền thành công sau khi đủ cược"
-                        }
-                    else:
-                        # Failed again
-                        print(f"❌ [{username}] Rút tiền vẫn thất bại: {result.get('error')}")
-                        response_data = result.get("response", {})
-                        error_code = response_data.get("code")
-                        if error_code == -14:
-                            _cancel_pending_withdrawal(username, "[-14] Số dư không đủ")
-                            return {
-                                "ok": False,
-                                "withdrew": False,
-                                "error": "[-14] Số dư không đủ, hủy pending"
-                            }
-                        
-                        # Keep in pending list, user cần cược thêm nữa
-                        return {
-                            "ok": False,
-                            "withdrew": False,
-                            "error": f"Rút lại thất bại: {result.get('error')}"
-                        }
-                except Exception as e:
-                    print(f"❌ [{username}] Exception: {e}")
-                    return {
-                        "ok": False,
-                        "withdrew": False,
-                        "error": str(e)
-                    }
-            else:
-                # Chưa đủ → skip
-                return {
-                    "ok": True,
-                    "withdrew": False,
-                    "message": "Chưa đủ cược, chờ won-session tiếp theo"
-                }
-
-        # status == "ready"
         amount = find_nearest_withdraw_amount(balance) or pending.get("amount")
         if not amount:
             return {
@@ -473,17 +390,19 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
                 "pending": True,
                 "message": "Global cooldown active, added to pending list"
             }
-        if result.get("ok"):
+        # Đã thực hiện lệnh rút => xóa khỏi pending để user chơi tiếp
+        if username in pending_withdrawals:
             del pending_withdrawals[username]
+        response_data = result.get("response", {})
+        error_code = response_data.get("code")
+        full_message = response_data.get("message", "")
+        if result.get("ok") or error_code in (0, 1):
             return {
                 "ok": True,
                 "withdrew": True,
                 "amount": amount,
                 "message": "Rút tiền thành công"
             }
-        response_data = result.get("response", {})
-        error_code = response_data.get("code")
-        full_message = response_data.get("message", "")
         if error_code == -14:
             _cancel_pending_withdrawal(username, "[-14] Số dư không đủ")
             return {
@@ -492,18 +411,18 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
                 "error": "[-14] Số dư không đủ, hủy pending"
             }
         if error_code == -10 and "chưa đủ điều kiện" in str(full_message).lower():
-            required_additional = parse_required_bet_from_error(full_message)
-            if required_additional and required_additional > 0:
-                current_total = get_total_bet_for_user(username)
-                target_total_bet = current_total + required_additional
-                pending_withdrawals[username] = {
-                    "amount": amount,
-                    "target_total_bet": target_total_bet,
-                    "added_at": time.time(),
-                    "status": "need_bet",
-                    "reason": "need_bet_after_-10",
-                    "last_balance": balance,
-                }
+            _cancel_pending_withdrawal(username, "[-10] Chưa đủ điều kiện rút")
+            return {
+                "ok": False,
+                "withdrew": False,
+                "error": "[-10] Chưa đủ điều kiện rút, hủy pending"
+            }
+
+        # Lỗi khác: luôn nhả khỏi pending để user tiếp tục chơi
+        _cancel_pending_withdrawal(
+            username,
+            f"Code {error_code}" if error_code is not None else "Rút tiền thất bại"
+        )
         return {
             "ok": False,
             "withdrew": False,
@@ -549,41 +468,11 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
         
         # Check lỗi [-10]
         if error_code == -10 and "chưa đủ điều kiện" in full_message.lower():
-            # Parse required additional bet
-            required_additional = parse_required_bet_from_error(full_message)
-            
-            if required_additional and required_additional > 0:
-                # Get current total bet
-                current_total = get_total_bet_for_user(username)
-                
-                # Calculate target
-                target_total_bet = current_total + required_additional
-                
-                print(f"📊 [{username}] Lỗi [-10]: Cần cược thêm {required_additional:,}đ")
-                
-                # ADD to pending list
-                pending_withdrawals[username] = {
-                    "amount": withdraw_amount,
-                    "target_total_bet": target_total_bet,
-                    "added_at": time.time(),
-                    "status": "need_bet",
-                    "reason": "need_bet_after_-10",
-                    "last_balance": balance,
-                }
-                
-                return {
-                    "ok": True,
-                    "withdrew": False,
-                    "message": f"Added to pending list (need {required_additional:,} more)",
-                    "pending": True
-                }
-            else:
-                print(f"⚠️ [{username}] Không parse được required bet từ message")
-                return {
-                    "ok": False,
-                    "withdrew": False,
-                    "error": "Cannot parse required bet from [-10] error"
-                }
+            return {
+                "ok": False,
+                "withdrew": False,
+                "error": "[-10] Chưa đủ điều kiện rút, hủy pending"
+            }
         elif error_code == -14:
             return {
                 "ok": False,
