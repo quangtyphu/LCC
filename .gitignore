@@ -13,3 +13,4 @@ deposit_pending_cache.json
 qr_outputs/
 processed/
 queue/
+jackpot_notified/

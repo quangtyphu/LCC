@@ -21,6 +21,9 @@ WITHDRAW_AMOUNTS = [300000, 500000, 600000, 800000, 1000000, 2000000]  # VND
 # Pending list: {username: {'amount': int, 'target_total_bet': int, 'added_at': timestamp}}
 pending_withdrawals: Dict[str, Dict] = {}
 
+# Required bet list: {username: target_total_bet}
+required_bets: Dict[str, int] = {}
+
 # Success cooldown: {username: next_attempt_time}
 success_cooldowns: Dict[str, float] = {}
 SUCCESS_COOLDOWN_SECONDS = 300  # 5 phút (300 giây)
@@ -162,10 +165,13 @@ def parse_required_bet_from_error(error_message: str) -> Optional[int]:
         # Tìm pattern "vui lòng chơi thêm XXX"
         import re
         # Tìm số tiền (có thể có dấu chấm phân cách)
-        match = re.search(r'vui lòng chơi thêm\s+([\d.]+)', error_message, re.IGNORECASE)
+        match = re.search(r'vui lòng chơi thêm\s+(.+)$', error_message, re.IGNORECASE)
         if match:
-            amount_str = match.group(1).replace(".", "")
-            return int(amount_str)
+            raw = match.group(1)
+            # Giữ lại chữ số, loại bỏ dấu chấm/phẩy/khoảng trắng/NBSP
+            digits = re.sub(r"[^\d]", "", raw)
+            if digits:
+                return int(digits)
     except Exception as e:
         print(f"⚠️ Lỗi parse error message: {e}")
     
@@ -273,6 +279,29 @@ def _cancel_pending_withdrawal(username: str, reason: str = ""):
         print(f"⚠️ [AutoWithdraw][{username}] Hủy pending: {reason}")
 
 
+def _clear_pending_silent(username: str):
+    if username in pending_withdrawals:
+        del pending_withdrawals[username]
+
+
+def _set_required_bet(username: str, need_more: int):
+    if need_more <= 0:
+        return
+    current_total = get_total_bet_for_user(username)
+    required_bets[username] = current_total + need_more
+
+
+def _is_required_bet_met(username: str) -> bool:
+    target = required_bets.get(username)
+    if not target:
+        return True
+    current_total = get_total_bet_for_user(username)
+    if current_total >= target:
+        del required_bets[username]
+        return True
+    return False
+
+
 def _ensure_pending_worker_running():
     global pending_worker_thread
     if pending_worker_thread and pending_worker_thread.is_alive():
@@ -308,6 +337,20 @@ def _process_pending_withdrawals():
             _cancel_pending_withdrawal(username, f"invalid pending status: {status}")
             continue
 
+        # Nếu có target_total_bet thì chỉ rút khi đủ cược
+        target_total_bet = pending.get("target_total_bet")
+        if target_total_bet:
+            current_total = get_total_bet_for_user(username)
+            if current_total < target_total_bet:
+                continue
+        # Nếu có required_bets thì chỉ rút khi đủ cược
+        req_target = required_bets.get(username)
+        if req_target:
+            current_total = get_total_bet_for_user(username)
+            if current_total < req_target:
+                continue
+            del required_bets[username]
+
         # Lấy balance mới nhất nếu có
         balance = _get_latest_balance(username)
         if balance is None:
@@ -329,6 +372,15 @@ def _process_pending_withdrawals():
         if result.get("cooldown"):
             return
 
+        # Nếu bị [-10] thì lưu required_bets để chờ đủ cược
+        response_data = result.get("response", {}) if isinstance(result, dict) else {}
+        error_code = response_data.get("code")
+        full_message = response_data.get("message", "")
+        if error_code == -10 and "chưa đủ điều kiện" in str(full_message).lower():
+            need_more = parse_required_bet_from_error(full_message)
+            if need_more:
+                _set_required_bet(username, need_more)
+
         # Đã thực hiện lệnh rút => xóa khỏi pending để user chơi tiếp
         if username in pending_withdrawals:
             del pending_withdrawals[username]
@@ -349,7 +401,34 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
             "message": f"Balance {balance:,} <= threshold {threshold:,} (group {user_group}), skip"
         }
     
-    # 2. Calculate withdraw amount
+    # 2. Nếu đang chờ đủ cược (required_bets) -> chưa rút
+    req_target = required_bets.get(username)
+    if req_target:
+        current_total = get_total_bet_for_user(username)
+        if current_total < req_target:
+            return {
+                "ok": True,
+                "withdrew": False,
+                "pending": True,
+                "message": f"Chưa đủ cược: {current_total:,}/{req_target:,}"
+            }
+        del required_bets[username]
+
+    # 3. Nếu đã có pending -> chỉ rút khi đủ cược (nếu có target)
+    if username in pending_withdrawals:
+        pending = pending_withdrawals[username]
+        target_total_bet = pending.get("target_total_bet")
+        if target_total_bet:
+            current_total = get_total_bet_for_user(username)
+            if current_total < target_total_bet:
+                return {
+                    "ok": True,
+                    "withdrew": False,
+                    "pending": True,
+                    "message": f"Chưa đủ cược: {current_total:,}/{target_total_bet:,}"
+                }
+
+    # 4. Calculate withdraw amount
     withdraw_amount = find_nearest_withdraw_amount(balance)
     if not withdraw_amount:
         return {
@@ -362,7 +441,7 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
     if username not in pending_withdrawals:
         _mark_pending_ready(username, balance, reason="balance_ready")
     
-    # 4. CHECK: User có trong pending list không?
+    # 5. CHECK: User có trong pending list không?
     if username in pending_withdrawals:
         pending = pending_withdrawals[username]
         status = pending.get("status") or "ready"
@@ -411,11 +490,15 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
                 "error": "[-14] Số dư không đủ, hủy pending"
             }
         if error_code == -10 and "chưa đủ điều kiện" in str(full_message).lower():
-            _cancel_pending_withdrawal(username, "[-10] Chưa đủ điều kiện rút")
+            # Lưu yêu cầu cược vào kho riêng, không giữ pending
+            need_more = parse_required_bet_from_error(full_message)
+            if need_more:
+                _set_required_bet(username, need_more)
+            _clear_pending_silent(username)
             return {
                 "ok": False,
                 "withdrew": False,
-                "error": "[-10] Chưa đủ điều kiện rút, hủy pending"
+                "error": "[-10] Chưa đủ điều kiện rút, chờ đủ cược"
             }
 
         # Lỗi khác: luôn nhả khỏi pending để user tiếp tục chơi
@@ -468,10 +551,13 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
         
         # Check lỗi [-10]
         if error_code == -10 and "chưa đủ điều kiện" in full_message.lower():
+            need_more = parse_required_bet_from_error(full_message)
+            if need_more:
+                _set_required_bet(username, need_more)
             return {
                 "ok": False,
                 "withdrew": False,
-                "error": "[-10] Chưa đủ điều kiện rút, hủy pending"
+                "error": "[-10] Chưa đủ điều kiện rút, chờ đủ cược"
             }
         elif error_code == -14:
             return {

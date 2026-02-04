@@ -80,11 +80,11 @@ def deposit_het_tien_streak_users():
         enqueue_deposit_order(user)
 
 
-def auto_het_tien_streak_scheduler(interval_seconds=300):
+def auto_het_tien_streak_scheduler(interval_seconds=60):
     """
-    Chạy mỗi interval_seconds trong khoảng 22:00 - 23:30.
+    Chạy mỗi interval_seconds trong khoảng 22:00 - 23:45.
     """
-    print("[STREAK] 🕐 Đã khởi động scheduler (22:00-23:30)", flush=True)
+    print("[STREAK] 🕐 Đã khởi động scheduler (22:00-23:45)", flush=True)
     last_run_at = 0.0
 
     while True:
@@ -92,7 +92,7 @@ def auto_het_tien_streak_scheduler(interval_seconds=300):
             now = datetime.now()
             current_time = now.strftime("%H:%M")
 
-            in_window = ("22:00" <= current_time < "23:30")
+            in_window = ("22:00" <= current_time < "23:45")
             if in_window:
                 if time.time() - last_run_at >= interval_seconds:
                     deposit_het_tien_streak_users()

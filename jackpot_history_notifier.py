@@ -1,6 +1,9 @@
 import time
 import threading
 import requests
+import os
+
+from pathlib import Path
 
 from game_api_helper import game_request_with_retry
 from telegram_notifier import send_telegram
@@ -12,6 +15,7 @@ JACKPOT_API_URL = "https://wtx.tele68.com/v1/tx/jackpot-history"
 _notified_sessions: set[str] = set()
 _last_cleanup_ts = 0.0
 _notify_lock = threading.Lock()
+_NOTIFY_CACHE_DIR = Path(__file__).resolve().parent / "jackpot_notified"
 
 
 def _cleanup_notified_sessions():
@@ -22,6 +26,60 @@ def _cleanup_notified_sessions():
     _last_cleanup_ts = now
     if len(_notified_sessions) > 500:
         _notified_sessions.clear()
+    _cleanup_lock_files()
+
+
+def _session_lock_path(session_key: str) -> Path:
+    safe_key = "".join(ch for ch in str(session_key) if ch.isalnum() or ch in ("-", "_"))
+    if not safe_key:
+        safe_key = "unknown"
+    return _NOTIFY_CACHE_DIR / f"{safe_key}.lock"
+
+
+def _try_create_session_lock(session_key: str) -> bool:
+    try:
+        _NOTIFY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        lock_path = _session_lock_path(session_key)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w") as f:
+            f.write(str(time.time()))
+        return True
+    except FileExistsError:
+        return False
+    except Exception as e:
+        print(f"⚠️ Lỗi tạo lock jackpot: {e}", flush=True)
+        return True
+
+
+def _remove_session_lock(session_key: str) -> None:
+    try:
+        _session_lock_path(session_key).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _cleanup_lock_files(max_files: int = 1000, max_age_seconds: int = 60 * 60 * 24) -> None:
+    try:
+        if not _NOTIFY_CACHE_DIR.exists():
+            return
+        now = time.time()
+        lock_files = [p for p in _NOTIFY_CACHE_DIR.iterdir() if p.is_file()]
+        for path in lock_files:
+            try:
+                if now - path.stat().st_mtime > max_age_seconds:
+                    path.unlink(missing_ok=True)
+            except Exception:
+                continue
+        lock_files = [p for p in _NOTIFY_CACHE_DIR.iterdir() if p.is_file()]
+        if len(lock_files) > max_files:
+            lock_files.sort(key=lambda p: p.stat().st_mtime)
+            for path in lock_files[: len(lock_files) - max_files]:
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    continue
+    except Exception:
+        return
 
 
 def _normalize_result_code(data: dict) -> int | None:
@@ -157,6 +215,8 @@ def check_and_notify_jackpot(username: str, session_data: dict):
     with _notify_lock:
         if session_key in _notified_sessions:
             return
+        if not _try_create_session_lock(session_key):
+            return
         _notified_sessions.add(session_key)
 
     details = _fetch_jackpot_history(username, limit=6)
@@ -187,3 +247,4 @@ def check_and_notify_jackpot(username: str, session_data: dict):
     else:
         with _notify_lock:
             _notified_sessions.discard(session_key)
+        _remove_session_lock(session_key)

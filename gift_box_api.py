@@ -83,9 +83,9 @@ def auto_claim_gifts(username: str):
                     print(f"🎁 [{username}] {created} | Nhận: {title} (+{amount:,}đ) → Số dư: {balance:,}đ")
                     update_user_balance(username, float(balance))
 
-        # Delay 3s
+        # Delay 2s giữa các lần claim
         if i < len(unclaimed):
-            time.sleep(1)
+            time.sleep(2)
 
 if __name__ == "__main__":
     """

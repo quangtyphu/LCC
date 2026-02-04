@@ -3,6 +3,7 @@ Get Balance API - Lấy số dư hiện tại từ game
 """
 import sys
 import io
+import time
 
 # Fix encoding cho Windows console
 if sys.platform == 'win32':
@@ -13,8 +14,19 @@ from game_api_helper import game_request_with_retry, update_user_balance
 
 BALANCE_URL = "https://gameapi.tele68.com/v1/profile/balance"
 
+# Cooldown để tránh gọi quá dày
+BALANCE_COOLDOWN_SECONDS = 30
+_last_balance_fetch = {}
+
 
 def get_balance(username: str) -> dict:
+    now = time.time()
+    last = _last_balance_fetch.get(username)
+    if last and (now - last.get("ts", 0)) < BALANCE_COOLDOWN_SECONDS:
+        cached = last.get("balance")
+        if cached is not None:
+            return {"ok": True, "balance": cached, "username": username, "cached": True}
+        return {"ok": False, "error": "Cooldown active"}
     
     # Gọi API qua helper (không cần params ngoài common params)
     resp = game_request_with_retry(username, "GET", BALANCE_URL)
@@ -23,7 +35,7 @@ def get_balance(username: str) -> dict:
         return {"ok": False, "error": "Không gọi được API balance"}
     
     if not resp.ok:
-        print(f"❌ [{username}] HTTP {resp.status_code}: {resp.text[:200]}")
+        print(f"❌ [get_balance][{username}] HTTP {resp.status_code}: {resp.text[:200]}")
         return {"ok": False, "error": f"HTTP {resp.status_code}"}
     
     try:
@@ -31,7 +43,8 @@ def get_balance(username: str) -> dict:
         balance = data.get("balance")
         
         if balance is not None:
-            # Cập nhật balance vào DB
+            # Cập nhật cache + DB
+            _last_balance_fetch[username] = {"ts": now, "balance": balance}
             update_user_balance(username, float(balance))
             
             return {

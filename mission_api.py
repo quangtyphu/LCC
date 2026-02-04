@@ -42,7 +42,7 @@ def fetch_missions(username: str, mission_type: str = "daily") -> dict:
         return {"ok": False, "error": "Không gọi được API mission"}
     
     if not resp.ok:
-        print(f"❌ [{username}] HTTP {resp.status_code}: {resp.text[:200]}")
+        print(f"❌ [mission_api][{username}] HTTP {resp.status_code}: {resp.text[:200]}")
         return {"ok": False, "error": f"HTTP {resp.status_code}"}
     
     try:
@@ -97,7 +97,7 @@ def claim_mission(username: str, mission_name: str, event_date: str, mission_typ
         return {"ok": False, "error": "Không gọi được API claim mission"}
     
     if not resp.ok:
-        print(f"❌ [{username}] HTTP {resp.status_code}: {resp.text[:200]}")
+        print(f"❌ [mission_api][{username}] HTTP {resp.status_code}: {resp.text[:200]}")
         return {"ok": False, "error": f"HTTP {resp.status_code}"}
     
     try:
