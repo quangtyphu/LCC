@@ -56,7 +56,7 @@ def deposit_het_tien_streak_users():
         print("[STREAK] ❌ Không đọc được config", flush=True)
         return
 
-    min_streak = int(config.get("HET_TIEN_STREAK_MIN", 5) or 5)
+    min_streak = int(config.get("HET_TIEN_STREAK_MIN", 4) or 4)
     users = fetch_het_tien_streak_users(min_streak)
     if not users:
         return

@@ -11,10 +11,174 @@ if sys.platform == 'win32':
 
 import requests
 import time
+import json
+import re
+from typing import Optional
 from game_api_helper import game_request_with_retry, update_user_balance
 
 API_BASE = "http://127.0.0.1:3000"
 WITHDRAW_URL = "https://gameapi.tele68.com/v1/payment-app/cash-out/bank"
+WITHDRAW_STATE_FILE = "queue_state.json"
+WITHDRAW_LOCK_SECONDS = 15 * 60
+
+
+def _load_withdraw_state() -> dict:
+    try:
+        with open(WITHDRAW_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+            if not isinstance(data, dict):
+                return {}
+            return data
+    except Exception:
+        return {}
+
+
+def _save_withdraw_state(data: dict) -> None:
+    try:
+        with open(WITHDRAW_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def _get_state_with_defaults() -> dict:
+    data = _load_withdraw_state()
+    withdraw_queue = data.get("withdraw_queue")
+    if isinstance(withdraw_queue, list):
+        # migrate list -> dict by username
+        migrated = {}
+        for item in withdraw_queue:
+            if isinstance(item, dict) and item.get("username"):
+                migrated[item["username"]] = item
+        data["withdraw_queue"] = migrated
+    elif not isinstance(withdraw_queue, dict):
+        data["withdraw_queue"] = {}
+
+    wager_queue = data.get("wager_queue")
+    if isinstance(wager_queue, list):
+        migrated = {}
+        for item in wager_queue:
+            if isinstance(item, dict) and item.get("username"):
+                migrated[item["username"]] = item.get("target_total_bet")
+        data["wager_queue"] = migrated
+    elif not isinstance(wager_queue, dict):
+        data["wager_queue"] = {}
+    return data
+
+
+def _enqueue_withdraw_queue(username: str, amount: int) -> None:
+    data = _get_state_with_defaults()
+    queue = data.get("withdraw_queue", {})
+    existing = queue.get(username)
+    if isinstance(existing, dict):
+        existing.setdefault("amount", amount)
+        existing.setdefault("target_total_bet", None)
+        existing.setdefault("added_at", time.time())
+        existing.setdefault("status", "ready")
+        existing.setdefault("reason", "queued")
+        existing.setdefault("last_balance", None)
+        existing["amount"] = amount
+        queue[username] = existing
+    else:
+        queue[username] = {
+            "amount": amount,
+            "target_total_bet": None,
+            "added_at": time.time(),
+            "status": "ready",
+            "reason": "queued",
+            "last_balance": None,
+        }
+    data["withdraw_queue"] = queue
+    _save_withdraw_state(data)
+
+
+def _dequeue_withdraw_queue(username: str) -> None:
+    data = _get_state_with_defaults()
+    queue = data.get("withdraw_queue", {})
+    if username in queue:
+        del queue[username]
+    data["withdraw_queue"] = queue
+    _save_withdraw_state(data)
+
+
+def _set_wager_queue(username: str, target_total_bet: int) -> None:
+    data = _get_state_with_defaults()
+    queue = data.get("wager_queue", {})
+    queue[username] = int(target_total_bet)
+    data["wager_queue"] = queue
+    _save_withdraw_state(data)
+
+
+def _clear_wager_queue(username: str) -> None:
+    data = _get_state_with_defaults()
+    queue = data.get("wager_queue", {})
+    if username in queue:
+        del queue[username]
+    data["wager_queue"] = queue
+    _save_withdraw_state(data)
+
+
+def _get_total_bet_for_user(username: str) -> int:
+    try:
+        r = requests.get(
+            f"{API_BASE}/api/bet-totals",
+            params={"username": username},
+            timeout=5
+        )
+        if r.status_code != 200:
+            return 0
+        data = r.json()
+        if isinstance(data, dict):
+            return int(data.get("total_all") or 0)
+    except Exception:
+        return 0
+    return 0
+
+
+def _parse_required_bet_from_error(error_message: str) -> Optional[int]:
+    try:
+        match = re.search(r"vui lòng chơi thêm\s+(.+)$", error_message, re.IGNORECASE)
+        if match:
+            raw = match.group(1)
+            digits = re.sub(r"[^\d]", "", raw)
+            if digits:
+                return int(digits)
+    except Exception:
+        return None
+    return None
+
+
+def _get_withdraw_lock_remaining() -> int:
+    data = _get_state_with_defaults()
+    until_ts = data.get("locked_until")
+    if not isinstance(until_ts, (int, float)):
+        return 0
+    remaining = int(until_ts - time.time())
+    if remaining <= 0:
+        data.pop("locked_until", None)
+        _save_withdraw_state(data)
+        return 0
+    return remaining
+
+
+def _set_withdraw_lock() -> None:
+    data = _get_state_with_defaults()
+    data["locked_until"] = time.time() + WITHDRAW_LOCK_SECONDS
+    _save_withdraw_state(data)
+
+
+def _parse_code(code):
+    if isinstance(code, int):
+        return code
+    if isinstance(code, str):
+        s = code.strip()
+        if s.startswith("-"):
+            s_num = s[1:]
+            if s_num.isdigit():
+                return -int(s_num)
+        if s.isdigit():
+            return int(s)
+    return code
 
 def withdraw(
     username: str,
@@ -39,6 +203,16 @@ def withdraw(
         {"ok": True, "message": "...", "balance": 123456} hoặc {"ok": False, "error": "..."}
     """
     try:
+        # Check lock rút tiền (từ lỗi code -2)
+        remaining = _get_withdraw_lock_remaining()
+        if remaining > 0:
+            mins = (remaining + 59) // 60
+            _enqueue_withdraw_queue(username, amount)
+            return {
+                "ok": False,
+                "error": f"Rút tiền đang bị khóa, vui lòng thử lại sau ~{mins} phút"
+            }
+
         # Lấy thông tin ngân hàng từ accounts (nếu chưa truyền)
         if not bank_code or not account_number or not account_holder:
             resp_acc = requests.get(f"{API_BASE}/api/accounts/{username}", timeout=5)
@@ -78,6 +252,7 @@ def withdraw(
         
         # Parse response
         code = data.get("code")
+        code_int = _parse_code(code)
         message = data.get("message")
         
         # Chỉ log một dòng theo yêu cầu
@@ -97,7 +272,7 @@ def withdraw(
             print(f"💰💰💰💰💰 [{username}] Số tiền rút: {amount:,}₫ 💰💰💰💰💰 Mã Code: {code}", flush=True)
         
         # Code 0 và 1 đều là thành công (1 = đợi xử lý, 0 = thành công ngay)
-        if code in [0, 1]:
+        if code_int in [0, 1]:
             # Thành công
             # Không log tại đây để tránh trùng log
             # Lấy balance mới (ưu tiên data.balance, sau đó đến data.current_money)
@@ -181,6 +356,9 @@ def withdraw(
             import threading
             threading.Thread(target=_check_withdraw_history_async, daemon=True).start()
 
+            _dequeue_withdraw_queue(username)
+            _clear_wager_queue(username)
+
             return {
                 "ok": True,
                 "message": message or "Rút tiền thành công",
@@ -190,6 +368,15 @@ def withdraw(
         else:
             # Lỗi
             print(f"❌ [{username}] Rút tiền thất bại: [{code}] {message}")
+            if code_int == -2:
+                _set_withdraw_lock()
+                _enqueue_withdraw_queue(username, amount)
+            if code_int == -10:
+                need_more = _parse_required_bet_from_error(str(message or ""))
+                if need_more:
+                    current_total = _get_total_bet_for_user(username)
+                    target_total_bet = current_total + need_more
+                    _set_wager_queue(username, target_total_bet)
             return {
                 "ok": False,
                 "error": f"[{code}] {message}",

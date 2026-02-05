@@ -2,7 +2,7 @@
   "ASSIGN_STRATEGY": 11,
   "PRIORITY_USERS": ["", "", "", "", ""],
   "PRIORITY_USERS_V3": ["nohdinaoz1", "kimsangxic", "saomoinoia2", "khoailangxanh", "gautrangzz", "khongcoten123", "fulnex", "kexumi", "changbiettengi", "", "", "", "", ""],
-  "PRIORITY_USERS_V2": ["gaunguyencon", "maimaikkk", "ZeroMind", "contutuzz", "duachuotbb", "chidau32432", "mekiep32432", "cusuhaoz1", "lanokuzz", "", "", "", "", "", ""],
+  "PRIORITY_USERS_V2": ["gaunguyencon", "maimaikkk", "ZeroMind", "chidau32432", "duachuotbb", "lanokuzz", "mekiep32432", "cusuhaoz1", "", "", "", "", "", "", "contutuzz"],
   "AUTO_DEPOSIT_V2_V3": 1,
   "AUTO_DEPOSIT_OUTSIDE_V2_V3": 1,
   "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 0,
@@ -22,7 +22,7 @@
       "enabled": 1
     }
   ],
-  "ALL_IN_IF_REMAIN_LT_10K": 1,
+  "ALL_IN_IF_REMAIN_LT_10K": 0,
   "PLAYER_COUNT": 8,
   "TIME_WINDOWS": [
     {"start": "00:00", "end": "00:30", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 251, "STEP": 10}},

@@ -17,6 +17,7 @@ if sys.platform == 'win32':
 # ================= CONSTANTS =================
 API_BASE = "http://127.0.0.1:3000"
 WITHDRAW_AMOUNTS = [300000, 500000, 600000, 800000, 1000000, 2000000]  # VND
+QUEUE_STATE_FILE = "queue_state.json"
 
 # Pending list: {username: {'amount': int, 'target_total_bet': int, 'added_at': timestamp}}
 pending_withdrawals: Dict[str, Dict] = {}
@@ -37,6 +38,65 @@ import threading
 processing_users: Dict[str, threading.Lock] = {}
 global_withdraw_lock = threading.Lock()
 pending_worker_thread: Optional[threading.Thread] = None
+
+
+def _load_queue_state() -> dict:
+    try:
+        with open(QUEUE_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+            if not isinstance(data, dict):
+                return {}
+            # Normalize withdraw_queue
+            wq = data.get("withdraw_queue")
+            if isinstance(wq, list):
+                migrated = {}
+                for item in wq:
+                    if isinstance(item, dict) and item.get("username"):
+                        migrated[item["username"]] = item
+                data["withdraw_queue"] = migrated
+            elif not isinstance(wq, dict):
+                data["withdraw_queue"] = {}
+            # Normalize wager_queue
+            gq = data.get("wager_queue")
+            if isinstance(gq, list):
+                migrated = {}
+                for item in gq:
+                    if isinstance(item, dict) and item.get("username"):
+                        migrated[item["username"]] = item.get("target_total_bet")
+                data["wager_queue"] = migrated
+            elif not isinstance(gq, dict):
+                data["wager_queue"] = {}
+            return data
+    except Exception:
+        return {}
+
+
+def _save_queue_state(state: dict) -> None:
+    try:
+        with open(QUEUE_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+    except Exception:
+        pass
+
+
+def _sync_state_to_file() -> None:
+    state = _load_queue_state()
+    state["withdraw_queue"] = pending_withdrawals
+    state["wager_queue"] = required_bets
+    _save_queue_state(state)
+
+
+def _load_state_into_memory() -> None:
+    state = _load_queue_state()
+    wq = state.get("withdraw_queue")
+    gq = state.get("wager_queue")
+    if isinstance(wq, dict):
+        pending_withdrawals.update(wq)
+    if isinstance(gq, dict):
+        required_bets.update(gq)
+
+
+_load_state_into_memory()
 
 # ================= HELPER FUNCTIONS =================
 
@@ -269,12 +329,14 @@ def _mark_pending_ready(username: str, balance: int, reason: str = "balance_read
     }
     # Luôn bật worker khi có pending để đảm bảo retry rút
     _ensure_pending_worker_running()
+    _sync_state_to_file()
     return amount
 
 
 def _cancel_pending_withdrawal(username: str, reason: str = ""):
     if username in pending_withdrawals:
         del pending_withdrawals[username]
+        _sync_state_to_file()
     if reason:
         print(f"⚠️ [AutoWithdraw][{username}] Hủy pending: {reason}")
 
@@ -282,6 +344,7 @@ def _cancel_pending_withdrawal(username: str, reason: str = ""):
 def _clear_pending_silent(username: str):
     if username in pending_withdrawals:
         del pending_withdrawals[username]
+        _sync_state_to_file()
 
 
 def _set_required_bet(username: str, need_more: int):
@@ -289,6 +352,13 @@ def _set_required_bet(username: str, need_more: int):
         return
     current_total = get_total_bet_for_user(username)
     required_bets[username] = current_total + need_more
+    _sync_state_to_file()
+
+
+def _clear_required_bet(username: str):
+    if username in required_bets:
+        del required_bets[username]
+        _sync_state_to_file()
 
 
 def _is_required_bet_met(username: str) -> bool:
@@ -297,7 +367,7 @@ def _is_required_bet_met(username: str) -> bool:
         return True
     current_total = get_total_bet_for_user(username)
     if current_total >= target:
-        del required_bets[username]
+        _clear_required_bet(username)
         return True
     return False
 
@@ -349,7 +419,7 @@ def _process_pending_withdrawals():
             current_total = get_total_bet_for_user(username)
             if current_total < req_target:
                 continue
-            del required_bets[username]
+            _clear_required_bet(username)
 
         # Lấy balance mới nhất nếu có
         balance = _get_latest_balance(username)
@@ -382,8 +452,7 @@ def _process_pending_withdrawals():
                 _set_required_bet(username, need_more)
 
         # Đã thực hiện lệnh rút => xóa khỏi pending để user chơi tiếp
-        if username in pending_withdrawals:
-            del pending_withdrawals[username]
+        _clear_pending_silent(username)
         return
 
 # ================= WITHDRAW LOGIC =================
@@ -412,7 +481,7 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
                 "pending": True,
                 "message": f"Chưa đủ cược: {current_total:,}/{req_target:,}"
             }
-        del required_bets[username]
+        _clear_required_bet(username)
 
     # 3. Nếu đã có pending -> chỉ rút khi đủ cược (nếu có target)
     if username in pending_withdrawals:
@@ -470,8 +539,7 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
                 "message": "Global cooldown active, added to pending list"
             }
         # Đã thực hiện lệnh rút => xóa khỏi pending để user chơi tiếp
-        if username in pending_withdrawals:
-            del pending_withdrawals[username]
+        _clear_pending_silent(username)
         response_data = result.get("response", {})
         error_code = response_data.get("code")
         full_message = response_data.get("message", "")

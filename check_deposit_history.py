@@ -4,6 +4,46 @@ from game_api_helper import game_request_with_retry, NODE_SERVER_URL
 from get_balance import get_balance
 from ws_minigame_client import connect_minigame
 
+def _sync_deposit_order_status(transfer_content: str, amount: int, desired_status: str = "Thành Công") -> bool:
+    if not transfer_content:
+        return False
+    try:
+        import requests  # Dùng requests chuẩn cho backend local
+        resp = requests.get(
+            f"{NODE_SERVER_URL}/api/deposit-orders/check-transfer-content",
+            params={"transferContent": transfer_content, "exact": "true"},
+            timeout=5
+        )
+        if resp.status_code != 200:
+            return False
+        data = resp.json() or {}
+        orders = data.get("data") or []
+        if not orders:
+            return False
+        for order in orders:
+            order_id = order.get("id")
+            current_status = order.get("status")
+            order_amount = int(order.get("amount") or 0)
+            if order_amount != int(amount or 0):
+                continue
+            if current_status == desired_status:
+                return True
+            if current_status == "Huỷ":
+                return False
+            update_resp = requests.put(
+                f"{NODE_SERVER_URL}/api/deposit-orders/{order_id}",
+                json={"status": desired_status},
+                timeout=5
+            )
+            if update_resp.status_code in (200, 204):
+                print(f"✅ Đã cập nhật deposit_orders #{order_id} → {desired_status}", flush=True)
+                return True
+            return False
+        return False
+    except Exception as e:
+        print(f"⚠️ Lỗi sync deposit_orders theo NDCK: {e}", flush=True)
+        return False
+
 def check_deposit_history(username, transfer_content=None, order_id=None, amount=None, limit=10, status=None):
 
     """
@@ -76,6 +116,12 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
                 print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')} cho [{username}]: {resp2.status_code} - {resp2.text}", flush=True)
         except Exception as e:
             print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')} cho [{username}]: {e}", flush=True)
+
+        # Nếu có NDCK thì sync trạng thái deposit_orders (kể cả khi transaction đã tồn tại)
+        tx_content = tx.get("content")
+        tx_amount = tx.get("amount", 0)
+        if tx_content and tx_amount:
+            _sync_deposit_order_status(tx_content, tx_amount, desired_status="Thành Công")
 
     if new_saved == 0:
         pass
