@@ -180,6 +180,31 @@ def _parse_code(code):
             return int(s)
     return code
 
+def _post_withdraw_check_async(username: str, delay_seconds: int = 3) -> None:
+    def _run():
+        try:
+            time.sleep(delay_seconds)
+            try:
+                from get_balance import get_balance as get_balance_func
+                balance_result = get_balance_func(username)
+                if isinstance(balance_result, dict) and balance_result.get("ok"):
+                    balance_value = balance_result.get("balance")
+                    if balance_value is not None:
+                        print(f"✅ [{username}] get_balance OK: {balance_value}", flush=True)
+            except Exception as e:
+                print(f"⚠️ [{username}] Lỗi get_balance sau lỗi rút: {e}", flush=True)
+
+            try:
+                from check_withdraw_history import check_withdraw_history
+                check_withdraw_history(username, limit=10)
+            except Exception as e:
+                print(f"⚠️ [{username}] Lỗi check lịch sử rút sau lỗi rút: {e}", flush=True)
+        except Exception:
+            pass
+
+    import threading
+    threading.Thread(target=_run, daemon=True).start()
+
 def withdraw(
     username: str,
     amount: int,
@@ -242,6 +267,7 @@ def withdraw(
         r = game_request_with_retry(username, "POST", WITHDRAW_URL, json_data=payload)
         
         if not r:
+            _post_withdraw_check_async(username, delay_seconds=3)
             return {"ok": False, "error": "Không gọi được API rút tiền"}
         
         if not r.ok:
