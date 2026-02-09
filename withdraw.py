@@ -342,7 +342,7 @@ def withdraw(
                         latest_status = latest_tx.get("status")
 
                     # Định kỳ như cũ để check lại trạng thái giao dịch
-                    intervals = [40, 30,30,30,30, 30,30,60, 60,60,120,120,120, 240,480,960,960]
+                    intervals = [40, 30,30,30,30, 30,30,60, 60,60,120,120,120]
                     found = latest_tx_id is not None
                     for wait_time in intervals:
                         time.sleep(wait_time)
