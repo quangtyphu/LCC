@@ -124,16 +124,19 @@ def load_config() -> dict:
 
 def get_user_group(username: str) -> str:
     """
-    Trả về nhóm của user: V2, V3 hoặc DEFAULT
+    Trả về nhóm của user: V2, V3, V1 (PRIORITY_USERS) hoặc DEFAULT
     """
     config = load_config()
     v2_users = [u for u in config.get("PRIORITY_USERS_V2", []) if u and u.strip()]
     v3_users = [u for u in config.get("PRIORITY_USERS_V3", []) if u and u.strip()]
+    v1_users = [u for u in config.get("PRIORITY_USERS", []) if u and u.strip()]
 
     if username in v2_users:
         return "V2"
     if username in v3_users:
         return "V3"
+    if username in v1_users:
+        return "V1"
     return "DEFAULT"
 
 
@@ -145,6 +148,9 @@ def get_withdraw_threshold(group: str = "DEFAULT") -> int:
         v2_min = _get_v2_withdraw_min(config)
         if v2_min is not None:
             return v2_min
+        return int(config.get("WITHDRAW_THRESHOLD_MIN_V1", config.get("WITHDRAW_THRESHOLD_MIN", 300000)))
+
+    if group == "V1":
         return int(config.get("WITHDRAW_THRESHOLD_MIN_V1", config.get("WITHDRAW_THRESHOLD_MIN", 300000)))
 
     return int(config.get("WITHDRAW_THRESHOLD_MIN", 300000))

@@ -66,7 +66,7 @@ def auto_swap_v2_v3_scheduler():
 			current_date = now.strftime("%Y-%m-%d")
 			
 			# Check xem có phải 23:55 không (hoặc 23:56 để tránh race condition)
-			if current_time in ["23:55", "23:56"]:
+			if current_time in ["23:58", "23:59"]:
 				# Load config để check LAST_SWAP_DATE
 				config = load_config()
 				last_swap_date = config.get("LAST_SWAP_DATE", "")
