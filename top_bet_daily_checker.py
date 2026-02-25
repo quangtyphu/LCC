@@ -46,7 +46,7 @@ def fetch_top_bet_daily(username, date=None, limit=200):
     print("-"*55)
     for entry in data:
         idx = entry.get("idx")
-        if 170 <= idx <= 200:
+        if 160 <= idx <= 200:
             nickname = entry.get("nickname", "")
             money_bet = entry.get("moneyBet", "0")
             prize = entry.get("prize", 0)

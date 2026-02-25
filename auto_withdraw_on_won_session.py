@@ -292,14 +292,22 @@ def _can_attempt_withdraw_now() -> bool:
 
 
 def _withdraw_with_global_cooldown(username: str, amount: int) -> dict:
+    """
+    Chỉ set cooldown 60s khi rút thành công (code 0/1).
+    Code khác (vd: -10) không block lệnh rút acc tiếp theo.
+    """
     global last_withdraw_at
     with global_withdraw_lock:
         if not _can_attempt_withdraw_now():
             return {"ok": False, "cooldown": True, "error": "Global cooldown active"}
-        # Ghi nhận thời điểm gửi lệnh rút (dù thành công hay thất bại)
-        last_withdraw_at = time.time()
     from withdraw import withdraw
-    return withdraw(username, amount)
+    result = withdraw(username, amount)
+    response_data = result.get("response", {})
+    error_code = _parse_code(response_data.get("code"))
+    if error_code in (0, 1):
+        with global_withdraw_lock:
+            last_withdraw_at = time.time()
+    return result
 
 
 def _withdraw_for_pending(username: str, amount: int) -> dict:
@@ -430,17 +438,32 @@ def _process_pending_withdrawals():
             _cancel_pending_withdrawal(username, f"invalid pending status: {status}")
             continue
 
-        # Lấy balance mới nhất nếu có
-        balance = _get_latest_balance(username)
-        if balance is None:
-            balance = pending.get("last_balance", 0)
-
-        amount = pending.get("amount") or find_nearest_withdraw_amount(balance)
-        if not amount:
+        # Dùng user_lock để tránh race với handle_won_session_withdrawal (rút 2 lần)
+        if username not in processing_users:
+            processing_users[username] = threading.Lock()
+        user_lock = processing_users[username]
+        if not user_lock.acquire(blocking=False):
+            # handle_won_session đang xử lý user này → skip, chờ vòng sau
             continue
 
-        print(f"⏳ [AutoWithdraw][{username}] Pending -> Try rút {amount:,}đ")
-        result = _withdraw_for_pending(username, amount)
+        try:
+            # Re-check: user có thể đã bị clear bởi handle_won_session
+            if username not in pending_withdrawals:
+                continue
+
+            # Lấy balance mới nhất nếu có
+            balance = _get_latest_balance(username)
+            if balance is None:
+                balance = pending.get("last_balance", 0)
+
+            amount = pending.get("amount") or find_nearest_withdraw_amount(balance)
+            if not amount:
+                continue
+
+            print(f"⏳ [AutoWithdraw][{username}] Pending -> Try rút {amount:,}đ")
+            result = _withdraw_for_pending(username, amount)
+        finally:
+            user_lock.release()
 
         if result.get("cooldown"):
             return
