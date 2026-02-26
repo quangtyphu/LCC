@@ -295,17 +295,18 @@ def _withdraw_with_global_cooldown(username: str, amount: int) -> dict:
     """
     Chỉ set cooldown 60s khi rút thành công (code 0/1).
     Code khác (vd: -10) không block lệnh rút acc tiếp theo.
+    QUAN TRỌNG: Giữ lock trong suốt withdraw() để tránh nhiều acc rút cùng lúc.
+    Nếu không, 3 acc cùng phiên có thể vượt qua check cooldown và gọi API đồng thời.
     """
     global last_withdraw_at
+    from withdraw import withdraw
     with global_withdraw_lock:
         if not _can_attempt_withdraw_now():
             return {"ok": False, "cooldown": True, "error": "Global cooldown active"}
-    from withdraw import withdraw
-    result = withdraw(username, amount)
-    response_data = result.get("response", {})
-    error_code = _parse_code(response_data.get("code"))
-    if error_code in (0, 1):
-        with global_withdraw_lock:
+        result = withdraw(username, amount)
+        response_data = result.get("response", {})
+        error_code = _parse_code(response_data.get("code"))
+        if error_code in (0, 1):
             last_withdraw_at = time.time()
     return result
 
@@ -315,17 +316,17 @@ def _withdraw_for_pending(username: str, amount: int) -> dict:
     Rút tiền trong pending queue:
     - Chỉ set cooldown khi code 0/1
     - Code khác sẽ không block lệnh tiếp theo
+    - Giữ lock trong suốt withdraw() để serialize với handle_won_session
     """
     global last_withdraw_at
+    from withdraw import withdraw
     with global_withdraw_lock:
         if not _can_attempt_withdraw_now():
             return {"ok": False, "cooldown": True, "error": "Global cooldown active"}
-    from withdraw import withdraw
-    result = withdraw(username, amount)
-    response_data = result.get("response", {})
-    error_code = response_data.get("code")
-    if error_code in (0, 1):
-        with global_withdraw_lock:
+        result = withdraw(username, amount)
+        response_data = result.get("response", {})
+        error_code = _parse_code(response_data.get("code"))
+        if error_code in (0, 1):
             last_withdraw_at = time.time()
     return result
 

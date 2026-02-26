@@ -1,6 +1,6 @@
 """
-Scheduler nạp tiền cho user Hết Tiền có streak >= min trong ngày
-chạy trong khoảng 22:00 - 23:30.
+Scheduler nạp tiền cho user Hết Tiền có streak >= min trong ngày.
+(Đã chuyển từ periodic 22:00-23:45 sang event-based: check khi user chuyển Hết Tiền)
 """
 
 import time
@@ -17,6 +17,35 @@ from auto_deposit_on_out_of_money import (
 )
 
 API_BASE = "http://127.0.0.1:3000"
+
+
+def check_and_deposit_on_het_tien_if_streak(user: str) -> bool:
+    """
+    Khi user chuyển trạng thái Hết Tiền: check dây thắng/dây thua >= HET_TIEN_STREAK_MIN.
+    Nếu >= 4 thì nạp tiền ngay. Return True nếu đã enqueue deposit.
+    """
+    config = load_config()
+    if not config:
+        return False
+    min_streak = int(config.get("HET_TIEN_STREAK_MIN", 4) or 4)
+    users = fetch_het_tien_streak_users(min_streak)
+    if user not in users:
+        return False
+    if is_in_v2_v3(user, config):
+        v2_users = config.get("PRIORITY_USERS_V2", [])
+        v3_users = config.get("PRIORITY_USERS_V3", [])
+        if (user in v2_users or user in v3_users) and _is_v2_auto_deposit_blocked(config):
+            return False
+        if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
+            return False
+    else:
+        if config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) != 1:
+            return False
+    if not can_create_deposit_order(user):
+        return False
+    enqueue_deposit_order(user)
+    print(f"[STREAK] [{user}] Hết tiền + streak>={min_streak} → nạp ngay", flush=True)
+    return True
 
 
 def _normalize_username(item) -> str:

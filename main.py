@@ -113,6 +113,12 @@ async def watcher_loop():
                     u = udoc.get("username")
                     status = udoc.get("status")
                     if u in current and status != "Đang Chơi":
+                        if status == "Hết Tiền":
+                            try:
+                                from streak_deposit_scheduler import check_and_deposit_on_het_tien_if_streak
+                                check_and_deposit_on_het_tien_if_streak(u)
+                            except Exception as ex:
+                                print(f"[WARN] check_and_deposit_on_het_tien_if_streak({u}): {ex}", flush=True)
                         await disconnect_user(u)
                     # Nếu là Token Lỗi thì vẫn tự động refresh JWT như cũ
                     if u in current and status == "Token Lỗi":
@@ -303,7 +309,6 @@ if __name__ == "__main__":
     from v2_v3_swapper import auto_swap_v2_v3_scheduler
     from auto_deposit_on_out_of_money import reset_deposit_cache, start_periodic_check
     from daily_active_no_deposit_scheduler import auto_active_no_deposit_scheduler
-    from streak_deposit_scheduler import auto_het_tien_streak_scheduler
     from pending_withdraw_checker import start_pending_withdraw_checker
     
     # Reset cache khi khởi động chương trình (giống như pending_withdrawals reset về {})
@@ -322,8 +327,7 @@ if __name__ == "__main__":
     threading.Thread(target=auto_swap_v2_v3_scheduler, daemon=True).start()
     # Chạy scheduler nạp tiền user chưa nạp hôm nay (23:00)
     threading.Thread(target=auto_active_no_deposit_scheduler, daemon=True).start()
-    # Chạy scheduler nạp tiền cho user Hết Tiền có streak (22:00-23:30)
-    threading.Thread(target=auto_het_tien_streak_scheduler, daemon=True).start()
+    # (Đã bỏ streak_deposit_scheduler - thay bằng check streak khi user chuyển Hết Tiền trong chiaTien_Acc)
     # Chạy scheduler check lịch sử rút cho user đang chờ (10 phút)
     start_pending_withdraw_checker(interval_seconds=600)
     # Chạy watcher_loop như cũ

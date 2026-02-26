@@ -394,6 +394,8 @@ def withdraw(
         else:
             # Lỗi
             print(f"❌ [{username}] Rút tiền thất bại: [{code}] {message}")
+            if code_int == -1111:
+                _post_withdraw_check_async(username, delay_seconds=3)
             if code_int == -2:
                 _set_withdraw_lock()
                 _enqueue_withdraw_queue(username, amount)

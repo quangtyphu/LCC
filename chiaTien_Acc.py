@@ -92,6 +92,12 @@ def _fresh_balances_for_online(online_users: List[str]) -> Dict[str, int]:
                 if balance < 10000:
                     with contextlib.suppress(Exception):
                         requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
+                    # Check streak >= 4 → nạp ngay (thay cho scheduler 22:00-23:45)
+                    try:
+                        from streak_deposit_scheduler import check_and_deposit_on_het_tien_if_streak
+                        check_and_deposit_on_het_tien_if_streak(user)
+                    except Exception as e:
+                        print(f"[ERROR] check_and_deposit_on_het_tien_if_streak({user}): {e}")
                     # Kiểm tra PAUSE trước khi gọi auto_deposit_on_out_of_money
                     config = load_config()
                     active_window = _get_active_window(config)
@@ -111,11 +117,21 @@ def _fresh_balances_for_online(online_users: List[str]) -> Dict[str, int]:
                 balances[user] = 0
                 with contextlib.suppress(Exception):
                     requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
+                try:
+                    from streak_deposit_scheduler import check_and_deposit_on_het_tien_if_streak
+                    check_and_deposit_on_het_tien_if_streak(user)
+                except Exception as ex:
+                    print(f"[ERROR] check_and_deposit_on_het_tien_if_streak({user}): {ex}")
         except Exception as e:
             print(f"⚠️ Lỗi lấy balance cho {user}: {e}")
             balances[user] = 0
             with contextlib.suppress(Exception):
                 requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
+            try:
+                from streak_deposit_scheduler import check_and_deposit_on_het_tien_if_streak
+                check_and_deposit_on_het_tien_if_streak(user)
+            except Exception as ex:
+                print(f"[ERROR] check_and_deposit_on_het_tien_if_streak({user}): {ex}")
     return balances
 
 
