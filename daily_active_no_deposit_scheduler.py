@@ -90,7 +90,7 @@ def auto_active_no_deposit_scheduler():
             current_time = now.strftime("%H:%M")
             current_date = now.strftime("%Y-%m-%d")
 
-            if current_time in ["23:30", "23:31"]:
+            if current_time in ["23:00", "23:01"]:
                 config = load_config()
                 last_run_date = config.get("LAST_ACTIVE_NO_DEPOSIT_RUN", "")
 

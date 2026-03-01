@@ -3,6 +3,7 @@ Scheduler nạp tiền cho user Hết Tiền có streak >= min trong ngày.
 (Đã chuyển từ periodic 22:00-23:45 sang event-based: check khi user chuyển Hết Tiền)
 """
 
+import threading
 import time
 from datetime import datetime
 
@@ -17,12 +18,25 @@ from auto_deposit_on_out_of_money import (
 )
 
 API_BASE = "http://127.0.0.1:3000"
+HET_TIEN_CHECK_DELAY_SECONDS = 20
 
 
-def check_and_deposit_on_het_tien_if_streak(user: str) -> bool:
+def check_and_deposit_on_het_tien_if_streak(user: str) -> None:
     """
-    Khi user chuyển trạng thái Hết Tiền: check dây thắng/dây thua >= HET_TIEN_STREAK_MIN.
-    Nếu >= 4 thì nạp tiền ngay. Return True nếu đã enqueue deposit.
+    Khi user chuyển trạng thái Hết Tiền: delay 20s rồi check dây thắng/dây thua >= HET_TIEN_STREAK_MIN.
+    Nếu >= 4 thì nạp tiền ngay. Chạy trong background thread, không block.
+    """
+    def _run():
+        time.sleep(HET_TIEN_CHECK_DELAY_SECONDS)
+        _check_and_deposit_on_het_tien_if_streak_impl(user)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _check_and_deposit_on_het_tien_if_streak_impl(user: str) -> bool:
+    """
+    Logic thực tế: check dây thắng/dây thua >= HET_TIEN_STREAK_MIN.
+    Return True nếu đã enqueue deposit.
     """
     config = load_config()
     if not config:

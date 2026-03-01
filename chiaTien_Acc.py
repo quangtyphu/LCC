@@ -281,10 +281,32 @@ def assign_bets(
 
         # -------------------- Chiến lược chọn account --------------------
         if strategy == 1:
-            after, chosen, _bal = min(candidates, key=lambda t: t[0])  # AFTER thấp nhất
+            # Ưu tiên PRIORITY_USERS, fallback AFTER thấp nhất
+            chosen, after, _bal = None, None, None
+            for u in PRIORITY_USERS:
+                if u in online_users and u not in used:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
+            if chosen is None:
+                after, chosen, _bal = min(candidates, key=lambda t: t[0])  # AFTER thấp nhất
 
         elif strategy == 2:
-            after, chosen, _bal = random.choice(candidates)  # Random
+            # Ưu tiên PRIORITY_USERS, fallback Random
+            chosen, after, _bal = None, None, None
+            for u in PRIORITY_USERS:
+                if u in online_users and u not in used:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
+            if chosen is None:
+                after, chosen, _bal = random.choice(candidates)  # Random
 
         elif strategy == 3:
             # Ưu tiên PRIORITY_USERS, fallback AFTER thấp nhất
@@ -306,25 +328,29 @@ def assign_bets(
                 return []
 
         elif strategy == 4:
-            # Ưu tiên balance cao → thấp cho users KHÔNG thuộc V2/V3, sau đó mới đến V2 rồi V3
-            others = [u for u in online_users if u not in used and u not in PRIORITY_USERS_V2 and u not in PRIORITY_USERS_V3]
-            others_sorted = sorted(others, key=lambda u: -balances.get(u, 0))
-
-            v2_sorted = sorted([u for u in PRIORITY_USERS_V2 if u in online_users and u not in used], key=lambda u: -balances.get(u, 0))
-            v3_sorted = sorted([u for u in PRIORITY_USERS_V3 if u in online_users and u not in used], key=lambda u: -balances.get(u, 0))
-
-            ordered = others_sorted + v2_sorted + v3_sorted
-
-            chosen = None
-            after = None
-            _bal = None
-            for u in ordered:
-                bal = balances.get(u, 0)
-                if bal >= amount:
-                    chosen = u
-                    _bal = bal
-                    after = bal - amount
-                    break
+            # Ưu tiên PRIORITY_USERS, fallback: balance cao → thấp cho users KHÔNG thuộc V2/V3, sau đó mới đến V2 rồi V3
+            chosen, after, _bal = None, None, None
+            for u in PRIORITY_USERS:
+                if u in online_users and u not in used:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
+            if chosen is None:
+                others = [u for u in online_users if u not in used and u not in PRIORITY_USERS_V2 and u not in PRIORITY_USERS_V3]
+                others_sorted = sorted(others, key=lambda u: -balances.get(u, 0))
+                v2_sorted = sorted([u for u in PRIORITY_USERS_V2 if u in online_users and u not in used], key=lambda u: -balances.get(u, 0))
+                v3_sorted = sorted([u for u in PRIORITY_USERS_V3 if u in online_users and u not in used], key=lambda u: -balances.get(u, 0))
+                ordered = others_sorted + v2_sorted + v3_sorted
+                for u in ordered:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
 
             if chosen is None:
                 msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
@@ -373,35 +399,40 @@ def assign_bets(
                 return []
 
         elif strategy == 7:
-            # Ưu tiên V2 -> V3 với tổng cược ngày thấp (giống 9/10/11), còn lại ưu tiên tổng cược tuần cao
-            v2_sorted = sorted(
-                [u for u in PRIORITY_USERS_V2 if u in online_users and u not in used],
-                key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
-            )
-            v3_sorted = sorted(
-                [u for u in PRIORITY_USERS_V3 if u in online_users and u not in used],
-                key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
-            )
-            others = [
-                u for u in online_users
-                if u not in PRIORITY_USERS_V2
-                and u not in PRIORITY_USERS_V3
-                and u not in used
-            ]
-            others_sorted = sorted(others, key=lambda u: (-weekly_bets.get(u, 0), -balances.get(u, 0)))
-
-            ordered = v2_sorted + v3_sorted + others_sorted
-
-            chosen = None
-            after = None
-            _bal = None
-            for u in ordered:
-                bal = balances.get(u, 0)
-                if bal >= amount:
-                    chosen = u
-                    _bal = bal
-                    after = bal - amount
-                    break
+            # Ưu tiên PRIORITY_USERS, fallback: V2 -> V3 với tổng cược ngày thấp, còn lại ưu tiên tổng cược tuần cao
+            chosen, after, _bal = None, None, None
+            for u in PRIORITY_USERS:
+                if u in online_users and u not in used:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
+            if chosen is None:
+                v2_sorted = sorted(
+                    [u for u in PRIORITY_USERS_V2 if u in online_users and u not in used],
+                    key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
+                )
+                v3_sorted = sorted(
+                    [u for u in PRIORITY_USERS_V3 if u in online_users and u not in used],
+                    key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
+                )
+                others = [
+                    u for u in online_users
+                    if u not in PRIORITY_USERS_V2
+                    and u not in PRIORITY_USERS_V3
+                    and u not in used
+                ]
+                others_sorted = sorted(others, key=lambda u: (-weekly_bets.get(u, 0), -balances.get(u, 0)))
+                ordered = v2_sorted + v3_sorted + others_sorted
+                for u in ordered:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
 
             if chosen is None:
                 msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
@@ -410,35 +441,40 @@ def assign_bets(
                 return []
 
         elif strategy == 8:
-            # Ưu tiên V2 -> V3 với tổng cược ngày thấp (giống 9/10/11), còn lại ưu tiên tổng cược tuần thấp
-            v2_sorted = sorted(
-                [u for u in PRIORITY_USERS_V2 if u in online_users and u not in used],
-                key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
-            )
-            v3_sorted = sorted(
-                [u for u in PRIORITY_USERS_V3 if u in online_users and u not in used],
-                key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
-            )
-            others = [
-                u for u in online_users
-                if u not in PRIORITY_USERS_V2
-                and u not in PRIORITY_USERS_V3
-                and u not in used
-            ]
-            others_sorted = sorted(others, key=lambda u: (weekly_bets.get(u, 0), balances.get(u, 0)))
-
-            ordered = v2_sorted + v3_sorted + others_sorted
-
-            chosen = None
-            after = None
-            _bal = None
-            for u in ordered:
-                bal = balances.get(u, 0)
-                if bal >= amount:
-                    chosen = u
-                    _bal = bal
-                    after = bal - amount
-                    break
+            # Ưu tiên PRIORITY_USERS, fallback: V2 -> V3 với tổng cược ngày thấp, còn lại ưu tiên tổng cược tuần thấp
+            chosen, after, _bal = None, None, None
+            for u in PRIORITY_USERS:
+                if u in online_users and u not in used:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
+            if chosen is None:
+                v2_sorted = sorted(
+                    [u for u in PRIORITY_USERS_V2 if u in online_users and u not in used],
+                    key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
+                )
+                v3_sorted = sorted(
+                    [u for u in PRIORITY_USERS_V3 if u in online_users and u not in used],
+                    key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
+                )
+                others = [
+                    u for u in online_users
+                    if u not in PRIORITY_USERS_V2
+                    and u not in PRIORITY_USERS_V3
+                    and u not in used
+                ]
+                others_sorted = sorted(others, key=lambda u: (weekly_bets.get(u, 0), balances.get(u, 0)))
+                ordered = v2_sorted + v3_sorted + others_sorted
+                for u in ordered:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
 
             if chosen is None:
                 msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
@@ -447,25 +483,29 @@ def assign_bets(
                 return []
 
         elif strategy == 9:
-            # nhóm ưu tiên mới
-            prio_online = [u for u in PRIORITY_USERS_V2 if u in online_users and u not in used]
-            prio_sorted = sorted(prio_online, key=lambda u: (today_bets.get(u, 0), balances.get(u, 0)))
-
-            others = [u for u in online_users if u not in prio_online and u not in used]
-            others_sorted = sorted(others, key=lambda u: balances.get(u, 0))
-
-            ordered = prio_sorted + others_sorted
-
-            chosen = None
-            after = None
-            _bal = None
-            for u in ordered:
-                bal = balances.get(u, 0)
-                if bal >= amount:
-                    chosen = u
-                    _bal = bal
-                    after = bal - amount
-                    break
+            # Ưu tiên PRIORITY_USERS, fallback: nhóm ưu tiên mới (V2 -> others)
+            chosen, after, _bal = None, None, None
+            for u in PRIORITY_USERS:
+                if u in online_users and u not in used:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
+            if chosen is None:
+                prio_online = [u for u in PRIORITY_USERS_V2 if u in online_users and u not in used]
+                prio_sorted = sorted(prio_online, key=lambda u: (today_bets.get(u, 0), balances.get(u, 0)))
+                others = [u for u in online_users if u not in prio_online and u not in used]
+                others_sorted = sorted(others, key=lambda u: balances.get(u, 0))
+                ordered = prio_sorted + others_sorted
+                for u in ordered:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
 
             if chosen is None:
                 msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
@@ -474,30 +514,37 @@ def assign_bets(
                 return []
 
         elif strategy == 10:
-            # Ưu tiên các user KHÔNG thuộc PRIORITY_USERS_V2 theo balance tăng dần;
+            # Ưu tiên PRIORITY_USERS, fallback: các user KHÔNG thuộc PRIORITY_USERS_V2 theo balance tăng dần;
             # nếu thiếu thì dùng PRIORITY_USERS_V2 theo tổng cược ngày thấp nhất
-            others = [u for u in online_users if u not in PRIORITY_USERS_V2]
-            others_sorted = sorted(others, key=lambda u: balances.get(u, 0))
+            chosen, after, _bal = None, None, None
+            for u in PRIORITY_USERS:
+                if u in online_users and u not in used:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
+            if chosen is None:
+                others = [u for u in online_users if u not in PRIORITY_USERS_V2]
+                others_sorted = sorted(others, key=lambda u: balances.get(u, 0))
 
-            prio_sorted = sorted(
-                [u for u in PRIORITY_USERS_V2 if u in online_users],
-                key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
-            )
+                prio_sorted = sorted(
+                    [u for u in PRIORITY_USERS_V2 if u in online_users],
+                    key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
+                )
 
-            ordered = others_sorted + prio_sorted
+                ordered = others_sorted + prio_sorted
 
-            chosen = None
-            after = None
-            _bal = None
-            for u in ordered:
-                if u in used:
-                    continue
-                bal = balances.get(u, 0)
-                if bal >= amount:
-                    chosen = u
-                    _bal = bal
-                    after = bal - amount
-                    break
+                for u in ordered:
+                    if u in used:
+                        continue
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
 
             if chosen is None:
                 msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
@@ -505,40 +552,40 @@ def assign_bets(
                 send_telegram(msg)
                 return []
         elif strategy == 11:
-            # 1️⃣ User KHÔNG thuộc V2 & V3 → balance tăng dần
-            others = [
-                u for u in online_users
-                if u not in PRIORITY_USERS_V2
-                and u not in PRIORITY_USERS_V3
-                and u not in used
-            ]
-            others_sorted = sorted(others, key=lambda u: balances.get(u, 0))
-
-            # 2️⃣ PRIORITY_USERS_V2 → today_bet thấp nhất
-            v2_sorted = sorted(
-                [u for u in PRIORITY_USERS_V2 if u in online_users and u not in used],
-                key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
-            )
-
-            # 3️⃣ PRIORITY_USERS_V3 → today_bet thấp nhất
-            v3_sorted = sorted(
-                [u for u in PRIORITY_USERS_V3 if u in online_users and u not in used],
-                key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
-            )
-
-            ordered = others_sorted + v2_sorted + v3_sorted
-
-            chosen = None
-            after = None
-            _bal = None
-
-            for u in ordered:
-                bal = balances.get(u, 0)
-                if bal >= amount:
-                    chosen = u
-                    _bal = bal
-                    after = bal - amount
-                    break
+            # Ưu tiên PRIORITY_USERS, fallback: 1️⃣ User KHÔNG thuộc V2 & V3 → balance tăng dần
+            chosen, after, _bal = None, None, None
+            for u in PRIORITY_USERS:
+                if u in online_users and u not in used:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
+            if chosen is None:
+                others = [
+                    u for u in online_users
+                    if u not in PRIORITY_USERS_V2
+                    and u not in PRIORITY_USERS_V3
+                    and u not in used
+                ]
+                others_sorted = sorted(others, key=lambda u: balances.get(u, 0))
+                v2_sorted = sorted(
+                    [u for u in PRIORITY_USERS_V2 if u in online_users and u not in used],
+                    key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
+                )
+                v3_sorted = sorted(
+                    [u for u in PRIORITY_USERS_V3 if u in online_users and u not in used],
+                    key=lambda u: (today_bets.get(u, 0), balances.get(u, 0))
+                )
+                ordered = others_sorted + v2_sorted + v3_sorted
+                for u in ordered:
+                    bal = balances.get(u, 0)
+                    if bal >= amount:
+                        chosen = u
+                        _bal = bal
+                        after = bal - amount
+                        break
 
             if chosen is None:
                 msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
@@ -549,6 +596,12 @@ def assign_bets(
         else:
             # fallback an toàn
             after, chosen, _bal = random.choice(candidates)
+
+        if chosen is None:
+            msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
+            print(msg)
+            send_telegram(msg)
+            return []
 
         current_bal = balances[chosen]
         cfg = load_config()
