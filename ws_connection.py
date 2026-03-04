@@ -199,19 +199,6 @@ async def handle_ws(acc, conn_id: str):
                 # Không gửi yêu cầu lấy your-info và không cập nhật trạng thái Đang Chơi ở đây nữa
                 # Đã chuyển toàn bộ check thưởng, cập nhật trạng thái vào user_full_check_logic
                 
-                # Gọi lacxi khi WS kết nối thành công (chạy nền)
-                try:
-                    from lacxi_ticket_api import open_lacxi_boxes
-                    import threading
-                    def _run_lacxi():
-                        try:
-                            open_lacxi_boxes(user)
-                        except Exception as e:
-                            print(f"⚠️ [{user}] Lỗi khi chạy lacxi: {e}")
-                    threading.Thread(target=_run_lacxi, daemon=True).start()
-                except Exception as e:
-                    print(f"⚠️ [{user}] Lỗi import lacxi_ticket_api: {e}")
-
                 last_msg_time = time.time()
                 last_ping_time = time.time()  # lưu lần cuối nhận "2"
 

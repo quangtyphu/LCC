@@ -1,5 +1,7 @@
 import random
 import asyncio
+import time
+import threading
 import requests
 import contextlib
 from typing import List, Tuple, Dict
@@ -79,6 +81,40 @@ def _strategy_from(cfg: dict, w: dict, fallback: int = 1) -> int:
 
 # ================= Helpers khác =================
 
+def _apply_het_tien_and_deposit(user: str) -> None:
+    """Ép trạng thái Hết Tiền + streak check + auto_deposit (gọi sau khi đã xác nhận balance < 10k)."""
+    with contextlib.suppress(Exception):
+        requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
+    try:
+        from streak_deposit_scheduler import check_and_deposit_on_het_tien_if_streak
+        check_and_deposit_on_het_tien_if_streak(user)
+    except Exception as e:
+        print(f"[ERROR] check_and_deposit_on_het_tien_if_streak({user}): {e}")
+    config = load_config()
+    active_window = _get_active_window(config)
+    if active_window.get("PAUSE"):
+        print(f"[SKIP] {user} balance < 10000 nhưng đang trong khung giờ PAUSE ({active_window.get('start', 'N/A')}-{active_window.get('end', 'N/A')}), bỏ qua nạp tiền tự động.")
+    else:
+        try:
+            from auto_deposit_on_out_of_money import auto_deposit_for_user
+            auto_deposit_for_user(user)
+        except Exception as e:
+            print(f"[ERROR] auto_deposit_for_user({user}): {e}")
+
+
+def _delayed_het_tien_check(user: str) -> None:
+    """Sau 20s check lại số dư, nếu vẫn < 10k thì mới ép Hết Tiền."""
+    time.sleep(20)
+    try:
+        r = requests.get(f"{API_BASE}/api/users/{user}", timeout=5)
+        if r.status_code == 200:
+            balance = int(r.json().get("balance") or 0)
+            if balance < 10000:
+                _apply_het_tien_and_deposit(user)
+    except Exception as e:
+        print(f"⚠️ delayed_het_tien_check {user}: {e}")
+
+
 def _fresh_balances_for_online(online_users: List[str]) -> Dict[str, int]:
     balances = {}
     for user in online_users:
@@ -90,26 +126,8 @@ def _fresh_balances_for_online(online_users: List[str]) -> Dict[str, int]:
                 balances[user] = balance
 
                 if balance < 10000:
-                    with contextlib.suppress(Exception):
-                        requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
-                    # Check streak >= 4 → nạp ngay (thay cho scheduler 22:00-23:45)
-                    try:
-                        from streak_deposit_scheduler import check_and_deposit_on_het_tien_if_streak
-                        check_and_deposit_on_het_tien_if_streak(user)
-                    except Exception as e:
-                        print(f"[ERROR] check_and_deposit_on_het_tien_if_streak({user}): {e}")
-                    # Kiểm tra PAUSE trước khi gọi auto_deposit_on_out_of_money
-                    config = load_config()
-                    active_window = _get_active_window(config)
-                    if active_window.get("PAUSE"):
-                        print(f"[SKIP] {user} balance < 10000 nhưng đang trong khung giờ PAUSE ({active_window.get('start', 'N/A')}-{active_window.get('end', 'N/A')}), bỏ qua nạp tiền tự động.")
-                    else:
-                        # Gọi auto_deposit_on_out_of_money
-                        try:
-                            from auto_deposit_on_out_of_money import auto_deposit_for_user
-                            auto_deposit_for_user(user)
-                        except Exception as e:
-                            print(f"[ERROR] auto_deposit_for_user({user}): {e}")
+                    # Chờ 20s rồi check lại, chỉ ép Hết Tiền nếu vẫn < 10k
+                    threading.Thread(target=_delayed_het_tien_check, args=(user,), daemon=True).start()
                 # else:
                 #     with contextlib.suppress(Exception):
                 #         requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Đang Chơi"})
