@@ -11,7 +11,8 @@ if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
-from curl_cffi import requests
+from curl_cffi import requests as curl_requests
+import requests as std_requests  # Fallback khi curl_cffi lỗi TLS
 
 NODE_SERVER_URL = "http://127.0.0.1:3000"
 
@@ -56,7 +57,7 @@ def get_user_auth(username: str) -> tuple | None:
         (proxy_str, jwt, access_token, nickname) hoặc None nếu lỗi
     """
     try:
-        resp = requests.get(f"{NODE_SERVER_URL}/api/users/{username}", timeout=5)
+        resp = curl_requests.get(f"{NODE_SERVER_URL}/api/users/{username}", timeout=5)
         if resp.status_code != 200:
             return None
         
@@ -128,7 +129,7 @@ def game_request_with_retry(
     params: dict = None,
     json_data: dict = None,
     timeout: int = 20
-) -> requests.Response | None:
+) -> curl_requests.Response | None:
     """
     Gọi API game với auto-retry khi token hết hạn (401/403).
     
@@ -165,53 +166,54 @@ def game_request_with_retry(
     if params:
         common_params.update(params)
     
-    def _do_request():
+    def _do_request(use_fallback: bool = False, extra_timeout: int = 0):
+        """use_fallback=True: dùng std_requests khi curl_cffi lỗi. extra_timeout: cộng thêm khi fallback do timeout."""
+        req = std_requests if use_fallback else curl_requests
         m = method.upper()
+        t = timeout + extra_timeout if use_fallback and extra_timeout else timeout
+        kwargs = dict(params=common_params, headers=headers, proxies=proxies, timeout=t)
+        if json_data:
+            kwargs["json"] = json_data
+        if not use_fallback:
+            kwargs["impersonate"] = "chrome120"
         if m == "GET":
-            return requests.get(
-                url,
-                params=common_params,
-                headers=headers,
-                proxies=proxies,
-                timeout=timeout,
-                impersonate="chrome120"
-            )
+            return req.get(url, **kwargs)
         if m == "POST":
-            return requests.post(
-                url,
-                params=common_params,
-                headers=headers,
-                json=json_data,
-                proxies=proxies,
-                timeout=timeout,
-                impersonate="chrome120"
-            )
+            return req.post(url, **kwargs)
         if m == "PUT":
-            return requests.put(
-                url,
-                params=common_params,
-                headers=headers,
-                json=json_data,
-                proxies=proxies,
-                timeout=timeout,
-                impersonate="chrome120"
-            )
+            return req.put(url, **kwargs)
         print(f"❌ Method không hợp lệ: {method}", flush=True)
         return None
 
     resp = None
     for attempt in range(1, 6):
         try:
-            resp = _do_request()
+            resp = _do_request(use_fallback=False)
             break
         except Exception as e:
             msg = str(e).lower()
+            # TLS (35), timeout (28), connection closed (56), HTTP2 framing (16) → thử fallback requests
+            need_fallback = (
+                "curl: (35)" in msg or "boringssl" in msg or "invalid library" in msg or "ssl_error_syscall" in msg
+                or "curl: (28)" in msg  # timeout
+                or "curl: (56)" in msg  # connection closed
+                or "curl: (16)" in msg  # HTTP2 framing layer
+            )
+            if need_fallback:
+                try:
+                    print(f"⚠️ [{username}] curl_cffi lỗi → thử requests chuẩn...", flush=True)
+                    extra = 15 if "curl: (28)" in msg else 0  # timeout → thêm 15s cho fallback
+                    resp = _do_request(use_fallback=True, extra_timeout=extra)
+                    break
+                except Exception as e2:
+                    print(f"❌ [{username}] Fallback requests cũng lỗi: {e2}", flush=True)
+                    return None
             proxy_closed = "connection to proxy closed" in msg or "curl: (97" in msg
             if proxy_closed:
                 print(f"❌ [{username}] Lỗi proxy (attempt {attempt}/5): {e}", flush=True)
                 if attempt == 5:
                     try:
-                        requests.put(f"{NODE_SERVER_URL}/api/users/{username}", json={"status": "Proxy Lỗi"}, timeout=5)
+                        curl_requests.put(f"{NODE_SERVER_URL}/api/users/{username}", json={"status": "Proxy Lỗi"}, timeout=5)
                     except Exception:
                         pass
                     print(f"⚠️ [{username}] Proxy Lỗi sau 5 lần thử", flush=True)
@@ -234,40 +236,23 @@ def game_request_with_retry(
                 headers["authorization"] = f"Bearer {jwt2}"
                 common_params["at"] = access_token2
                 
-                # Retry
+                # Retry với token mới
                 try:
-                    if method.upper() == "GET":
-                        resp = requests.get(
-                            url,
-                            params=common_params,
-                            headers=headers,
-                            proxies=proxies,
-                            timeout=timeout,
-                            impersonate="chrome120"
-                        )
-                    elif method.upper() == "POST":
-                        resp = requests.post(
-                            url,
-                            params=common_params,
-                            headers=headers,
-                            json=json_data,
-                            proxies=proxies,
-                            timeout=timeout,
-                            impersonate="chrome120"
-                        )
-                    elif method.upper() == "PUT":
-                        resp = requests.put(
-                            url,
-                            params=common_params,
-                            headers=headers,
-                            json=json_data,
-                            proxies=proxies,
-                            timeout=timeout,
-                            impersonate="chrome120"
-                        )
+                    resp = _do_request(use_fallback=False)
                 except Exception as e:
-                    print(f"❌ [{username}] Lỗi retry: {e}", flush=True)
-                    return None
+                    err_lower = str(e).lower()
+                    need_fb = "curl: (35)" in err_lower or "boringssl" in err_lower or "invalid library" in err_lower or "curl: (28)" in err_lower or "curl: (56)" in err_lower or "curl: (16)" in err_lower
+                    if need_fb:
+                        try:
+                            ex = 15 if "curl: (28)" in err_lower else 0
+                            resp = _do_request(use_fallback=True, extra_timeout=ex)
+                        except Exception:
+                            resp = None
+                    else:
+                        resp = None
+                    if resp is None:
+                        print(f"❌ [{username}] Lỗi retry: {e}", flush=True)
+                        return None
         else:
             print(f"❌ [{username}] Không refresh được token", flush=True)
             return None
@@ -287,7 +272,7 @@ def update_user_balance(username: str, new_balance: float) -> bool:
         True nếu thành công
     """
     try:
-        resp = requests.put(
+        resp = curl_requests.put(
             f"{NODE_SERVER_URL}/api/users/{username}",
             json={"balance": new_balance},
             timeout=5

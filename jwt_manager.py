@@ -5,7 +5,8 @@
 # - Tùy chọn cập nhật JWT mới (update_jwt=True) hoặc KHÔNG cập nhật (update_jwt=False) để an toàn WS
 # - (Tuỳ chọn) Fetch lịch sử nạp/rút sau login
 
-from curl_cffi import requests
+from curl_cffi import requests as curl_requests
+import requests as std_requests  # Fallback khi curl_cffi lỗi TLS
 import time
 
 API_BASE = "http://127.0.0.1:3000"  # URL server.js
@@ -39,7 +40,7 @@ def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
     
     try:
         # 1. Lấy user_profile (có nickname, proxy, accessToken, jwt)
-        resp_profile = requests.get(f"{API_BASE}/api/users/{username}", timeout=5)
+        resp_profile = curl_requests.get(f"{API_BASE}/api/users/{username}", timeout=5)
         if resp_profile.status_code != 200:
             print(f"❌ [{username}] Không lấy được user_profile từ DB")
             return None
@@ -73,21 +74,52 @@ def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
         }
         payload = {"nickName": nickname, "accessToken": access_token}
         
-        r = requests.post(
-            LOGIN_URL,
-            params=params,
-            headers=headers,
-            json=payload,
-            proxies=proxies,
-            timeout=20,
-            impersonate="chrome120"
-        )
+        # Thử curl_cffi trước; nếu lỗi TLS (35) thì fallback sang requests chuẩn
+        r = None
+        try:
+            r = curl_requests.post(
+                LOGIN_URL,
+                params=params,
+                headers=headers,
+                json=payload,
+                proxies=proxies,
+                timeout=20,
+                impersonate="chrome120"
+            )
+        except Exception as e:
+            err_msg = str(e).lower()
+            # TLS (35), timeout (28), connection closed (56), HTTP2 framing (16) → fallback requests
+            need_fallback = (
+                "curl: (35)" in err_msg or "boringssl" in err_msg or "invalid library" in err_msg or "ssl_error_syscall" in err_msg
+                or "curl: (28)" in err_msg or "curl: (56)" in err_msg or "curl: (16)" in err_msg
+            )
+            if need_fallback:
+                try:
+                    print(f"⚠️ [{username}] curl_cffi lỗi → thử requests chuẩn...", flush=True)
+                    # Timeout (28) → dùng timeout dài hơn cho fallback
+                    fb_timeout = 35 if "curl: (28)" in err_msg else 20
+                    r = std_requests.post(
+                        LOGIN_URL,
+                        params=params,
+                        headers=headers,
+                        json=payload,
+                        proxies=proxies,
+                        timeout=fb_timeout
+                    )
+                except Exception as e2:
+                    print(f"❌ [{username}] Fallback requests cũng lỗi: {e2}", flush=True)
+                    raise e
+            else:
+                raise
+        
+        if r is None:
+            return None
         
         # === Xử lý 401 ===
         if r.status_code == 401:
             
             # Lấy password từ bảng accounts
-            resp_acc = requests.get(f"{API_BASE}/api/accounts/{username}", timeout=5)
+            resp_acc = curl_requests.get(f"{API_BASE}/api/accounts/{username}", timeout=5)
             if resp_acc.status_code != 200:
                 print(f"❌ [{username}] Không lấy được account từ DB")
                 return None
@@ -145,7 +177,7 @@ def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
             print(f"   💰 Balance: {balance:,}đ")
             
             try:
-                requests.put(
+                curl_requests.put(
                     f"{API_BASE}/api/users/{username}",
                     json={"balance": balance},
                     timeout=5
@@ -170,7 +202,7 @@ def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
 
 def _update_status(user: str, status: str):
     try:
-        r = requests.put(f"{API_BASE}/api/users/{user}", json={"status": status}, timeout=5)
+        r = curl_requests.put(f"{API_BASE}/api/users/{user}", json={"status": status}, timeout=5)
         if r.status_code == 200:
             print(f"💾 [{user}] Status cập nhật = {status}")
     except Exception as e:
@@ -190,7 +222,7 @@ def refresh_jwt_and_token(username: str) -> bool:
         if new_jwt:
             # Cập nhật JWT vào DB
             try:
-                resp = requests.put(
+                resp = curl_requests.put(
                     f"{API_BASE}/api/users/{username}",
                     json={"jwt": new_jwt},
                     timeout=5

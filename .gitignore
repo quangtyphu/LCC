@@ -5,6 +5,8 @@ __pycache__/
 # Bỏ qua file cấu hình và cache
 config.json
 deposit_pending_cache.json
+deposit_pending_cache.json.lock
+deposit_pending_cache.json.tmp
 
 # Bỏ qua database files
 *.db

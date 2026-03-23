@@ -16,8 +16,10 @@ THIRD_PARTY_API_BASE = "http://127.0.0.1:5000"  # Third party deposit handler
 
 # Cache file để lưu username đã tạo lệnh nạp (tránh tạo 2 lệnh treo gần nhau)
 DEPOSIT_CACHE_FILE = "deposit_pending_cache.json"
+DEPOSIT_CACHE_LOCK_FILE = "deposit_pending_cache.json.lock"
 DEPOSIT_CACHE_DELAY_SECONDS = 15 * 60  # 15 phút = 900 giây
 DEPOSIT_QUEUE_INTERVAL_SECONDS = 60  # Khoảng cách giữa 2 lệnh nạp liên tục
+_CACHE_LOCK_TIMEOUT = 5.0  # Giây chờ lock tối đa
 
 _deposit_queue = Queue()
 _deposit_worker_thread = None
@@ -27,29 +29,80 @@ _enqueued_lock = threading.Lock()
 _last_deposit_time = 0.0
 _last_deposit_lock = threading.Lock()
 
+def _acquire_cache_lock():
+    """Lấy lock file (tránh race khi nhiều process đọc/ghi)."""
+    start = time.time()
+    while True:
+        try:
+            fd = os.open(DEPOSIT_CACHE_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return True
+        except FileExistsError:
+            if time.time() - start > _CACHE_LOCK_TIMEOUT:
+                return False
+            time.sleep(0.05)
+
+
+def _release_cache_lock():
+    """Giải phóng lock file."""
+    try:
+        if os.path.exists(DEPOSIT_CACHE_LOCK_FILE):
+            os.remove(DEPOSIT_CACHE_LOCK_FILE)
+    except Exception:
+        pass
+
+
 def load_deposit_cache():
     """
     Đọc file JSON cache và trả về dict {username: timestamp}.
-    Nếu file không tồn tại hoặc lỗi → trả về {}.
+    Nếu file không tồn tại hoặc lỗi (vd: Extra data do race) → trả về {} và sửa file.
     """
     if not os.path.exists(DEPOSIT_CACHE_FILE):
         return {}
+    if not _acquire_cache_lock():
+        return {}  # Không lấy được lock, tránh deadlock
     try:
         with open(DEPOSIT_CACHE_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError as e:
+        print(f"[WARN] Cache file bị lỗi JSON ({e}), reset về {{}}")
+        try:
+            with open(DEPOSIT_CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump({}, f)
+        except Exception:
+            pass
+        return {}
     except Exception as e:
         print(f"[WARN] Không đọc được cache file: {e}")
         return {}
+    finally:
+        _release_cache_lock()
+
 
 def save_deposit_cache(cache_dict):
     """
-    Lưu dict vào file JSON cache.
+    Lưu dict vào file JSON cache (atomic write + lock).
     """
+    if not _acquire_cache_lock():
+        return
     try:
-        with open(DEPOSIT_CACHE_FILE, 'w', encoding='utf-8') as f:
+        tmp_path = DEPOSIT_CACHE_FILE + ".tmp"
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(cache_dict, f, indent=2, ensure_ascii=False)
+        try:
+            os.replace(tmp_path, DEPOSIT_CACHE_FILE)  # Atomic trên Windows
+        except OSError:
+            os.rename(tmp_path, DEPOSIT_CACHE_FILE)
     except Exception as e:
         print(f"[ERROR] Không lưu được cache file: {e}")
+    finally:
+        _release_cache_lock()
+        try:
+            if os.path.exists(DEPOSIT_CACHE_FILE + ".tmp"):
+                os.remove(DEPOSIT_CACHE_FILE + ".tmp")
+        except Exception:
+            pass
 
 def reset_deposit_cache():
     """

@@ -16,7 +16,7 @@ if sys.platform == 'win32':
 
 # ================= CONSTANTS =================
 API_BASE = "http://127.0.0.1:3000"
-WITHDRAW_AMOUNTS = [300000, 500000, 600000, 800000, 1000000, 2000000]  # VND
+WITHDRAW_AMOUNTS = [200000, 300000, 500000, 600000, 800000, 1000000, 2000000]  # VND
 QUEUE_STATE_FILE = "queue_state.json"
 
 # Pending list: {username: {'amount': int, 'target_total_bet': int, 'added_at': timestamp}}
