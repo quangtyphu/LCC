@@ -4,36 +4,49 @@ from game_api_helper import game_request_with_retry, NODE_SERVER_URL
 from get_balance import get_balance
 from ws_minigame_client import connect_minigame
 
-def _sync_deposit_order_status(transfer_content: str, amount: int, desired_status: str = "Thành Công") -> bool:
-    if not transfer_content:
+def _sync_deposit_order_by_amount(username: str, tx_amount: int, desired_status: str = "Thành Công") -> bool:
+    """
+    Khớp lệnh nạp theo username + số tiền.
+    Chỉ nâng lên Thành Công khi lệnh đã «Đã Nạp» (callback bên thứ 3), không sync khi còn Chờ/Đang nạp.
+    """
+    if not username or not tx_amount:
         return False
     try:
-        import requests  # Dùng requests chuẩn cho backend local
+        import requests
         resp = requests.get(
-            f"{NODE_SERVER_URL}/api/deposit-orders/check-transfer-content",
-            params={"transferContent": transfer_content, "exact": "true"},
-            timeout=5
+            f"{NODE_SERVER_URL}/api/deposit-orders",
+            params={"username": username, "limit": 50},
+            timeout=5,
         )
         if resp.status_code != 200:
             return False
         data = resp.json() or {}
-        orders = data.get("data") or []
+        orders = data.get("data") if isinstance(data.get("data"), list) else (
+            data if isinstance(data, list) else []
+        )
         if not orders:
             return False
+        amt = int(tx_amount)
         for order in orders:
             order_id = order.get("id")
-            current_status = order.get("status")
-            order_amount = int(order.get("amount") or 0)
-            if order_amount != int(amount or 0):
+            current_status = (order.get("status") or "").strip()
+            try:
+                order_amount = int(float(order.get("amount") or 0))
+            except (TypeError, ValueError):
+                order_amount = 0
+            if amt != order_amount:
                 continue
             if current_status == desired_status:
                 return True
             if current_status == "Huỷ":
                 return False
+            # Không ghi Thành Công nếu chưa qua Đã Nạp (tránh báo thành công ngay khi vừa tạo lệnh)
+            if current_status != "Đã Nạp":
+                continue
             update_resp = requests.put(
                 f"{NODE_SERVER_URL}/api/deposit-orders/{order_id}",
                 json={"status": desired_status},
-                timeout=5
+                timeout=5,
             )
             if update_resp.status_code in (200, 204):
                 print(f"✅ Đã cập nhật deposit_orders #{order_id} → {desired_status}", flush=True)
@@ -41,7 +54,7 @@ def _sync_deposit_order_status(transfer_content: str, amount: int, desired_statu
             return False
         return False
     except Exception as e:
-        print(f"⚠️ Lỗi sync deposit_orders theo NDCK: {e}", flush=True)
+        print(f"⚠️ Lỗi sync deposit_orders theo số tiền: {e}", flush=True)
         return False
 
 def check_deposit_history(username, transfer_content=None, order_id=None, amount=None, limit=10, status=None):
@@ -117,11 +130,10 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
         except Exception as e:
             print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')} cho [{username}]: {e}", flush=True)
 
-        # Nếu có NDCK thì sync trạng thái deposit_orders (kể cả khi transaction đã tồn tại)
-        tx_content = tx.get("content")
+        # Sync deposit_orders theo số tiền (không cần NDCK)
         tx_amount = tx.get("amount", 0)
-        if tx_content and tx_amount:
-            _sync_deposit_order_status(tx_content, tx_amount, desired_status="Thành Công")
+        if tx_amount:
+            _sync_deposit_order_by_amount(username, int(tx_amount), desired_status="Thành Công")
 
     if new_saved == 0:
         pass

@@ -184,7 +184,7 @@ def _perform_deposit_request(user, amount):
         r = requests.post(
             f"{THIRD_PARTY_API_BASE}/create-deposit",
             json={"username": user, "amount": amount},
-            timeout=30
+            timeout=60  # Một lần gọi deposit (không retry NDCK)
         )
         if r.status_code == 200:
             result = r.json()

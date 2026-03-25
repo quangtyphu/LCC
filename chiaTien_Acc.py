@@ -5,7 +5,7 @@ import threading
 import requests
 import contextlib
 from typing import List, Tuple, Dict
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
 from chiaTien_Tho import distribute_for_devices
@@ -82,15 +82,19 @@ def _strategy_from(cfg: dict, w: dict, fallback: int = 1) -> int:
 # ================= Helpers khác =================
 
 def _apply_het_tien_and_deposit(user: str) -> None:
-    """Ép trạng thái Hết Tiền + streak check + auto_deposit (gọi sau khi đã xác nhận balance < 10k)."""
+    """Ép trạng thái Hết Tiền + streak (ngoài V2) + auto_deposit (gọi sau khi đã xác nhận balance < 10k)."""
+    config = load_config()
     with contextlib.suppress(Exception):
         requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
+    # Streak chỉ cho user ngoài V2/V3/P1 (bypass limit); V2 đã có auto_deposit → tránh nạp 2 lần khi dây >= min
     try:
         from streak_deposit_scheduler import check_and_deposit_on_het_tien_if_streak
-        check_and_deposit_on_het_tien_if_streak(user)
+        from auto_deposit_on_out_of_money import is_in_v2_v3
+
+        if not is_in_v2_v3(user, config):
+            check_and_deposit_on_het_tien_if_streak(user)
     except Exception as e:
         print(f"[ERROR] check_and_deposit_on_het_tien_if_streak({user}): {e}")
-    config = load_config()
     active_window = _get_active_window(config)
     if active_window.get("PAUSE"):
         print(f"[SKIP] {user} balance < 10000 nhưng đang trong khung giờ PAUSE ({active_window.get('start', 'N/A')}-{active_window.get('end', 'N/A')}), bỏ qua nạp tiền tự động.")
@@ -276,9 +280,8 @@ def assign_bets(
     to_assign = sorted([(amt, door) for (_dev, amt, door) in bets], key=lambda x: -x[0])
 
     used = set()
+    odd_applied_v2: set = set()  # V2: đã áp dụng đánh lẻ 1 lần/phiên để tổng cược ngày khác bội 10k
     final: List[Tuple[str, int, str, int]] = []
-
-
 
     # ---------------------------- VÒNG GÁN ----------------------------
     for idx, (amount, door) in enumerate(to_assign):
@@ -622,13 +625,32 @@ def assign_bets(
             return []
 
         current_bal = balances[chosen]
+
+        # ----- V2: đánh lẻ 1 lần/phiên để tổng cược ngày khác bội 10k (chỉ từ 01:00) -----
+        tz = ZoneInfo("Asia/Ho_Chi_Minh")
+        is_after_1am = datetime.now(tz).time() >= dt_time(1, 0)
+        if (
+            is_after_1am
+            and today_bets
+            and chosen in PRIORITY_USERS_V2
+            and chosen not in odd_applied_v2
+            and today_bets.get(chosen, 0) % 10000 == 0
+            and amount % 10000 == 0
+        ):
+            add = random.randint(1, 9999)
+            if current_bal >= amount + add:
+                amount += add
+                after = current_bal - amount
+                odd_applied_v2.add(chosen)
+                print(f"   [V2 odd] {chosen} +{add} → cược {amount} (tổng ngày khác bội 10k)")
+
         cfg = load_config()
         try:
             all_in_flag = int(cfg.get("ALL_IN_IF_REMAIN_LT_10K", 1))
         except Exception:
             all_in_flag = 1
 
-        # ----- Áp dụng quy tắc "dư < 10k thì đánh hết" (tắt nếu config = 0) -----
+        # ----- Dư < 10k thì đánh hết (theo config) -----
         if all_in_flag == 1 and current_bal - amount < 10000:
             amount = current_bal
             after = 0

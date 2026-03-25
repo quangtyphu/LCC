@@ -68,8 +68,7 @@ async def fetch_transactions_async(username: str, tx_type: str = "DEPOSIT", limi
             data = data.get("data", [])
         
         saved = []
-        skipped = 0
-        
+
         # 4) Lưu từng giao dịch (kiểm tra trùng qua 409)
         for tx in data:
             transaction_id = tx.get("id")
@@ -100,14 +99,8 @@ async def fetch_transactions_async(username: str, tx_type: str = "DEPOSIT", limi
             
             if save_resp.status_code in (200, 201):
                 saved.append(record)
-            elif save_resp.status_code == 409:
-                skipped += 1  # đã tồn tại
-        
-        # Chỉ log khi có giao dịch mới
-        if saved:
-            label = "Nạp tiền" if tx_type == "DEPOSIT" else "Rút tiền"
-            print(f"✅ [{username}] Lưu {len(saved)} giao dịch {label} mới (bỏ qua {skipped})")
-        
+            # 409 = đã tồn tại, bỏ qua
+
         return saved
     
     except Exception as e:

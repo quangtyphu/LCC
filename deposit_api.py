@@ -1,22 +1,30 @@
 def deposit_full_process(username: str, amount: int, track_history: bool = True) -> dict:
     """
     Thực hiện đầy đủ quy trình nạp tiền:
-    - Gọi deposit
-    - Lưu DB
-    - Lưu QR
-    - Tracking giao dịch
-    - Trả kết quả tổng hợp
+    - Gọi deposit một lần
+    - Không có NDCK vẫn tiếp tục (NDCK rỗng khi gửi bên thứ 3)
+    - Lưu DB, lưu QR, tracking giao dịch (nếu bật)
     """
     result = deposit(username, amount)
+    payload = (result.get("data") or {}).get("data") or {} if result.get("data") else {}
+    api_data = result.get("data") or {}
+    transfer_content = _get_transfer_content(payload, api_data) if payload else ""
+
     if not result.get("ok"):
+        err = result.get("error", "API lỗi")
+        print(f"⚠️ [{username}] Deposit lỗi: {err} (amount={amount})", flush=True)
+        _log_api_response(username, 1, result, payload, api_data)
         return result
-    payload = result.get("data", {}).get("data", {}) or {}
+
     if not payload:
-        api_error = result.get("data", {}).get("message", "API không trả dữ liệu")
-        api_code = result.get("data", {}).get("code", "?")
+        api_error = api_data.get("message", "API không trả dữ liệu")
+        api_code = api_data.get("code", "?")
+        print(f"⚠️ [{username}] API không trả dữ liệu (amount={amount})", flush=True)
+        _log_api_response(username, 1, result, payload, api_data)
         return {"ok": False, "error": f"[{api_code}] {api_error}"}
-    # Lưu DB
-    save_result = save_deposit_to_db(username, result, amount=amount)
+
+    effective_amount = amount
+    save_result = save_deposit_to_db(username, result, amount=effective_amount)
     saved = save_result.get("ok")
     order_id = save_result.get("orderId")
     # Lưu QR
@@ -24,11 +32,10 @@ def deposit_full_process(username: str, amount: int, track_history: bool = True)
     # Bỏ log order_id
     # Tracking giao dịch (nếu lưu DB thành công)
     if track_history and saved and order_id:
-        transfer_content = payload.get('msg', '')
         import threading
         threading.Thread(
             target=wait_and_check_deposit,
-            args=(username, transfer_content, order_id, amount),
+            args=(username, transfer_content, order_id, effective_amount),
             daemon=True
         ).start()
     return {
@@ -36,11 +43,11 @@ def deposit_full_process(username: str, amount: int, track_history: bool = True)
         "message": "Tạo lệnh nạp tiền thành công (full process)",
         "data": {
             "username": username,
-            "amount": amount,
+            "amount": effective_amount,
             "accountNumber": payload.get('receiver', ''),
             "bank": payload.get('type', ''),
             "accountHolder": payload.get('name', ''),
-            "transferContent": payload.get('msg', ''),
+            "transferContent": transfer_content,
             "qrBase64": payload.get('qr_base64') or payload.get('qr', ''),
             "qrLink": payload.get('qr_link', ''),
             "qrImagePath": img_path,
@@ -83,13 +90,34 @@ def _sanitize_filename(text: str) -> str:
     s = re.sub(r"\s+", "_", s)            # khoảng trắng -> _
     return (s[:80] or "no_msg")           # giới hạn độ dài
 
+def _log_api_response(username: str, attempt: int, result: dict, payload: dict, api_data: dict):
+    """In dữ liệu API nhận được khi thất bại (không có NDCK) để debug."""
+    import json
+    # Copy để không in base64 (quá dài)
+    def _sanitize_for_log(d):
+        if not d:
+            return d
+        out = {}
+        for k, v in d.items():
+            if k in ("qr", "qr_base64", "qrBase64") and isinstance(v, str):
+                out[k] = f"<base64 {len(v)} chars>" if v else v
+            elif isinstance(v, dict):
+                out[k] = _sanitize_for_log(v)
+            else:
+                out[k] = v
+        return out
+    to_log = {"ok": result.get("ok"), "error": result.get("error")}
+    if api_data:
+        to_log["data"] = _sanitize_for_log(api_data)
+    print(f"   📥 [{username}] Lần {attempt} - API trả về: {json.dumps(to_log, ensure_ascii=False)[:1200]}", flush=True)
+
 def save_qr_image(payload: dict, username: str) -> str | None:
     """
     Lưu ảnh QR ra PNG với tên: username_NDCK.png
     Ưu tiên base64; fallback tải từ qr_link.
     """
     _ensure_qr_dir()
-    safe_msg = _sanitize_filename(payload.get("msg", ""))
+    safe_msg = _sanitize_filename(_get_transfer_content(payload))
     filename = f"{username}_{safe_msg}.png"
     out_path = os.path.join(QR_DIR, filename)
 
@@ -138,19 +166,21 @@ def update_deposit_order_status(order_id: int, status: str) -> bool:
         print(f"⚠️ Lỗi cập nhật trạng thái order: {e}")
         return False
 
+
 def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, expected_amount: int) -> bool:
     """
-    Chờ và check lịch sử nạp tiền 5 lần:
-    - Sau 30s, 60s, 90s, 120s, 10 phút
-    
+    Chờ và check lịch sử nạp tiền theo chu kỳ.
+
+    So khớp: đúng số tiền (không dung sai), NDCK không bắt buộc.
+
     Args:
         username: Username
-        transfer_content: Nội dung chuyển khoản (NDCK) để so khớp
+        transfer_content: NDCK (chỉ dùng cho log/Telegram khi thất bại)
         order_id: ID lệnh nạp trong deposit-orders
-        expected_amount: Số tiền nạp
-    
+        expected_amount: Số tiền nạp cần khớp
+
     Returns:
-        True nếu tìm thấy giao dịch khớp, False nếu không
+        True nếu tìm thấy giao dịch khớp số tiền, False nếu không
     """
     # Thời gian check: 30s, 60s, 90s, 120s, 600s (10 phút)
     check_intervals = [50, 30,30,30, 30, 120,240,240]  # Tổng: 30, 60, 90, 120, 600s
@@ -172,13 +202,11 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
                     print(f"⚠️ [{username}] Không lấy được lịch sử, tiếp tục chờ...")
                     break
                 
-                # Tìm giao dịch khớp NDCK và amount
+                # Khớp đúng số tiền (không NDCK)
                 transactions = result.get("transactions", [])
                 for tx in transactions:
-                    tx_content = tx.get("content", "")
-                    tx_amount = tx.get("amount", 0)
-                    
-                    if tx_content == transfer_content and tx_amount == expected_amount:
+                    tx_amount = int(tx.get("amount") or 0)
+                    if tx_amount == int(expected_amount):
                         # Cập nhật trạng thái order sang COMPLETED
                         if update_deposit_order_status(order_id, "Thành Công"):
                             # Chỉ xóa cache khi đã confirm tiền vào (Thành Công)
@@ -271,6 +299,30 @@ def deposit(username: str, amount: int) -> dict:
         traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
+# Các giá trị KHÔNG phải NDCK (thông báo API), bị bỏ qua khi lấy NDCK
+_NDCK_EXCLUDE = frozenset(s.lower() for s in (
+    "success", "ok", "successful", "thành công", "Thành công", "THÀNH CÔNG",
+    "fail", "failed", "error", "lỗi", "pending", "processing"
+))
+
+def _get_transfer_content(payload: dict, api_data: dict = None) -> str:
+    """Lấy NDCK từ payload. Hỗ trợ msg, transferContent (format BC...). Bỏ qua message/content là thông báo API."""
+    for d in (payload, api_data or {}):
+        if not d:
+            continue
+        for key in ("msg", "transferContent", "transfer_content", "message", "content"):
+            val = d.get(key)
+            if val and isinstance(val, str):
+                val = val.strip()
+                if not val:
+                    continue
+                # Bỏ qua nếu là thông báo API (success, ok, ...) không phải NDCK
+                if val.lower() in _NDCK_EXCLUDE:
+                    continue
+                return val
+    return ""
+
+
 def save_deposit_to_db(username: str, api_result: dict, status: str = "pending", amount: int = None) -> dict:
     """
     Lưu lệnh nạp tiền vào DB với trạng thái pending.
@@ -278,16 +330,22 @@ def save_deposit_to_db(username: str, api_result: dict, status: str = "pending",
     Returns:
         dict: {ok: bool, orderId: int} - orderId để tracking sau này
     """
-    payload = api_result.get("data", {}).get("data", {}) or {}
+    api_data = api_result.get("data", {}) or {}
+    payload = api_data.get("data", {}) or {}
+    ndck = _get_transfer_content(payload, api_data)
     rec = {
         "username": username,
         "amount": amount,
         "accountNumber": payload.get("receiver", ""),
         "bank": payload.get("type", ""),
         "accountHolder": payload.get("name", ""),
-        "transferContent": payload.get("msg", ""),
+        "transferContent": ndck,
+        "transfer_content": ndck,  # Node/Prisma có thể dùng snake_case cho cột DB
     }
     try:
+        # Log để debug: NDCK format BC... (có dấu -) có thể bị Node/DB từ chối
+        if ndck and ("-" in ndck or ndck.startswith("BC")):
+            print(f"📤 Lưu DB: transferContent={ndck[:50]}... (len={len(ndck)})", flush=True)
         r = requests.post(f"{NODE_SERVER_URL}/api/deposit-orders", json=rec, timeout=5)
         if r.status_code in (200, 201):
             data = r.json()
@@ -333,7 +391,7 @@ if __name__ == "__main__":
             print(f"👤 Tên TK: {payload.get('name', '')}", flush=True)
             print(f"🏦 Số TK: {payload.get('receiver', '')}", flush=True)
             print(f"💰 Số tiền: {amount:,} đ", flush=True)
-            print(f"📝 Nội dung: \033[1;31m{payload.get('msg', '')}\033[0m", flush=True)
+            print(f"📝 Nội dung: \033[1;31m{_get_transfer_content(payload, result.get('data',{}))}\033[0m", flush=True)
             # Bỏ log order_id
             print()
             # Trả kết quả JSON
@@ -346,7 +404,7 @@ if __name__ == "__main__":
                     "accountNumber": payload.get('receiver', ''),
                     "bank": payload.get('type', ''),
                     "accountHolder": payload.get('name', ''),
-                    "transferContent": payload.get('msg', ''),
+                    "transferContent": _get_transfer_content(payload, result.get('data',{})),
                     "qrBase64": payload.get('qr_base64') or payload.get('qr', ''),
                     "qrLink": payload.get('qr_link', ''),
                     "qrImagePath": img_path,
@@ -358,7 +416,7 @@ if __name__ == "__main__":
             # Tracking chạy BACKGROUND (không block response)
             if saved and order_id:
                 import subprocess
-                transfer_content = payload.get('msg', '')
+                transfer_content = _get_transfer_content(payload, result.get('data',{}))
                 subprocess.Popen(
                     ['python', __file__, '--track', username, transfer_content, str(order_id), str(amount)],
                     stdout=subprocess.DEVNULL,
@@ -411,11 +469,11 @@ if __name__ == "__main__":
                     print(f"   STK nhận: {payload.get('receiver', '')}", flush=True)
                     print(f"   Ngân hàng: {payload.get('type', '')}", flush=True)
                     print(f"   Tên: {payload.get('name', '')}", flush=True)
-                    print(f"   NDCK: {payload.get('msg', '')}", flush=True)
+                    print(f"   NDCK: {_get_transfer_content(payload)}", flush=True)
                     print(f"   Ảnh QR: {img_path}", flush=True)
                     print(f"   Lưu DB: {'OK' if saved else 'Lỗi lưu'}", flush=True)
                     # Bỏ log order_id
                     # Chờ và check lịch sử nạp tiền
                     if saved and order_id:
-                        transfer_content = payload.get('msg', '')
+                        transfer_content = _get_transfer_content(payload)
                         wait_and_check_deposit(u, transfer_content, order_id, a)

@@ -25,7 +25,14 @@ def check_and_deposit_on_het_tien_if_streak(user: str) -> None:
     """
     Khi user chuyển trạng thái Hết Tiền: delay 20s rồi check dây thắng/dây thua >= HET_TIEN_STREAK_MIN.
     Nếu >= 4 thì nạp tiền ngay. Chạy trong background thread, không block.
+    V2/V3/PRIORITY khi bật AUTO_DEPOSIT_V2_V3: không dùng luồng này (tránh nạp 2 lần với auto_deposit_for_user).
     """
+    config = load_config()
+    if not config:
+        return
+    if is_in_v2_v3(user, config) and int(config.get("AUTO_DEPOSIT_V2_V3", 0) or 0) == 1:
+        return
+
     def _run():
         time.sleep(HET_TIEN_CHECK_DELAY_SECONDS)
         _check_and_deposit_on_het_tien_if_streak_impl(user)
@@ -52,6 +59,8 @@ def _check_and_deposit_on_het_tien_if_streak_impl(user: str) -> bool:
             return False
         if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
             return False
+        # Đã bật auto nạp V2/V3/P1 → chỉ dùng auto_deposit_on_out_of_money (periodic/_apply), không nạp thêm qua streak
+        return False
     else:
         if config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) != 1:
             return False
@@ -105,22 +114,7 @@ def deposit_het_tien_streak_users():
         return
 
     for user in users:
-        if is_in_v2_v3(user, config):
-            v2_users = config.get("PRIORITY_USERS_V2", [])
-            v3_users = config.get("PRIORITY_USERS_V3", [])
-            if (user in v2_users or user in v3_users) and _is_v2_auto_deposit_blocked(config):
-                continue
-            if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
-                continue
-        else:
-            if config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) != 1:
-                continue
-
-        # Chờ nạp / đang nạp -> bỏ qua
-        if not can_create_deposit_order(user):
-            continue
-
-        enqueue_deposit_order(user)
+        _check_and_deposit_on_het_tien_if_streak_impl(user)
 
 
 def auto_het_tien_streak_scheduler(interval_seconds=60):
