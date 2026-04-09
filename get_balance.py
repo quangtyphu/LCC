@@ -19,10 +19,14 @@ BALANCE_COOLDOWN_SECONDS = 30
 _last_balance_fetch = {}
 
 
-def get_balance(username: str) -> dict:
+def get_balance(username: str, force: bool = False) -> dict:
     now = time.time()
     last = _last_balance_fetch.get(username)
-    if last and (now - last.get("ts", 0)) < BALANCE_COOLDOWN_SECONDS:
+    if (
+        not force
+        and last
+        and (now - last.get("ts", 0)) < BALANCE_COOLDOWN_SECONDS
+    ):
         cached = last.get("balance")
         if cached is not None:
             return {"ok": True, "balance": cached, "username": username, "cached": True}

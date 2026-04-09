@@ -69,7 +69,7 @@ if sys.platform == 'win32':
 import os, re, base64, requests, time
 from datetime import datetime
 from game_api_helper import game_request_with_retry
-from check_deposit_history import check_deposit_history
+from check_deposit_history import check_deposit_history, refresh_after_deposit_confirm
 from telegram_notifier import send_telegram
 
 # Dùng cấu hình chung nếu có, fallback localhost
@@ -215,6 +215,10 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
                                 remove_from_deposit_cache(username)
                             except Exception as e:
                                 print(f"⚠️ [{username}] Không xóa được khỏi cache: {e}")
+                            try:
+                                refresh_after_deposit_confirm(username)
+                            except Exception as e:
+                                print(f"⚠️ [{username}] Lỗi sau khi khớp lịch sử: {e}")
                         else:
                             print(f"⚠️ [{username}] Không cập nhật được trạng thái order")
                         

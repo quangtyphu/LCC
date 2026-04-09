@@ -29,6 +29,30 @@ _enqueued_lock = threading.Lock()
 _last_deposit_time = 0.0
 _last_deposit_lock = threading.Lock()
 
+# Lần gọi auto_deposit_for_user khi còn slot (0/1) — dùng để không spam [SKIP] ngay sau khi đã nạp user khác
+_OUTSIDE_MAX_ACTIVE_RECENT_ATTEMPT = {}  # username -> time.time()
+_OUTSIDE_SKIP_SUPPRESS_SEC = 180
+
+# Sau mỗi lần quyết định nạp (chuỗi streak → MAX_ACTIVE) cho user ngoài V2/V3 — bỏ qua gọi lặp từ periodic/watcher
+_OUTSIDE_DECISION_COOLDOWN_SEC = 120
+_OUTSIDE_DECISION_LAST = {}  # username -> time.time()
+
+
+def outside_decision_try_skip(user: str) -> bool:
+    """True = bỏ qua (vừa mới xử lý xong, không gọi lặp)."""
+    u = (user or "").strip()
+    if not u:
+        return True
+    last = _OUTSIDE_DECISION_LAST.get(u)
+    return bool(last and (time.time() - last < _OUTSIDE_DECISION_COOLDOWN_SEC))
+
+
+def outside_decision_done(user: str) -> None:
+    u = (user or "").strip()
+    if u:
+        _OUTSIDE_DECISION_LAST[u] = time.time()
+
+
 def _acquire_cache_lock():
     """Lấy lock file (tránh race khi nhiều process đọc/ghi)."""
     start = time.time()
@@ -400,7 +424,11 @@ def get_active_users_outside_v2_v3(config):
         print(f"[ERROR] Error fetching active-users-with-deposits: {e}")
         return []
 
-def auto_deposit_for_user(user):
+def auto_deposit_for_user(user, prioritize_outside_trigger=False, from_decision_chain=False):
+    """
+    prioritize_outside_trigger: nếu True, đưa `user` lên đầu danh sách outside hết tiền (ít dùng).
+    from_decision_chain: True khi gọi từ run_het_tien_deposit_decision (đã có cooldown ở ngoài).
+    """
     config = load_config()
     if is_in_v2_v3(user, config):
         if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
@@ -418,7 +446,9 @@ def auto_deposit_for_user(user):
     else:
         if config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) != 1:
             return
-        
+        if not from_decision_chain and outside_decision_try_skip(user):
+            return
+
         # 1. Kiểm tra số user đang active ngoài V2/V3/PRIORITY_USERS
         active_outside_users = get_active_users_outside_v2_v3(config)
         active_count = len(active_outside_users)
@@ -426,13 +456,21 @@ def auto_deposit_for_user(user):
         # 2. Lấy MAX_ACTIVE_USERS_OUTSIDE_V2_V3 từ TIME_WINDOWS nếu có, nếu không thì dùng giá trị mặc định
         max_limit = _get_max_active_users_outside_v2_v3(config)
         
-        print(f"[INFO] Active users outside V2/V3: {active_count}/{max_limit}")
-       
-        # 3. Nếu đã đủ limit → skip
+        u_log = (user or "").strip() or "?"
+
+        # 3. Đủ slot: bỏ qua log nếu vừa mới xét khi còn chỗ (lần sau 1/1 là hệ quả đã nạp user khác)
         if active_count >= max_limit:
-            print(f"[SKIP] Đã đủ {active_count} user ngoài V2/V3 đang active (limit: {max_limit}), không nạp thêm.")
+            last_try = _OUTSIDE_MAX_ACTIVE_RECENT_ATTEMPT.get(u_log)
+            if last_try and (time.time() - last_try < _OUTSIDE_SKIP_SUPPRESS_SEC):
+                return
+            print(
+                f"[SKIP] [{u_log}] MAX_ACTIVE ngoài V2/V3 đã đủ: {active_count}/{max_limit}, không nạp thêm.",
+                flush=True,
+            )
             return
-        
+
+        _OUTSIDE_MAX_ACTIVE_RECENT_ATTEMPT[u_log] = time.time()
+
         # 4. Tính số user cần nạp
         need_deposit = max_limit - active_count
         
@@ -442,28 +480,38 @@ def auto_deposit_for_user(user):
             if r.status_code != 200:
                 print(f"[ERROR] Cannot fetch out-of-money accounts.")
                 return
-            
+
             data = r.json()
             accounts = data if isinstance(data, list) else data.get("data", [])
             v2 = config.get("PRIORITY_USERS_V2", [])
             v3 = config.get("PRIORITY_USERS_V3", [])
             p1 = config.get("PRIORITY_USERS", [])
             v2_v3_set = set([u for u in v2 + v3 + p1 if u and u.strip()])
-            
-            # 6. Duyệt danh sách từ đầu, nạp V2/V3 và đủ số lượng outside
-            users_to_deposit = []
-            outside_count = 0  # Đếm số user outside đã thêm
-            
+
+            # Chuẩn hóa thứ tự tên account (giữ nguyên thứ tự API)
+            account_names = []
             for acc in accounts:
-                # Parse account name: có thể là string hoặc dict
                 if isinstance(acc, dict):
                     acc_name = acc.get("username") or acc.get("user") or str(acc.get("id", ""))
                 else:
                     acc_name = str(acc).strip()
-                
-                if not acc_name:
-                    continue
-                
+                if acc_name:
+                    account_names.append(acc_name)
+
+            u_trigger = (user or "").strip()
+            if (
+                prioritize_outside_trigger
+                and u_trigger
+                and u_trigger not in v2_v3_set
+                and u_trigger in account_names
+            ):
+                account_names = [u_trigger] + [x for x in account_names if x != u_trigger]
+
+            # 6. Duyệt danh sách, nạp V2/V3 và đủ số lượng outside
+            users_to_deposit = []
+            outside_count = 0  # Đếm số user outside đã thêm
+
+            for acc_name in account_names:
                 # Nếu là V2/V3 → nạp luôn (không giới hạn)
                 if acc_name in v2_v3_set:
                     users_to_deposit.append(acc_name)
@@ -471,34 +519,46 @@ def auto_deposit_for_user(user):
                 elif outside_count < need_deposit:
                     users_to_deposit.append(acc_name)
                     outside_count += 1
-                
+
                 # Nếu đã đủ số lượng outside → dừng
                 if outside_count >= need_deposit:
                     break
             
             if not users_to_deposit:
                 return
-            
-            
-            # 8. Nạp tiền cho từng user
+
+            enqueued = []
             for acc_name in users_to_deposit:
-                # Check xem có thể tạo lệnh nạp không (không có lệnh treo)
                 if not can_create_deposit_order(acc_name):
                     continue
-                
-                # Xác định loại user để log
-                user_type = "V2/V3/PRIORITY" if acc_name in v2_v3_set else "outside V2/V3/PRIORITY"
                 enqueue_deposit_order(acc_name)
-                    
+                enqueued.append(acc_name)
+
+            if enqueued:
+                print(
+                    f"[OUTSIDE] [{u_log}] MAX_ACTIVE lúc xét: {active_count}/{max_limit} "
+                    f"→ nạp: {', '.join(enqueued)}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[SKIP] [{u_log}] MAX_ACTIVE {active_count}/{max_limit} nhưng không tạo được lệnh "
+                    f"(cache treo hoặc không còn slot trong danh sách).",
+                    flush=True,
+                )
+
         except Exception as e:
             print(f"[ERROR] Fetch out-of-money: {e}")
+        finally:
+            if not from_decision_chain:
+                outside_decision_done(user)
 
 def periodic_check_all_users():
     """
-    Hàm check định kỳ mỗi 5 phút:
-    - Gọi API /api/accounts/out-of-money để lấy user có trạng thái "Hết Tiền"
-    - So sánh với config để lấy user cần nạp tiền
-    - Phân loại V2/V3/PRIORITY và outside, xử lý theo logic riêng
+    Check định kỳ (mặc định mỗi 5 phút):
+    - V2/V3/PRIORITY: vẫn gọi auto_deposit khi cần.
+    - Outside: chỉ khi PERIODIC_OUTSIDE_DEPOSIT=1 (mặc định 0). Nạp ngoài V2/V3 đã có luồng
+      schedule_het_tien / delayed; periodic outside dễ gọi trùng lần 2.
     """
     
     try:
@@ -561,9 +621,12 @@ def periodic_check_all_users():
                         except Exception as e:
                             print(f"[PERIODIC] Lỗi khi nạp tiền cho {user} (V2/V3/PRIORITY): {e}")
             
-            # ========== Xử lý outside ==========
+            # ========== Outside (tắt mặc định — tránh trùng luồng hết tiền) ==========
             if outside_users:
-                if config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) == 1:
+                if (
+                    config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) == 1
+                    and int(config.get("PERIODIC_OUTSIDE_DEPOSIT", 0) or 0) == 1
+                ):
                     # 1. Kiểm tra số user đang active ngoài V2/V3
                     active_outside_users = get_active_users_outside_v2_v3(config)
                     active_count = len(active_outside_users)
@@ -590,12 +653,15 @@ def periodic_check_all_users():
                             if len(users_to_deposit) >= need_deposit:
                                 break
                         
-                        # 6. Nạp tiền cho từng user outside đã được chọn
-                        for user in users_to_deposit:
+                        # 6. Một lần gọi đủ: auto_deposit_for_user đã quét /api/accounts/out-of-money;
+                        # gọi lặp từng user chỉ lặp lại cùng một kiểm tra limit + log SKIP.
+                        if users_to_deposit:
                             try:
-                                auto_deposit_for_user(user)
+                                auto_deposit_for_user(
+                                    users_to_deposit[0], prioritize_outside_trigger=False
+                                )
                             except Exception as e:
-                                print(f"[PERIODIC] Lỗi khi nạp tiền cho {user} (outside): {e}")
+                                print(f"[PERIODIC] Lỗi khi nạp tiền outside (batch): {e}")
             
         except Exception as e:
             print(f"[PERIODIC] Lỗi khi gọi API out-of-money: {e}")

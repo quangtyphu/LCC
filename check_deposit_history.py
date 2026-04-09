@@ -1,8 +1,54 @@
 
 import asyncio
+import requests
 from game_api_helper import game_request_with_retry, NODE_SERVER_URL
 from get_balance import get_balance
 from ws_minigame_client import connect_minigame
+
+
+def refresh_after_deposit_confirm(username: str) -> None:
+    """
+    Sau khi chắc chắn tiền đã vào (lệnh Thành Công / giao dịch mới lưu):
+    làm mới số dư (bỏ cooldown), cập nhật trạng thái user, WS minigame.
+    """
+    try:
+        balance_result = get_balance(username, force=True)
+        if not balance_result.get("ok"):
+            print(f"⚠️ [{username}] Lỗi lấy balance: {balance_result.get('error')}", flush=True)
+        else:
+            bal = balance_result.get("balance")
+            if bal is not None:
+                try:
+                    print(f"💰 [{username}] Số dư sau nạp: {int(float(bal)):,}đ", flush=True)
+                except (TypeError, ValueError):
+                    print(f"💰 [{username}] Số dư sau nạp: {bal}", flush=True)
+    except Exception as e:
+        print(f"⚠️ [{username}] Lỗi khi cập nhật balance: {e}", flush=True)
+    try:
+        resp_status = requests.put(
+            f"{NODE_SERVER_URL}/api/users/{username}",
+            json={"status": "Đang Chơi"},
+            timeout=5,
+        )
+        if resp_status.status_code != 200:
+            print(
+                f"⚠️ [{username}] Lỗi cập nhật trạng thái API: {resp_status.status_code} {resp_status.text}",
+                flush=True,
+            )
+    except Exception as e:
+        print(f"⚠️ [{username}] Không kết nối được API khi update status: {e}", flush=True)
+
+    try:
+        coro = connect_minigame(username, keep_alive=False)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(coro)
+        else:
+            loop.create_task(coro)
+    except Exception as e:
+        print(f"⚠️ [{username}] Lỗi gọi WS minigame sau nạp: {e}", flush=True)
+
 
 def _sync_deposit_order_by_amount(username: str, tx_amount: int, desired_status: str = "Thành Công") -> bool:
     """
@@ -12,7 +58,6 @@ def _sync_deposit_order_by_amount(username: str, tx_amount: int, desired_status:
     if not username or not tx_amount:
         return False
     try:
-        import requests
         resp = requests.get(
             f"{NODE_SERVER_URL}/api/deposit-orders",
             params={"username": username, "limit": 50},
@@ -93,9 +138,10 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
         return {"ok": False, "error": str(e)}
 
     # 2. Lưu giao dịch mới vào DB thực tế
+    # Thứ tự bình thường (giao dịch mới): (1) dòng "Đã lưu 1 giao dịch nạp ..." rồi (2) "✅ Đã cập nhật deposit_orders #... → Thành Công"
     saved = []
     new_saved = 0
-    import requests  # Dùng requests chuẩn cho backend local
+    synced_order_success = False
     for tx in transactions:
         record = {
             "username": username,
@@ -133,37 +179,13 @@ def check_deposit_history(username, transfer_content=None, order_id=None, amount
         # Sync deposit_orders theo số tiền (không cần NDCK)
         tx_amount = tx.get("amount", 0)
         if tx_amount:
-            _sync_deposit_order_by_amount(username, int(tx_amount), desired_status="Thành Công")
+            if _sync_deposit_order_by_amount(username, int(tx_amount), desired_status="Thành Công"):
+                synced_order_success = True
 
-    if new_saved == 0:
-        pass
-    else:
-        # Khi có giao dịch mới, cập nhật balance trước khi chuyển trạng thái
-        try:
-            balance_result = get_balance(username)
-            if not balance_result.get("ok"):
-                print(f"⚠️ [{username}] Lỗi lấy balance: {balance_result.get('error')}", flush=True)
-        except Exception as e:
-            print(f"⚠️ [{username}] Lỗi khi cập nhật balance: {e}", flush=True)
-        # Chuyển trạng thái sang Đang Chơi
-        try:
-            resp_status = requests.put(f"{NODE_SERVER_URL}/api/users/{username}", json={"status": "Đang Chơi"}, timeout=5)
-            if resp_status.status_code != 200:
-                print(f"⚠️ [{username}] Lỗi cập nhật trạng thái API: {resp_status.status_code} {resp_status.text}", flush=True)
-        except Exception as e:
-            print(f"⚠️ [{username}] Không kết nối được API khi update status: {e}", flush=True)
-
-        # Sau khi nạp thành công, kết nối WS minigame 1 lần (không reconnect)
-        try:
-            coro = connect_minigame(username, keep_alive=False)
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                asyncio.run(coro)
-            else:
-                loop.create_task(coro)
-        except Exception as e:
-            print(f"⚠️ [{username}] Lỗi gọi WS minigame sau nạp: {e}", flush=True)
+    # Có giao dịch mới lưu DB HOẶC vừa đồng bộ lệnh → Đã Nạp → Thành Công: đều cần làm mới số dư
+    # (Trước đây chỉ khi new_saved > 0 nên khi giao dịch đã tồn tại 409 thì không gọi get_balance.)
+    if new_saved > 0 or synced_order_success:
+        refresh_after_deposit_confirm(username)
 
     return {"ok": True, "total": total, "transactions": transactions}
 

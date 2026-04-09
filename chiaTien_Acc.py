@@ -81,42 +81,30 @@ def _strategy_from(cfg: dict, w: dict, fallback: int = 1) -> int:
 
 # ================= Helpers khác =================
 
-def _apply_het_tien_and_deposit(user: str) -> None:
-    """Ép trạng thái Hết Tiền + streak (ngoài V2) + auto_deposit (gọi sau khi đã xác nhận balance < 10k)."""
-    config = load_config()
-    with contextlib.suppress(Exception):
-        requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
-    # Streak chỉ cho user ngoài V2/V3/P1 (bypass limit); V2 đã có auto_deposit → tránh nạp 2 lần khi dây >= min
-    try:
-        from streak_deposit_scheduler import check_and_deposit_on_het_tien_if_streak
-        from auto_deposit_on_out_of_money import is_in_v2_v3
-
-        if not is_in_v2_v3(user, config):
-            check_and_deposit_on_het_tien_if_streak(user)
-    except Exception as e:
-        print(f"[ERROR] check_and_deposit_on_het_tien_if_streak({user}): {e}")
-    active_window = _get_active_window(config)
-    if active_window.get("PAUSE"):
-        print(f"[SKIP] {user} balance < 10000 nhưng đang trong khung giờ PAUSE ({active_window.get('start', 'N/A')}-{active_window.get('end', 'N/A')}), bỏ qua nạp tiền tự động.")
-    else:
-        try:
-            from auto_deposit_on_out_of_money import auto_deposit_for_user
-            auto_deposit_for_user(user)
-        except Exception as e:
-            print(f"[ERROR] auto_deposit_for_user({user}): {e}")
-
-
 def _delayed_het_tien_check(user: str) -> None:
-    """Sau 20s check lại số dư, nếu vẫn < 10k thì mới ép Hết Tiền."""
-    time.sleep(20)
+    """Sau 20s check lại số dư, nếu vẫn < 10k thì ép Hết Tiền rồi quyết định nạp (không chờ thêm 20s)."""
+    from streak_deposit_scheduler import het_tien_slot_try_acquire, het_tien_slot_release
+
+    if not het_tien_slot_try_acquire(user):
+        return
     try:
-        r = requests.get(f"{API_BASE}/api/users/{user}", timeout=5)
-        if r.status_code == 200:
-            balance = int(r.json().get("balance") or 0)
-            if balance < 10000:
-                _apply_het_tien_and_deposit(user)
-    except Exception as e:
-        print(f"⚠️ delayed_het_tien_check {user}: {e}")
+        time.sleep(20)
+        try:
+            r = requests.get(f"{API_BASE}/api/users/{user}", timeout=5)
+            if r.status_code == 200:
+                balance = int(r.json().get("balance") or 0)
+                if balance < 10000:
+                    with contextlib.suppress(Exception):
+                        requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
+                    try:
+                        from streak_deposit_scheduler import run_het_tien_deposit_decision
+                        run_het_tien_deposit_decision(user)
+                    except Exception as e:
+                        print(f"[ERROR] run_het_tien_deposit_decision({user}): {e}")
+        except Exception as e:
+            print(f"⚠️ delayed_het_tien_check {user}: {e}")
+    finally:
+        het_tien_slot_release(user)
 
 
 def _fresh_balances_for_online(online_users: List[str]) -> Dict[str, int]:
@@ -140,20 +128,20 @@ def _fresh_balances_for_online(online_users: List[str]) -> Dict[str, int]:
                 with contextlib.suppress(Exception):
                     requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
                 try:
-                    from streak_deposit_scheduler import check_and_deposit_on_het_tien_if_streak
-                    check_and_deposit_on_het_tien_if_streak(user)
+                    from streak_deposit_scheduler import schedule_het_tien_deposit_after_delay
+                    schedule_het_tien_deposit_after_delay(user)
                 except Exception as ex:
-                    print(f"[ERROR] check_and_deposit_on_het_tien_if_streak({user}): {ex}")
+                    print(f"[ERROR] schedule_het_tien_deposit_after_delay({user}): {ex}")
         except Exception as e:
             print(f"⚠️ Lỗi lấy balance cho {user}: {e}")
             balances[user] = 0
             with contextlib.suppress(Exception):
                 requests.put(f"{API_BASE}/api/users/{user}", json={"status": "Hết Tiền"})
             try:
-                from streak_deposit_scheduler import check_and_deposit_on_het_tien_if_streak
-                check_and_deposit_on_het_tien_if_streak(user)
+                from streak_deposit_scheduler import schedule_het_tien_deposit_after_delay
+                schedule_het_tien_deposit_after_delay(user)
             except Exception as ex:
-                print(f"[ERROR] check_and_deposit_on_het_tien_if_streak({user}): {ex}")
+                print(f"[ERROR] schedule_het_tien_deposit_after_delay({user}): {ex}")
     return balances
 
 
@@ -626,11 +614,12 @@ def assign_bets(
 
         current_bal = balances[chosen]
 
-        # ----- V2: đánh lẻ 1 lần/phiên để tổng cược ngày khác bội 10k (chỉ từ 01:00) -----
+        # ----- V2: đánh lẻ 1 lần/phiên để tổng cược ngày khác bội 10k (chỉ khung 01:00–02:00) -----
         tz = ZoneInfo("Asia/Ho_Chi_Minh")
-        is_after_1am = datetime.now(tz).time() >= dt_time(1, 0)
+        now_t = datetime.now(tz).time()
+        in_v2_odd_window = dt_time(1, 0) <= now_t < dt_time(2, 0)
         if (
-            is_after_1am
+            in_v2_odd_window
             and today_bets
             and chosen in PRIORITY_USERS_V2
             and chosen not in odd_applied_v2

@@ -89,6 +89,10 @@ from jwt_manager import refresh_jwt
 
 API_BASE = "http://127.0.0.1:3000"  # URL CMS Node.js
 
+# Trạng thái API lần trước (theo user) — chỉ schedule nạp khi *vừa* chuyển sang Hết Tiền,
+# không lặp mỗi 20s trong watcher (slot release xong là lên lịch lại → gọi auto_deposit lần 2).
+_watcher_last_api_status = {}
+
 
 # ============================================================
 # =============== HÀM CHẠY CHÍNH KHÔNG GIỚI HẠN GIỜ ==========
@@ -114,23 +118,18 @@ async def watcher_loop():
                     status = udoc.get("status")
                     if u in current and status != "Đang Chơi":
                         if status == "Hết Tiền":
-                            try:
-                                from constants import load_config
-                                from auto_deposit_on_out_of_money import (
-                                    auto_deposit_for_user,
-                                    is_in_v2_v3,
-                                )
-                                cfg = load_config()
-                                if is_in_v2_v3(u, cfg) and int(cfg.get("AUTO_DEPOSIT_V2_V3", 0) or 0) == 1:
-                                    auto_deposit_for_user(u)
-                                else:
+                            prev = _watcher_last_api_status.get(u)
+                            if prev != "Hết Tiền":
+                                try:
                                     from streak_deposit_scheduler import (
-                                        check_and_deposit_on_het_tien_if_streak,
+                                        schedule_het_tien_deposit_after_delay,
                                     )
-                                    check_and_deposit_on_het_tien_if_streak(u)
-                            except Exception as ex:
-                                print(f"[WARN] auto/streak deposit ({u}): {ex}", flush=True)
+                                    schedule_het_tien_deposit_after_delay(u)
+                                except Exception as ex:
+                                    print(f"[WARN] auto/streak deposit ({u}): {ex}", flush=True)
                         await disconnect_user(u)
+                    if u in current and status is not None:
+                        _watcher_last_api_status[u] = status
                     # Nếu là Token Lỗi thì vẫn tự động refresh JWT như cũ
                     if u in current and status == "Token Lỗi":
                         print(f"🔄 [{u}] Tự động refresh JWT do Token Lỗi", flush=True)
