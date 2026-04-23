@@ -4,7 +4,7 @@ import os
 
 from pathlib import Path
 
-from game_api_helper import game_request_with_retry
+from game_api_helper import game_request_with_retry_ex
 from telegram_notifier import send_telegram
 from jackpot_session_db import upsert_jackpot_record
 import constants
@@ -33,25 +33,29 @@ def _game_total_one_side(overall: dict | None) -> float | None:
     return None
 
 
-def _fetch_session_summary(username: str, session_id) -> dict | None:
-    resp = game_request_with_retry(
+def _fetch_session_summary(username: str, session_id) -> tuple[dict | None, str | None]:
+    """Trả về (data, failure_tag). failure_tag == 'proxy_exhausted' → caller không nên làm bước sau."""
+    resp, tag = game_request_with_retry_ex(
         username,
         "GET",
         SESSION_SUMMARY_URL,
         params={"sessionId": session_id},
     )
+    if tag == "proxy_exhausted":
+        print(f"⚠️ [{username}] session-summary: proxy hết retry, bỏ các bước sau", flush=True)
+        return None, "proxy_exhausted"
     if not resp or resp.status_code != 200:
         print(
             f"⚠️ [{username}] session-summary (jackpot DB) HTTP {resp.status_code if resp else 'none'}",
             flush=True,
         )
-        return None
+        return None, None
     try:
         data = resp.json()
     except Exception as e:
         print(f"⚠️ [{username}] session-summary parse: {e}", flush=True)
-        return None
-    return data if isinstance(data, dict) else None
+        return None, None
+    return (data if isinstance(data, dict) else None), None
 
 
 def _try_save_jackpot_db(
@@ -60,12 +64,14 @@ def _try_save_jackpot_db(
     session_data: dict,
     jackpot_amount,
     total_bet_session: float | None,
-) -> None:
-    """Ghi jackpot_session_records; không ném exception ra ngoài."""
+) -> str | None:
+    """Ghi jackpot_session_records; không ném exception ra ngoài. Trả 'proxy_exhausted' nếu proxy hết retry."""
     try:
-        summary = _fetch_session_summary(username, session_id)
+        summary, tag = _fetch_session_summary(username, session_id)
+        if tag == "proxy_exhausted":
+            return "proxy_exhausted"
         if not summary:
-            return
+            return None
         overall = summary.get("overall")
         game_total = _game_total_one_side(overall)
         if not game_total or game_total <= 0:
@@ -73,7 +79,7 @@ def _try_save_jackpot_db(
                 f"⚠️ [{username}] Không ghi jackpot DB: thiếu tổng cược game (session-summary)",
                 flush=True,
             )
-            return
+            return None
 
         my_bet = session_data.get("amount")
         try:
@@ -88,10 +94,10 @@ def _try_save_jackpot_db(
                 f"⚠️ [{username}] Không ghi jackpot DB: thiếu tổng cược mình (amount / session_bet_totals)",
                 flush=True,
             )
-            return
+            return None
         if not isinstance(jackpot_amount, (int, float)) or float(jackpot_amount) <= 0:
             print(f"⚠️ [{username}] Không ghi jackpot DB: thiếu số hũ từ jackpot-history", flush=True)
-            return
+            return None
 
         ja = float(jackpot_amount)
         amount_received = (my_bet_f * ja) / game_total
@@ -136,6 +142,7 @@ def _try_save_jackpot_db(
         )
     except Exception as e:
         print(f"⚠️ [{username}] Lỗi ghi jackpot DB: {e}", flush=True)
+    return None
 
 _notified_sessions: set[str] = set()
 _last_cleanup_ts = 0.0
@@ -227,23 +234,27 @@ def _normalize_result_code(data: dict) -> int | None:
     return None
 
 
-def _fetch_jackpot_history(username: str, limit: int = 6) -> list | None:
-    resp = game_request_with_retry(username, "GET", JACKPOT_API_URL, params={"limit": limit})
+def _fetch_jackpot_history(username: str, limit: int = 6) -> tuple[list | None, str | None]:
+    """(details, failure_tag). Chỉ failure_tag == 'proxy_exhausted' là cần dừng hẳn pipeline."""
+    resp, tag = game_request_with_retry_ex(username, "GET", JACKPOT_API_URL, params={"limit": limit})
+    if tag == "proxy_exhausted":
+        print(f"❌ [{username}] jackpot-history: proxy hết retry, không gọi API khác", flush=True)
+        return None, "proxy_exhausted"
     if not resp or resp.status_code != 200:
         print(f"❌ [{username}] Lỗi jackpot-history: {resp.status_code if resp else 'No response'}", flush=True)
-        return None
+        return None, tag or "error"
     try:
         data = resp.json()
     except Exception as e:
         print(f"❌ [{username}] Lỗi parse jackpot-history: {e}", flush=True)
-        return None
+        return None, "error"
     if isinstance(data, dict):
         details = data.get("details") or data.get("data") or data.get("items")
         if isinstance(details, list):
-            return details
+            return details, None
     if isinstance(data, list):
-        return data
-    return None
+        return data, None
+    return None, None
 
 
 def _find_detail_by_session(details: list, session_id) -> dict | None:
@@ -289,11 +300,17 @@ def check_and_notify_jackpot(username: str, session_data: dict):
     with _notify_lock:
         if session_key in _notified_sessions:
             return
-        if not _try_create_session_lock(session_key):
-            return
+    if not _try_create_session_lock(session_key):
+        return
+
+    details, _ = _fetch_jackpot_history(username, limit=6)
+    if not details:
+        _remove_session_lock(session_key)
+        return
+
+    with _notify_lock:
         _notified_sessions.add(session_key)
 
-    details = _fetch_jackpot_history(username, limit=6)
     detail = _find_detail_by_session(details, session_id) if details else None
     result_text = None
     jackpot_amount = None
@@ -320,7 +337,12 @@ def check_and_notify_jackpot(username: str, session_data: dict):
         f"🎰 [{username}] Nổ hũ 111/666 phiên {session_id} → ghi DB + gửi Telegram",
         flush=True,
     )
-    _try_save_jackpot_db(username, session_id, session_data, jackpot_amount, total_bet)
+    save_tag = _try_save_jackpot_db(username, session_id, session_data, jackpot_amount, total_bet)
+    if save_tag == "proxy_exhausted":
+        with _notify_lock:
+            _notified_sessions.discard(session_key)
+        _remove_session_lock(session_key)
+        return
 
     if send_telegram(msg):
         _cleanup_notified_sessions()

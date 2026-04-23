@@ -12,11 +12,37 @@ def _build_proxies(proxy_str: str | None):
     proxy_url = f"socks5h://{proxy_auth}"
     return {"http": proxy_url, "https": proxy_url}
 
+
+def _fetch_proxy_from_db(username: str) -> str | None:
+    try:
+        r = requests.get(f"{NODE_SERVER_URL}/api/users/{username}", timeout=5)
+        if r.status_code != 200:
+            return None
+        p = r.json().get("proxy")
+        if p is not None and str(p).strip():
+            return str(p).strip()
+    except Exception:
+        pass
+    return None
+
+
 def get_access_token(username: str, password: str, proxy_str: str | None = None) -> str | None:
     """
     Lấy accessToken từ gateway bằng username + password.
+    Luôn gọi gateway qua SOCKS; nếu không truyền proxy thì đọc từ DB user.
     """
-    proxies = _build_proxies(proxy_str)
+    p = (proxy_str or "").strip()
+    if not p:
+        p = _fetch_proxy_from_db(username) or ""
+    p = p.strip()
+    if not p:
+        return None
+    try:
+        proxies = _build_proxies(p)
+    except Exception:
+        return None
+    if not proxies:
+        return None
     params = {
         "c": "3",
         "un": username,
@@ -72,7 +98,7 @@ def update_access_token_to_db(username: str, access_token: str) -> bool:
 if __name__ == "__main__":
     username = input("Username: ").strip()
     password = input("Password: ").strip()
-    proxy = input("Proxy (host:port:user:pass hoặc Enter): ").strip() or None
+    proxy = input("Proxy (host:port:user:pass, Enter = lấy từ DB): ").strip() or None
 
     token = get_access_token(username, password, proxy)
     if token:

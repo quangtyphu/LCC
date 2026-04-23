@@ -233,7 +233,7 @@ def force_check():
 
     # 2) Kiểm tra + refresh JWT nếu cần
     try:
-        ok = asyncio.run(test_token(jwt, proxy))
+        ok = asyncio.run(test_token(jwt, proxy, user=username))
     except Exception:
         ok = False
 

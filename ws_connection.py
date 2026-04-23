@@ -33,6 +33,23 @@ async def _requests_put(path, json_data, timeout=5):
     return await asyncio.to_thread(lambda: requests.put(f"{API_BASE}{path}", json=json_data, timeout=timeout))
 
 
+async def _fetch_user_proxy_from_db(username: str) -> str | None:
+    """Lấy chuỗi proxy mới nhất từ Node API (dùng trước mỗi lần thử WS)."""
+
+    def _get():
+        try:
+            r = requests.get(f"{API_BASE}/api/users/{username}", timeout=5)
+            if r.status_code != 200:
+                return None
+            p = r.json().get("proxy")
+            if p is None or not str(p).strip():
+                return None
+            return str(p).strip()
+        except Exception:
+            return None
+
+    return await asyncio.to_thread(_get)
+
 
 # ------------------- Cập nhật trạng thái user qua API (async) -------------------
 async def update_user_status(user, status):
@@ -107,23 +124,27 @@ async def handle_ws(acc, conn_id: str):
             threading.Thread(target=_run_full_check, daemon=True).start()
         except Exception as e:
             print(f"⚠️ [{user}] Lỗi import hoặc chạy user_full_check_logic: {e}")
-        proxy_str = acc.get("proxy")
         jwt = acc.get("jwt")
 
-        # ===== 1) Proxy check trước với retry backoff =====
-        try:
-            host, port, puser, ppass = proxy_str.split(":")
-            port = int(port)
-        except Exception:
-            print(f"🔐 [{user}] Đã Kết Nối Proxy ( Proxy Lỗi )")
-            await update_user_status(user, "Proxy Lỗi")
-            return
-
+        # ===== 1) Proxy check trước với retry backoff — mỗi attempt đọc proxy mới từ DB =====
         backoffs = [0, 15, 30, 60, 120]  # nhanh hơn, vẫn 5 lần
         proxy_ok = False
+        proxy_str = None
+        host = port = puser = ppass = None
         for attempt, delay in enumerate(backoffs, start=1):
             if delay:
                 await asyncio.sleep(delay)
+            proxy_str = await _fetch_user_proxy_from_db(user)
+            if not proxy_str:
+                print(f"⚠️ [{user}] Không lấy được proxy từ DB (attempt {attempt})")
+                continue
+            acc["proxy"] = proxy_str
+            try:
+                host, port, puser, ppass = proxy_str.split(":")
+                port = int(port)
+            except Exception:
+                print(f"🔐 [{user}] Proxy format lỗi (attempt {attempt})")
+                continue
             test_sock = socks.socksocket()
             test_sock.set_proxy(socks.SOCKS5, host, port, True, puser, ppass)
             test_sock.setblocking(True)

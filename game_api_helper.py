@@ -16,6 +16,19 @@ import requests as std_requests  # Fallback khi curl_cffi lỗi TLS
 
 NODE_SERVER_URL = "http://127.0.0.1:3000"
 
+# User đã bị đánh dấu proxy chết trong tiến trình → không lặp 5 lần retry cho mọi API.
+# Mở lại: restart tiến trình hoặc gọi clear_proxy_circuit(username) sau khi đổi proxy / sửa status.
+_PROXY_CIRCUIT_OPEN: set[str] = set()
+
+
+def clear_proxy_circuit(username: str | None = None) -> None:
+    """Xóa circuit proxy (một user hoặc toàn bộ). Gọi sau khi đã sửa proxy hoặc gỡ trạng thái Proxy Lỗi."""
+    if username is None:
+        _PROXY_CIRCUIT_OPEN.clear()
+    else:
+        _PROXY_CIRCUIT_OPEN.discard(username)
+
+
 # Import jwt_manager để refresh token
 try:
     from jwt_manager import refresh_jwt_and_token
@@ -62,14 +75,19 @@ def get_user_auth(username: str) -> tuple | None:
             return None
         
         user = resp.json()
+        status_raw = user.get("status")
+        if status_raw is not None and str(status_raw).strip() == "Proxy Lỗi":
+            _PROXY_CIRCUIT_OPEN.add(username)
+            return None
+
         proxy_str = user.get("proxy")
         jwt = user.get("jwt")
         access_token = user.get("accessToken")
         nickname = user.get("nickname", "")
-        
+
         if not proxy_str or not jwt or not access_token:
             return None
-        
+
         return (proxy_str, jwt, access_token, nickname)
     
     except Exception:
@@ -122,50 +140,46 @@ def build_common_params(access_token: str) -> dict:
     }
 
 
-def game_request_with_retry(
+def game_request_with_retry_ex(
     username: str,
     method: str,
     url: str,
     params: dict = None,
     json_data: dict = None,
-    timeout: int = 20
-) -> curl_requests.Response | None:
+    timeout: int = 20,
+) -> tuple[curl_requests.Response | None, str | None]:
     """
-    Gọi API game với auto-retry khi token hết hạn (401/403).
-    
-    Args:
-        username: Username để lấy auth
-        method: "GET", "POST", hoặc "PUT"
-        url: URL đầy đủ của API
-        params: Query params (sẽ merge với common params)
-        json_data: Body JSON (cho POST/PUT)
-        timeout: Timeout seconds
-    
-    Returns:
-        Response object hoặc None nếu lỗi
+    Giống game_request_with_retry nhưng trả thêm failure_tag để caller dừng sớm (vd. proxy_exhausted).
+
+    failure_tag: None (ok), "proxy_exhausted", "no_auth", "auth", "error"
     """
+    if username in _PROXY_CIRCUIT_OPEN:
+        return None, "proxy_exhausted"
+
     # 1. Lấy auth info
     auth = get_user_auth(username)
     if not auth:
+        if username in _PROXY_CIRCUIT_OPEN:
+            return None, "proxy_exhausted"
         print(f"❌ [{username}] Không lấy được auth info", flush=True)
-        return None
-    
+        return None, "no_auth"
+
     proxy_str, jwt, access_token, _ = auth
-    
+
     # 2. Setup proxy
     proxies = build_proxies(proxy_str)
     if not proxies:
         print(f"❌ [{username}] Proxy không hợp lệ", flush=True)
-        return None
-    
+        return None, "error"
+
     # 3. Build headers & params
     headers = build_common_headers(jwt)
     common_params = build_common_params(access_token)
-    
+
     # Merge params
     if params:
         common_params.update(params)
-    
+
     def _do_request(use_fallback: bool = False, extra_timeout: int = 0):
         """use_fallback=True: dùng std_requests khi curl_cffi lỗi. extra_timeout: cộng thêm khi fallback do timeout."""
         req = std_requests if use_fallback else curl_requests
@@ -186,6 +200,7 @@ def game_request_with_retry(
         return None
 
     resp = None
+    proxy_exhausted = False
     for attempt in range(1, 6):
         try:
             resp = _do_request(use_fallback=False)
@@ -207,11 +222,13 @@ def game_request_with_retry(
                     break
                 except Exception as e2:
                     print(f"❌ [{username}] Fallback requests cũng lỗi: {e2}", flush=True)
-                    return None
+                    return None, "error"
             proxy_closed = "connection to proxy closed" in msg or "curl: (97" in msg
             if proxy_closed:
                 print(f"❌ [{username}] Lỗi proxy (attempt {attempt}/5): {e}", flush=True)
                 if attempt == 5:
+                    proxy_exhausted = True
+                    _PROXY_CIRCUIT_OPEN.add(username)
                     try:
                         curl_requests.put(f"{NODE_SERVER_URL}/api/users/{username}", json={"status": "Proxy Lỗi"}, timeout=5)
                     except Exception:
@@ -220,14 +237,14 @@ def game_request_with_retry(
                 time.sleep(1)
                 continue
             print(f"❌ [{username}] Lỗi request: {e}", flush=True)
-            return None
+            return None, "error"
 
     if resp is None:
-        return None
-    
+        return None, "proxy_exhausted" if proxy_exhausted else "error"
+
     # 5. Auto-retry nếu 401/403
     if resp.status_code in (401, 403):
-       
+
         if refresh_jwt_and_token(username):
             # Lấy lại token mới
             auth2 = get_user_auth(username)
@@ -235,7 +252,7 @@ def game_request_with_retry(
                 _, jwt2, access_token2, _ = auth2
                 headers["authorization"] = f"Bearer {jwt2}"
                 common_params["at"] = access_token2
-                
+
                 # Retry với token mới
                 try:
                     resp = _do_request(use_fallback=False)
@@ -252,11 +269,42 @@ def game_request_with_retry(
                         resp = None
                     if resp is None:
                         print(f"❌ [{username}] Lỗi retry: {e}", flush=True)
-                        return None
+                        return None, "error"
         else:
             print(f"❌ [{username}] Không refresh được token", flush=True)
-            return None
-    
+            return None, "auth"
+
+    if resp is not None and 200 <= resp.status_code < 300:
+        _PROXY_CIRCUIT_OPEN.discard(username)
+
+    return resp, None
+
+
+def game_request_with_retry(
+    username: str,
+    method: str,
+    url: str,
+    params: dict = None,
+    json_data: dict = None,
+    timeout: int = 20
+) -> curl_requests.Response | None:
+    """
+    Gọi API game với auto-retry khi token hết hạn (401/403).
+
+    Args:
+        username: Username để lấy auth
+        method: "GET", "POST", hoặc "PUT"
+        url: URL đầy đủ của API
+        params: Query params (sẽ merge với common params)
+        json_data: Body JSON (cho POST/PUT)
+        timeout: Timeout seconds
+
+    Returns:
+        Response object hoặc None nếu lỗi
+    """
+    resp, _ = game_request_with_retry_ex(
+        username, method, url, params=params, json_data=json_data, timeout=timeout
+    )
     return resp
 
 
