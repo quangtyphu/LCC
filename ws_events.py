@@ -12,31 +12,28 @@ from jackpot_history_notifier import check_and_notify_jackpot
 
 API_BASE = "http://127.0.0.1:3000"  # URL server.js của bạn
 
+
+def increment_bet_totals(username: str, amount) -> None:
+    """Cộng dồn bet_totals trên CMS (không qua bet_history)."""
+    if amount is None:
+        return
+    try:
+        amt = int(amount)
+        if amt <= 0:
+            return
+        r = requests.post(
+            f"{API_BASE}/api/bet-totals/increment",
+            json={"username": username, "amount": amt},
+            timeout=3,
+        )
+        if r.status_code != 200:
+            print(f"⚠️ Lỗi bet-totals increment: {r.status_code} {r.text[:200]}", flush=True)
+    except Exception as e:
+        print(f"⚠️ Không gọi được bet-totals increment: {e}", flush=True)
+
+
 # ------------------- Phiên trước để kiểm tra streak -------------------
 prev_session_users = {}  # {session_id: [username1, username2,...]}
-
-# ------------------- Lưu lịch sử cược -------------------
-def record_bet(username, game, amount, door, status="placed", balance=None, prize=None, dices=None):
-    payload = {
-        "username": username,
-        "game": game,
-        "amount": amount,
-        "door": door,
-        "status": status,
-    }
-    if balance is not None:
-        payload["balance"] = balance
-    if prize is not None:
-        payload["prize"] = prize
-    if dices is not None:
-        payload["dices"] = dices
-
-    try:
-        r = requests.post(f"{API_BASE}/api/bet-history", json=payload, timeout=3)
-        if r.status_code != 200:
-            print(f"⚠️ Lỗi ghi bet-history: {r.text}", flush=True)
-    except Exception as e:
-        print(f"⚠️ Không kết nối được API bet-history: {e}", flush=True)
 
 # ------------------- Cập nhật balance -------------------
 def update_balance(user, balance, *, silent=False):
@@ -282,8 +279,7 @@ async def handle_event(user, msg):
                     flush=True
                 )
 
-            record_bet(user, game="LC79", amount=amount, door=bet_label,
-                       status="success", balance=post_balance)
+            increment_bet_totals(user, amount)
 
         elif event == "bet_refund":
             amount = data.get("amount")
@@ -316,9 +312,6 @@ async def handle_event(user, msg):
                 flush=True
             )
 
-            record_bet(user, game="LC79", amount=amount, door=bet_label,
-                       status="refund", balance=post_balance)
-
             # Chỉ refresh nếu thiếu post_balance và refund khớp pending
             if post_balance is None and matched_pending:
                 asyncio.create_task(refresh_balance_via_api(user, "Bet refund"))
@@ -329,10 +322,6 @@ async def handle_event(user, msg):
             dices = data.get("dices", [])
             update_balance(user, balance, silent=True)
             print(f"🎲 [{user}] Thắng phiên | Dices={dices} | Prize={prize} | Balance={balance}", flush=True)
-            record_bet(user, game="LC79",
-                       amount=data.get("amount", 0),
-                       door=data.get("door", ""),
-                       status="won", balance=balance, prize=prize, dices=dices)
             # Fallback: check 111/666 on won-session, then notify jackpot
             try:
                 dices_str = "".join(str(int(x)) for x in dices) if isinstance(dices, (list, tuple)) else ""

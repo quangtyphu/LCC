@@ -68,20 +68,28 @@ def login_http(username: str, password: str) -> dict | None:
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "text/html,application/xhtml+xml",
+        "Accept": "application/json, text/plain, */*",
         "Origin": BASE_URL,
         "Referer": BASE_URL + "/",
     })
     try:
         session.get(BASE_URL + "/", timeout=15)
         r = session.post(
-            BASE_URL + "/dangnhap.php",
-            data={"Ten_Login": username, "password": password},
+            BASE_URL + "/login.php",
+            data={"user": username, "pass": password},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=15,
             allow_redirects=True,
         )
-        if "Số Dư" in r.text or "Đăng xuất" in r.text or "donhangproxy" in r.url:
+        login_ok = False
+        try:
+            data = r.json()
+            login_ok = str(data.get("status", "")).lower() == "ok"
+        except Exception:
+            # Một số cấu hình có thể trả HTML thay vì JSON.
+            login_ok = ("Đăng xuất" in r.text) or ("Thành công" in r.text) or ("donhangproxy" in r.url)
+
+        if login_ok:
             cookies = {c.name: c.value for c in session.cookies}
             if cookies:
                 with open(COOKIES_FILE, "w", encoding="utf-8") as f:
@@ -189,11 +197,10 @@ def main():
         print("Đang đăng nhập proxy.vn...", end=" ")
         cookies = login_http(username, password)
         if not cookies:
-            try:
-                cookies = login_playwright(username, password)
-            except Exception as e:
-                print(f"❌ {e}")
-                sys.exit(1)
+            print("❌")
+            print("Không đăng nhập được bằng endpoint mới /login.php.")
+            print("Kiểm tra lại tài khoản/mật khẩu hoặc thử lại sau.")
+            sys.exit(1)
         print("OK")
 
     proxies_web, from_cache = get_proxies_from_web(socks5_only=socks5_only)

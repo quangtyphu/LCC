@@ -1,16 +1,141 @@
 import time
 import threading
-import requests
 import os
 
 from pathlib import Path
 
 from game_api_helper import game_request_with_retry
 from telegram_notifier import send_telegram
+from jackpot_session_db import upsert_jackpot_record
 import constants
 
-API_BASE = "http://127.0.0.1:3000"
 JACKPOT_API_URL = "https://wtx.tele68.com/v1/tx/jackpot-history"
+SESSION_SUMMARY_URL = "https://wtx.tele68.com/v1/tx/session-summary"
+
+
+def _game_total_one_side(overall: dict | None) -> float | None:
+    if not isinstance(overall, dict):
+        return None
+    summaries = overall.get("betSummaries")
+    if isinstance(summaries, list) and summaries:
+        first = summaries[0]
+        if isinstance(first, dict) and first.get("totalAmount") is not None:
+            try:
+                return float(first["totalAmount"])
+            except (TypeError, ValueError):
+                pass
+    total = overall.get("totalAmount")
+    if total is not None:
+        try:
+            return float(total) / 2.0
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _fetch_session_summary(username: str, session_id) -> dict | None:
+    resp = game_request_with_retry(
+        username,
+        "GET",
+        SESSION_SUMMARY_URL,
+        params={"sessionId": session_id},
+    )
+    if not resp or resp.status_code != 200:
+        print(
+            f"⚠️ [{username}] session-summary (jackpot DB) HTTP {resp.status_code if resp else 'none'}",
+            flush=True,
+        )
+        return None
+    try:
+        data = resp.json()
+    except Exception as e:
+        print(f"⚠️ [{username}] session-summary parse: {e}", flush=True)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _try_save_jackpot_db(
+    username: str,
+    session_id,
+    session_data: dict,
+    jackpot_amount,
+    total_bet_session: float | None,
+) -> None:
+    """Ghi jackpot_session_records; không ném exception ra ngoài."""
+    try:
+        summary = _fetch_session_summary(username, session_id)
+        if not summary:
+            return
+        overall = summary.get("overall")
+        game_total = _game_total_one_side(overall)
+        if not game_total or game_total <= 0:
+            print(
+                f"⚠️ [{username}] Không ghi jackpot DB: thiếu tổng cược game (session-summary)",
+                flush=True,
+            )
+            return
+
+        my_bet = session_data.get("amount")
+        try:
+            my_bet_f = float(my_bet) if my_bet is not None else None
+        except (TypeError, ValueError):
+            my_bet_f = None
+        if my_bet_f is None or my_bet_f <= 0:
+            if isinstance(total_bet_session, (int, float)) and total_bet_session > 0:
+                my_bet_f = float(total_bet_session)
+        if my_bet_f is None or my_bet_f <= 0:
+            print(
+                f"⚠️ [{username}] Không ghi jackpot DB: thiếu tổng cược mình (amount / session_bet_totals)",
+                flush=True,
+            )
+            return
+        if not isinstance(jackpot_amount, (int, float)) or float(jackpot_amount) <= 0:
+            print(f"⚠️ [{username}] Không ghi jackpot DB: thiếu số hũ từ jackpot-history", flush=True)
+            return
+
+        ja = float(jackpot_amount)
+        amount_received = (my_bet_f * ja) / game_total
+        ts_raw = summary.get("timestamp")
+        jackpot_side = summary.get("resultTruyenThong")
+        if not isinstance(jackpot_side, str):
+            jackpot_side = None
+
+        dices = summary.get("dices")
+        if not isinstance(dices, (list, tuple)):
+            dices = None
+        dice_point = summary.get("point")
+        if dice_point is not None:
+            try:
+                dice_point = int(dice_point)
+            except (TypeError, ValueError):
+                dice_point = None
+        overall_total = overall.get("totalAmount") if isinstance(overall, dict) else None
+        try:
+            overall_total_f = float(overall_total) if overall_total is not None else None
+        except (TypeError, ValueError):
+            overall_total_f = None
+
+        upsert_jackpot_record(
+            int(session_id),
+            username,
+            my_bet_f,
+            game_total,
+            ja,
+            amount_received,
+            jackpot_side,
+            ts_raw if isinstance(ts_raw, str) else None,
+            api_username=username,
+            dices=dices,
+            dice_point=dice_point,
+            overall_total_amount=overall_total_f,
+        )
+        print(
+            f"✅ [{username}] Đã lưu jackpot_session_records phiên {session_id} "
+            f"(nhận ~{amount_received:,.2f})",
+            flush=True,
+        )
+    except Exception as e:
+        print(f"⚠️ [{username}] Lỗi ghi jackpot DB: {e}", flush=True)
 
 _notified_sessions: set[str] = set()
 _last_cleanup_ts = 0.0
@@ -133,41 +258,8 @@ def _find_detail_by_session(details: list, session_id) -> dict | None:
     return details[0] if isinstance(details[0], dict) else None
 
 
-def _sum_bets_from_items(items: list, session_id) -> float | None:
-    total = 0.0
-    matched = False
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        sid = item.get("session_id") or item.get("sessionId") or item.get("session")
-        if sid is not None and str(sid) != str(session_id):
-            continue
-        amount = item.get("amount") or item.get("money") or item.get("bet") or 0
-        try:
-            total += float(amount)
-            matched = True
-        except Exception:
-            continue
-    return total if matched else None
-
-
-def _extract_total_from_response(data, session_id) -> float | None:
-    if isinstance(data, dict):
-        for key in ("totalBet", "total_bet", "total", "sum", "amount", "money"):
-            if key in data:
-                try:
-                    return float(data[key])
-                except Exception:
-                    pass
-        items = data.get("items") or data.get("data") or data.get("rows")
-        if isinstance(items, list):
-            return _sum_bets_from_items(items, session_id)
-    if isinstance(data, list):
-        return _sum_bets_from_items(data, session_id)
-    return None
-
-
 def _fetch_total_bet_for_session(session_id) -> float | None:
+    """Chỉ còn nguồn in-memory khi bot WS chạy (CMS đã bỏ bet_history)."""
     try:
         local = constants.session_bet_totals.get(session_id) or constants.session_bet_totals.get(str(session_id))
         if isinstance(local, dict):
@@ -176,24 +268,6 @@ def _fetch_total_bet_for_session(session_id) -> float | None:
                 return float(local_total)
     except Exception:
         pass
-
-    endpoints = [
-        (f"{API_BASE}/api/bet-history/summary", {"session_id": session_id}),
-        (f"{API_BASE}/api/bet-history/total", {"session_id": session_id}),
-        (f"{API_BASE}/api/bet-history", {"session_id": session_id}),
-        (f"{API_BASE}/api/bet-history/session/{session_id}", None),
-    ]
-    for url, params in endpoints:
-        try:
-            r = requests.get(url, params=params, timeout=5)
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            total = _extract_total_from_response(data, session_id)
-            if total is not None:
-                return total
-        except Exception:
-            continue
     return None
 
 
@@ -241,6 +315,12 @@ def check_and_notify_jackpot(username: str, session_data: dict):
         f"Số tiền: {jackpot_display}\n"
         f"Tổng cược: {total_display}"
     )
+
+    print(
+        f"🎰 [{username}] Nổ hũ 111/666 phiên {session_id} → ghi DB + gửi Telegram",
+        flush=True,
+    )
+    _try_save_jackpot_db(username, session_id, session_data, jackpot_amount, total_bet)
 
     if send_telegram(msg):
         _cleanup_notified_sessions()

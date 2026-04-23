@@ -6,12 +6,39 @@ if sys.platform == 'win32':
     import os
     os.system('chcp 65001 > nul')
 
+import os
 import time
 from datetime import datetime
+
+import requests
+
 from game_api_helper import game_request_with_retry, update_user_balance
 
 GIFT_BOX_URL = "https://wlb.tele68.com/v1/lobby/gift-box"
 CLAIM_GIFT_URL = "https://wlb.tele68.com/v1/lobby/gift-box/item"
+
+# CMS lưu lịch sử nhận hòm quà (server.js → SQLite game_data.db)
+CMS_GIFT_BOX_CLAIMS_URL = os.environ.get(
+    "CMS_GIFT_BOX_CLAIMS_URL",
+    "http://127.0.0.1:3000/api/gift-box-claims",
+)
+
+
+def _record_gift_claim_to_cms(log_line: str) -> None:
+    received_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        r = requests.post(
+            CMS_GIFT_BOX_CLAIMS_URL,
+            json={"line": log_line.strip(), "received_at": received_at},
+            timeout=8,
+        )
+        if not r.ok:
+            print(
+                f"⚠️ CMS gift-box-claims HTTP {r.status_code}: {r.text[:300]}",
+                flush=True,
+            )
+    except requests.RequestException as e:
+        print(f"⚠️ Không gọi được CMS gift-box-claims: {e}", flush=True)
 
 def fetch_gift_box(username: str) -> dict:
     
@@ -80,7 +107,9 @@ def auto_claim_gifts(username: str):
                 
                 # Chỉ log khi nhận thành công
                 if balance is not None:
-                    print(f"🎁 [{username}] {created} | Nhận: {title} (+{amount:,}đ) → Số dư: {balance:,}đ")
+                    log_line = f"🎁 [{username}] {created} | Nhận: {title} (+{amount:,}đ) → Số dư: {balance:,}đ"
+                    print(log_line)
+                    _record_gift_claim_to_cms(log_line)
                     update_user_balance(username, float(balance))
 
         # Delay 2s giữa các lần claim
