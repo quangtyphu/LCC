@@ -3,30 +3,17 @@
 Script lấy và in ra TOP cược ngày từ 170 đến 200.
 """
 
-from game_api_helper import game_request_with_retry, get_user_auth
+from game_api_helper import game_request_with_retry
 import sys
 from datetime import datetime
 
 def fetch_top_bet_daily(username, date=None, limit=200):
-    # Lấy access_token từ DB
-    auth = get_user_auth(username)
-    if not auth:
-        print(f"❌ Không lấy được auth info cho {username}")
-        return
-    _, jwt, access_token, _ = auth
-    if not access_token:
-        print(f"❌ Không có access_token cho {username}")
-        return
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
     url = "https://gameapi.tele68.com/v1/event/top-bet/daily"
     params = {
         "date": date,
         "limit": limit,
-        "cp": "R",
-        "cl": "R",
-        "pf": "web",
-        "at": access_token
     }
     resp = game_request_with_retry(username, "GET", url, params=params)
     if not resp or resp.status_code != 200:

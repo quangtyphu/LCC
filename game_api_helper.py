@@ -38,6 +38,27 @@ except ImportError:
         return False
 
 
+def _credential_usable(val) -> bool:
+    """None, rỗng, hoặc chuỗi 'null'/'none' (từ DB) → không dùng được, cần refresh."""
+    if val is None:
+        return False
+    if isinstance(val, str):
+        s = val.strip()
+        return bool(s) and s.lower() not in ("null", "none")
+    return True
+
+
+def _normalize_secret(val):
+    if val is None:
+        return None
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or s.lower() in ("null", "none"):
+            return None
+        return s
+    return str(val) if val else None
+
+
 def build_proxies(proxy_str: str) -> dict | None:
     """
     Parse proxy string thành dict cho requests.
@@ -81,12 +102,12 @@ def get_user_auth(username: str) -> tuple | None:
             return None
 
         proxy_str = user.get("proxy")
-        jwt = user.get("jwt")
-        access_token = user.get("accessToken")
-        nickname = user.get("nickname", "")
-
-        if not proxy_str or not jwt or not access_token:
+        if not proxy_str:
             return None
+
+        jwt = _normalize_secret(user.get("jwt"))
+        access_token = _normalize_secret(user.get("accessToken"))
+        nickname = user.get("nickname", "")
 
         return (proxy_str, jwt, access_token, nickname)
     
@@ -165,6 +186,18 @@ def game_request_with_retry_ex(
         return None, "no_auth"
 
     proxy_str, jwt, access_token, _ = auth
+
+    if not _credential_usable(jwt) or not _credential_usable(access_token):
+        if refresh_jwt_and_token(username):
+            auth2 = get_user_auth(username)
+            if auth2:
+                proxy_str, jwt, access_token, _ = auth2
+        if not _credential_usable(jwt) or not _credential_usable(access_token):
+            print(
+                f"❌ [{username}] Không lấy được JWT/accessToken sau khi thử đăng nhập",
+                flush=True,
+            )
+            return None, "no_auth"
 
     # 2. Setup proxy
     proxies = build_proxies(proxy_str)

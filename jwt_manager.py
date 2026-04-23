@@ -18,6 +18,17 @@ USER_AGENTS = [
 ]
 
 
+def _normalize_access_token(val):
+    if val is None:
+        return None
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or s.lower() in ("null", "none"):
+            return None
+        return s
+    return str(val) if val else None
+
+
 def _build_proxies(proxy_str: str):
     """Tạo dict proxies cho requests"""
     host, port, userp, passp = proxy_str.split(":")
@@ -47,20 +58,41 @@ def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
         
         profile = resp_profile.json()
         proxy_str = profile.get("proxy")
-        access_token = profile.get("accessToken")
+        access_token = _normalize_access_token(profile.get("accessToken"))
         nickname = profile.get("nickname") or username  # Lấy nickname từ user_profiles
-        
-        if not access_token:
-            print(f"⚠️ [{username}] Không có accessToken trong DB")
-            return None
-        
+
         # 2. Setup proxy
         try:
             proxies = _build_proxies(proxy_str)
         except Exception:
             print(f"⚠️ [{username}] Proxy lỗi format")
             return None
-        
+
+        # Thiếu accessToken trong DB → đăng nhập gateway lấy mới (giống nhánh 401)
+        if not access_token:
+            resp_acc = curl_requests.get(f"{API_BASE}/api/accounts/{username}", timeout=5)
+            if resp_acc.status_code != 200:
+                print(f"❌ [{username}] Không lấy được account từ DB")
+                return None
+
+            account = resp_acc.json()
+            password = account.get("loginPass")
+            if not password:
+                print(f"❌ [{username}] Không có loginPass trong accounts")
+                return None
+
+            new_access_token = get_access_token(username, password, proxy_str)
+            if not new_access_token:
+                print(f"❌ [{username}] Gateway không trả về accessToken")
+                return None
+
+            if not update_access_token_to_db(username, new_access_token):
+                print(f"⚠️ [{username}] Không cập nhật được accessToken vào DB")
+                return None
+
+            time.sleep(1)
+            return refresh_jwt(username, _retry_count)
+
         # 3. Login (bỏ log)
         
         params = {"cp": "R", "cl": "R", "pf": "web", "at": access_token}
@@ -138,8 +170,8 @@ def refresh_jwt(username: str, _retry_count: int = 0) -> str | None:
                 print(f"❌ [{username}] Gateway không trả về accessToken")
                 return None
             
-            # Kiểm tra token mới khác token cũ
-            if new_access_token == old_token:
+            # Kiểm tra token mới khác token cũ (bỏ qua khi DB trước đó không có token)
+            if old_token and new_access_token == old_token:
                 print(f"❌ [{username}] Gateway trả về token cũ → username/password SAI hoặc account bị KHÓA!")
                 print(f"   👉 Kiểm tra lại loginPass trong accounts: {password}")
                 return None
