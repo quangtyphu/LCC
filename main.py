@@ -326,8 +326,8 @@ if __name__ == "__main__":
     reset_deposit_cache()
     
     # Khởi động periodic check (mỗi 5 phút) để check và nạp tiền định kỳ
-    print("[INIT] Đang khởi động periodic check (5 phút)...", flush=True)
-    start_periodic_check(interval_seconds=300)  # 300 giây = 5 phút
+    print("[INIT] Đang khởi động periodic check (1 phút)...", flush=True)
+    start_periodic_check(interval_seconds=60)  # 60 giây = 1 phút
     
     # Chạy Flask main ở thread riêng
     threading.Thread(target=run_flask, daemon=True).start()

@@ -166,6 +166,7 @@ def game_request_with_retry_ex(
     method: str,
     url: str,
     params: dict = None,
+    extra_headers: dict = None,
     json_data: dict = None,
     timeout: int = 20,
 ) -> tuple[curl_requests.Response | None, str | None]:
@@ -207,6 +208,8 @@ def game_request_with_retry_ex(
 
     # 3. Build headers & params
     headers = build_common_headers(jwt)
+    if extra_headers:
+        headers.update(extra_headers)
     common_params = build_common_params(access_token)
 
     # Merge params
@@ -318,6 +321,7 @@ def game_request_with_retry(
     method: str,
     url: str,
     params: dict = None,
+    extra_headers: dict = None,
     json_data: dict = None,
     timeout: int = 20
 ) -> curl_requests.Response | None:
@@ -336,7 +340,13 @@ def game_request_with_retry(
         Response object hoặc None nếu lỗi
     """
     resp, _ = game_request_with_retry_ex(
-        username, method, url, params=params, json_data=json_data, timeout=timeout
+        username,
+        method,
+        url,
+        params=params,
+        extra_headers=extra_headers,
+        json_data=json_data,
+        timeout=timeout,
     )
     return resp
 

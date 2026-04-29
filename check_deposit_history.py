@@ -95,6 +95,12 @@ def _sync_deposit_order_by_amount(username: str, tx_amount: int, desired_status:
             )
             if update_resp.status_code in (200, 204):
                 print(f"✅ Đã cập nhật deposit_orders #{order_id} → {desired_status}", flush=True)
+                if desired_status == "Thành Công":
+                    try:
+                        from auto_deposit_on_out_of_money import remove_from_deposit_cache
+                        remove_from_deposit_cache(username)
+                    except Exception as e:
+                        print(f"⚠️ [{username}] Không xóa được khỏi cache sau sync theo số tiền: {e}", flush=True)
                 return True
             return False
         return False
