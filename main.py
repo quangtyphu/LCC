@@ -320,14 +320,15 @@ if __name__ == "__main__":
     from auto_deposit_on_out_of_money import reset_deposit_cache, start_periodic_check
     from daily_active_no_deposit_scheduler import auto_active_no_deposit_scheduler
     from pending_withdraw_checker import start_pending_withdraw_checker
+    from v2_top480_refresher import auto_refresh_v2_from_top480_scheduler
     
     # Reset cache khi khởi động chương trình (giống như pending_withdrawals reset về {})
     print("[INIT] Đang reset deposit cache...", flush=True)
     reset_deposit_cache()
     
-    # Khởi động periodic check (mỗi 5 phút) để check và nạp tiền định kỳ
-    print("[INIT] Đang khởi động periodic check (1 phút)...", flush=True)
-    start_periodic_check(interval_seconds=60)  # 60 giây = 1 phút
+    # Periodic nạp/quét: mỗi PERIODIC_DEPOSIT_CHECK_SECONDS (config, mặc định 60s) đọc lại config + user nạp
+    print("[INIT] Đang khởi động periodic check (PERIODIC_DEPOSIT_CHECK_SECONDS trong config.json)...", flush=True)
+    start_periodic_check()
     
     # Chạy Flask main ở thread riêng
     threading.Thread(target=run_flask, daemon=True).start()
@@ -335,7 +336,9 @@ if __name__ == "__main__":
     threading.Thread(target=run_third_party_handler, daemon=True).start()
     # Chạy auto swap V2/V3 scheduler ở thread riêng
     threading.Thread(target=auto_swap_v2_v3_scheduler, daemon=True).start()
-    # Chạy scheduler nạp tiền user chưa nạp hôm nay (23:00)
+    # Chạy scheduler refresh V2 theo mốc top 480 (bật/tắt bằng config)
+    threading.Thread(target=auto_refresh_v2_from_top480_scheduler, daemon=True).start()
+    # Chạy scheduler nạp tiền user chưa nạp hôm nay (từ 23h, mỗi 60s gọi API)
     threading.Thread(target=auto_active_no_deposit_scheduler, daemon=True).start()
     # (Đã bỏ streak_deposit_scheduler - thay bằng check streak khi user chuyển Hết Tiền trong chiaTien_Acc)
     # Chạy scheduler check lịch sử rút cho user đang chờ (10 phút)

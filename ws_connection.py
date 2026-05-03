@@ -112,18 +112,6 @@ async def handle_ws(acc, conn_id: str):
     exit_reason = None
 
     try:
-        # Gọi user_full_check_logic khi user kết nối WS thành công
-        try:
-            from user_full_check_service import user_full_check_logic
-            import threading
-            def _run_full_check():
-                try:
-                    user_full_check_logic(user)
-                except Exception as e:
-                    print(f"⚠️ [{user}] Lỗi khi chạy user_full_check_logic: {e}")
-            threading.Thread(target=_run_full_check, daemon=True).start()
-        except Exception as e:
-            print(f"⚠️ [{user}] Lỗi import hoặc chạy user_full_check_logic: {e}")
         jwt = acc.get("jwt")
 
         # ===== 1) Proxy check trước với retry backoff — mỗi attempt đọc proxy mới từ DB =====
@@ -204,6 +192,26 @@ async def handle_ws(acc, conn_id: str):
 
         # JWT OK → connect WS
         print(f"🔐 [{user}] JWT OK, kết nối WS")
+
+        # HTTP API (lịch sử / mission / VIP) dùng game_api_helper: mở circuit + full_check sau khi proxy+JWT đã OK
+        try:
+            from game_api_helper import clear_proxy_circuit
+            clear_proxy_circuit(user)
+        except Exception as e:
+            print(f"⚠️ [{user}] clear_proxy_circuit: {e}", flush=True)
+        try:
+            from user_full_check_service import user_full_check_logic
+            import threading
+
+            def _run_full_check():
+                try:
+                    user_full_check_logic(user)
+                except Exception as e:
+                    print(f"⚠️ [{user}] Lỗi khi chạy user_full_check_logic: {e}")
+
+            threading.Thread(target=_run_full_check, daemon=True).start()
+        except Exception as e:
+            print(f"⚠️ [{user}] Lỗi import hoặc chạy user_full_check_logic: {e}")
 
         # ===== 3) Kết nối WS =====
         try:

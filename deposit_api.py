@@ -69,7 +69,12 @@ if sys.platform == 'win32':
 import os, re, base64, requests, time
 from datetime import datetime
 from game_api_helper import game_request_with_retry
-from check_deposit_history import check_deposit_history, refresh_after_deposit_confirm
+from check_deposit_history import (
+    check_deposit_history,
+    refresh_after_deposit_confirm,
+    get_deposit_order_meta,
+    tx_matches_deposit_order,
+)
 from telegram_notifier import send_telegram
 
 # Dùng cấu hình chung nếu có, fallback localhost
@@ -171,17 +176,27 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
     """
     Chờ và check lịch sử nạp tiền theo chu kỳ.
 
-    So khớp: đúng số tiền (không dung sai), NDCK không bắt buộc.
+    So khớp: đúng số tiền VÀ (thời gian GD game sau lúc tạo lệnh HOẶC khớp NDCK).
+    Tránh báo Thành Công khi chỉ trùng số tiền với giao dịch nạp cũ trong lịch sử.
 
     Args:
         username: Username
-        transfer_content: NDCK (chỉ dùng cho log/Telegram khi thất bại)
+        transfer_content: NDCK (fallback nếu DB không có; ưu tiên khớp content khi không có mốc thời gian lệnh)
         order_id: ID lệnh nạp trong deposit-orders
         expected_amount: Số tiền nạp cần khớp
 
     Returns:
         True nếu tìm thấy giao dịch khớp số tiền, False nếu không
     """
+    sync_min, order_tc = get_deposit_order_meta(order_id)
+    tc_eff = (transfer_content or "").strip() or order_tc
+    if sync_min is None and not tc_eff:
+        print(
+            f"⚠️ [{username}] Order #{order_id}: không đọc được createdAt và không có NDCK — "
+            f"không xác nhận Thành Công chỉ vì trùng số tiền với lịch sử cũ.",
+            flush=True,
+        )
+
     # Thời gian check: 30s, 60s, 90s, 120s, 600s (10 phút)
     check_intervals = [50, 30,30,30, 30, 120,240,240]  # Tổng: 30, 60, 90, 120, 600s
     
@@ -195,34 +210,46 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
         # Retry 3 lần nếu gặp lỗi SSL/network
         for retry in range(3):
             try:
-                # Gọi check_deposit_history với limit=20 để tăng khả năng tìm thấy
-                result = check_deposit_history(username, limit=20, status="SUCCESS")
+                # Gọi check_deposit_history với limit=20; sync strict theo lệnh (thời gian / NDCK)
+                result = check_deposit_history(
+                    username,
+                    limit=20,
+                    status="SUCCESS",
+                    sync_min_datetime=sync_min,
+                    sync_only_order_id=order_id,
+                    sync_transfer_content=tc_eff,
+                )
                 
                 if not result.get("ok"):
                     print(f"⚠️ [{username}] Không lấy được lịch sử, tiếp tục chờ...")
                     break
                 
-                # Khớp đúng số tiền (không NDCK)
                 transactions = result.get("transactions", [])
                 for tx in transactions:
-                    tx_amount = int(tx.get("amount") or 0)
-                    if tx_amount == int(expected_amount):
-                        # Cập nhật trạng thái order sang COMPLETED
-                        if update_deposit_order_status(order_id, "Thành Công"):
-                            # Chỉ xóa cache khi đã confirm tiền vào (Thành Công)
-                            try:
-                                from auto_deposit_on_out_of_money import remove_from_deposit_cache
-                                remove_from_deposit_cache(username)
-                            except Exception as e:
-                                print(f"⚠️ [{username}] Không xóa được khỏi cache: {e}")
-                            try:
-                                refresh_after_deposit_confirm(username)
-                            except Exception as e:
-                                print(f"⚠️ [{username}] Lỗi sau khi khớp lịch sử: {e}")
-                        else:
-                            print(f"⚠️ [{username}] Không cập nhật được trạng thái order")
-                        
+                    if not tx_matches_deposit_order(
+                        tx, int(expected_amount), sync_min, tc_eff
+                    ):
+                        continue
+                    if update_deposit_order_status(order_id, "Thành Công"):
+                        print(
+                            f"✅ [{username}] Khớp lịch sử nạp order #{order_id}: "
+                            f"{int(expected_amount):,}đ | dateTime={tx.get('dateTime')!r}",
+                            flush=True,
+                        )
+                        try:
+                            from auto_deposit_on_out_of_money import remove_from_deposit_cache
+                            remove_from_deposit_cache(username)
+                        except Exception as e:
+                            print(f"⚠️ [{username}] Không xóa được khỏi cache: {e}")
+                        try:
+                            refresh_after_deposit_confirm(username)
+                        except Exception as e:
+                            print(f"⚠️ [{username}] Lỗi sau khi khớp lịch sử: {e}")
                         return True
+                    print(
+                        f"⚠️ [{username}] Đã khớp GD lịch sử nhưng không cập nhật được order #{order_id}",
+                        flush=True,
+                    )
                 
                 # Thành công nhưng không tìm thấy giao dịch → thoát retry loop
                 break

@@ -1,6 +1,6 @@
 """
-Scheduler gọi API /api/users/active-no-deposit-today lúc 23:00 mỗi ngày
-và tự động đưa user vào hàng chờ nạp tiền.
+Từ 23:00 đến cuối ngày (giờ máy chủ): mỗi 60 giây gọi API /api/users/active-no-deposit-today
+và thử đưa user vào hàng chờ nạp (enqueue; trùng lặp vẫn bị chặn bởi can_create_deposit_order).
 """
 
 import time
@@ -8,7 +8,7 @@ from datetime import datetime
 
 import requests
 
-from constants import load_config, save_config
+from constants import load_config
 from auto_deposit_on_out_of_money import (
     can_create_deposit_order,
     enqueue_deposit_order,
@@ -56,6 +56,11 @@ def deposit_active_no_deposit_users():
     if not users:
         return
 
+    print(
+        f"[NO-DEPOSIT] {datetime.now().strftime('%H:%M')} — {len(users)} user chưa nạp (API), thử enqueue...",
+        flush=True,
+    )
+
     for user in users:
         if not user:
             continue
@@ -80,25 +85,15 @@ def deposit_active_no_deposit_users():
 
 def auto_active_no_deposit_scheduler():
     """
-    Chạy mỗi 60s, nếu đến 23:00 sẽ gọi API và enqueue nạp tiền.
+    Vòng lặp 60s. Khi giờ máy >= 23:00 (cùng ngày dương lịch), mỗi vòng gọi deposit_active_no_deposit_users.
     """
-    print("[NO-DEPOSIT] 🕐 Đã khởi động scheduler (23:00 mỗi ngày)", flush=True)
+    print("[NO-DEPOSIT] 🕐 Scheduler: từ 23h mỗi 60s gọi API user chưa nạp trong ngày", flush=True)
 
     while True:
         try:
             now = datetime.now()
-            current_time = now.strftime("%H:%M")
-            current_date = now.strftime("%Y-%m-%d")
-
-            if current_time in ["23:00", "23:01"]:
-                config = load_config()
-                last_run_date = config.get("LAST_ACTIVE_NO_DEPOSIT_RUN", "")
-
-                if last_run_date != current_date:
-                    print("[NO-DEPOSIT] ⏰ 23:00 - Bắt đầu lấy user chưa nạp hôm nay", flush=True)
-                    deposit_active_no_deposit_users()
-                    config["LAST_ACTIVE_NO_DEPOSIT_RUN"] = current_date
-                    save_config(config)
+            if now.hour >= 23:
+                deposit_active_no_deposit_users()
 
             time.sleep(60)
 

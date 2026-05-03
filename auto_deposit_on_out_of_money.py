@@ -26,6 +26,8 @@ _deposit_worker_thread = None
 _deposit_worker_lock = threading.Lock()
 _enqueued_users = set()
 _enqueued_lock = threading.Lock()
+_processing_users = set()
+_processing_lock = threading.Lock()
 _last_deposit_time = 0.0
 _last_deposit_lock = threading.Lock()
 
@@ -36,6 +38,260 @@ _OUTSIDE_SKIP_SUPPRESS_SEC = 180
 # Sau mỗi lần quyết định nạp (chuỗi streak → MAX_ACTIVE) cho user ngoài V2/V3 — bỏ qua gọi lặp từ periodic/watcher
 _OUTSIDE_DECISION_COOLDOWN_SEC = 120
 _OUTSIDE_DECISION_LAST = {}  # username -> time.time()
+
+
+def _get_new_strategy_config(config: dict) -> dict:
+    strategy = config.get("NEW_STRATEGY", {})
+    return strategy if isinstance(strategy, dict) else {}
+
+
+def _is_new_strategy_enabled(config: dict) -> bool:
+    strategy = _get_new_strategy_config(config)
+    try:
+        return int(strategy.get("ENABLED", 0) or 0) == 1
+    except Exception:
+        return False
+
+
+def _get_target_online_users(config: dict) -> int:
+    strategy = _get_new_strategy_config(config)
+    try:
+        value = int(strategy.get("TARGET_ONLINE_USERS", 10) or 10)
+        return value if value >= 1 else 1
+    except Exception:
+        return 10
+
+
+def _get_daily_bet_min_for_reached_withdraw(config: dict) -> int:
+    strategy = _get_new_strategy_config(config)
+    try:
+        v = int(strategy.get("DAILY_BET_MIN_FOR_REACHED_WITHDRAW", 0) or 0)
+        return max(0, v)
+    except Exception:
+        return 0
+
+
+def new_strategy_skip_priority_deposit_for_daily_total(user: str, config: dict) -> bool:
+    """
+    NEW_STRATEGY + PRIORITY_USERS (theo khung giờ như _priority_users_for_new_strategy):
+    nếu tổng cược ngày > DAILY_BET_MIN_FOR_REACHED_WITHDRAW thì không nạp (True = bỏ qua).
+    Ngưỡng <= 0 → không áp dụng chặn.
+    """
+    if not _is_new_strategy_enabled(config):
+        return False
+    u = str(user or "").strip()
+    if not u:
+        return False
+    if u not in set(_priority_users_for_new_strategy(config)):
+        return False
+    daily_min = _get_daily_bet_min_for_reached_withdraw(config)
+    if daily_min <= 0:
+        return False
+    try:
+        from auto_withdraw_on_won_session import get_today_bet_for_user
+
+        today = int(get_today_bet_for_user(u) or 0)
+    except Exception:
+        return False
+    return today > daily_min
+
+
+def _extract_username(item) -> str:
+    if isinstance(item, dict):
+        return str(item.get("username") or item.get("user") or item.get("id") or "").strip()
+    return str(item or "").strip()
+
+
+def _fetch_online_users_set() -> set[str]:
+    try:
+        r = requests.get(f"{API_BASE}/api/users", timeout=5)
+        if r.status_code != 200:
+            return set()
+        users = r.json()
+        if not isinstance(users, list):
+            return set()
+        online_users = set()
+        for u in users:
+            if isinstance(u, dict) and u.get("status") == "Đang Chơi":
+                username = _extract_username(u)
+                if username:
+                    online_users.add(username)
+        return online_users
+    except Exception:
+        return set()
+
+
+def _load_pending_users_from_cache() -> set[str]:
+    cache = load_deposit_cache()
+    if not isinstance(cache, dict):
+        return set()
+    users = set()
+    for username in cache.keys():
+        u = str(username or "").strip()
+        if u:
+            users.add(u)
+    return users
+
+
+def _get_pending_deposit_users_snapshot() -> set[str]:
+    pending = _load_pending_users_from_cache()
+    with _enqueued_lock:
+        pending.update(_enqueued_users)
+    with _processing_lock:
+        pending.update(_processing_users)
+    return pending
+
+
+def _count_effective_online_users() -> tuple[int, int, int]:
+    """
+    Trả về:
+    - effective_count: online thực + user đang trong pipeline nạp
+    - online_count: chỉ user đang "Đang Chơi"
+    - pending_count: số user chỉ đang trong pipeline nạp
+    """
+    online_users = _fetch_online_users_set()
+    pending_users = _get_pending_deposit_users_snapshot()
+    effective_users = set(online_users)
+    effective_users.update(pending_users)
+    pending_only = pending_users - online_users
+    return len(effective_users), len(online_users), len(pending_only)
+
+
+def _fetch_out_of_money_priority_users() -> list[str]:
+    try:
+        r = requests.get(f"{API_BASE}/api/accounts/out-of-money-priority", timeout=8)
+        if r.status_code != 200:
+            print(f"[NEW_STRATEGY] Cannot fetch out-of-money-priority: {r.status_code}", flush=True)
+            return []
+        data = r.json()
+        accounts = data if isinstance(data, list) else data.get("data", [])
+        if not isinstance(accounts, list):
+            return []
+        users = []
+        for acc in accounts:
+            if isinstance(acc, dict):
+                username = acc.get("username") or acc.get("user") or str(acc.get("id", ""))
+            else:
+                username = str(acc).strip()
+            username = str(username or "").strip()
+            if username:
+                users.append(username)
+        return users
+    except Exception as e:
+        print(f"[NEW_STRATEGY] Fetch out-of-money-priority error: {e}", flush=True)
+        return []
+
+
+def _fetch_out_of_money_usernames() -> list[str]:
+    """Danh sách username trạng thái Hết Tiền từ API (thứ tự như server trả về)."""
+    try:
+        r = requests.get(f"{API_BASE}/api/accounts/out-of-money", timeout=8)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        accounts = data if isinstance(data, list) else data.get("data", [])
+        if not isinstance(accounts, list):
+            return []
+        out: list[str] = []
+        for acc in accounts:
+            if isinstance(acc, dict):
+                name = acc.get("username") or acc.get("user") or str(acc.get("id", ""))
+            else:
+                name = str(acc).strip()
+            name = str(name or "").strip()
+            if name:
+                out.append(name)
+        return out
+    except Exception:
+        return []
+
+
+def _priority_users_for_new_strategy(config: dict) -> list[str]:
+    """
+    PRIORITY_USERS theo khung giờ (TIME_WINDOWS) giống assign_bets; không khớp window thì root config.
+    """
+    active_window = _get_active_window(config) or {}
+    lst = active_window.get("PRIORITY_USERS") if isinstance(active_window, dict) else None
+    if not lst:
+        lst = config.get("PRIORITY_USERS") or []
+    return [str(u).strip() for u in lst if u and str(u).strip()]
+
+
+def _merge_new_strategy_deposit_candidates(config: dict) -> list[str]:
+    """
+    NEW_STRATEGY: ưu tiên nạp PRIORITY_USERS (đang hết tiền) trước, sau đó mới tới
+    danh sách /api/accounts/out-of-money-priority (phục vụ TARGET_ONLINE_USERS).
+    """
+    oom_set = set(_fetch_out_of_money_usernames())
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    for u in _priority_users_for_new_strategy(config):
+        if u not in oom_set or u in seen:
+            continue
+        if new_strategy_skip_priority_deposit_for_daily_total(u, config):
+            continue
+        ordered.append(u)
+        seen.add(u)
+
+    for u in _fetch_out_of_money_priority_users():
+        if not u or u in seen:
+            continue
+        ordered.append(u)
+        seen.add(u)
+
+    return ordered
+
+
+def _run_new_strategy_online_topup(config: dict) -> None:
+    target_online = _get_target_online_users(config)
+    effective_online_count, online_count, pending_count = _count_effective_online_users()
+    if effective_online_count >= target_online:
+        return
+
+    need = target_online - effective_online_count
+    candidates = _merge_new_strategy_deposit_candidates(config)
+    if not candidates:
+        print(
+            f"[NEW_STRATEGY] Online+Pending {effective_online_count}/{target_online} "
+            f"(online={online_count}, pending={pending_count}), no priority candidate to deposit.",
+            flush=True,
+        )
+        return
+
+    enqueued = []
+    for username in candidates:
+        if len(enqueued) >= need:
+            break
+        if not can_create_deposit_order(username):
+            continue
+        enqueue_deposit_order(username)
+        enqueued.append(username)
+
+    if enqueued:
+        print(
+            f"[NEW_STRATEGY] Online+Pending {effective_online_count}/{target_online} "
+            f"(online={online_count}, pending={pending_count}) -> enqueue deposit: {', '.join(enqueued)}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[NEW_STRATEGY] Online+Pending {effective_online_count}/{target_online} "
+            f"(online={online_count}, pending={pending_count}) but all candidates are blocked by cache/queue.",
+            flush=True,
+        )
+
+
+def run_new_strategy_online_topup_if_enabled(config: dict | None = None) -> bool:
+    """
+    Chạy ngay nhánh nạp NEW_STRATEGY (nếu bật).
+    Return True nếu NEW_STRATEGY đang bật (đã xử lý hoặc đã đủ online), False nếu không bật.
+    """
+    cfg = config if isinstance(config, dict) else load_config()
+    if not cfg or not _is_new_strategy_enabled(cfg):
+        return False
+    _run_new_strategy_online_topup(cfg)
+    return True
 
 
 def outside_decision_try_skip(user: str) -> bool:
@@ -151,8 +407,6 @@ def remove_from_deposit_cache(username):
         del cache[username]
         save_deposit_cache(cache)
         pass
-    else:
-        print(f"[CACHE] {username} không có trong cache")
 
 def cleanup_deposit_cache():
     """
@@ -245,6 +499,8 @@ def _deposit_queue_worker():
             if not task:
                 continue
             user = task
+            with _processing_lock:
+                _processing_users.add(user)
             _wait_for_deposit_slot()
             amount = random_amount()
             _perform_deposit_request(user, amount)
@@ -259,6 +515,8 @@ def _deposit_queue_worker():
             if user:
                 with _enqueued_lock:
                     _enqueued_users.discard(user)
+                with _processing_lock:
+                    _processing_users.discard(user)
 
 def _ensure_deposit_worker():
     global _deposit_worker_thread
@@ -433,6 +691,8 @@ def auto_deposit_for_user(user, prioritize_outside_trigger=False, from_decision_
     if is_in_v2_v3(user, config):
         if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
             return
+        if new_strategy_skip_priority_deposit_for_daily_total(user, config):
+            return
         v2_users = config.get("PRIORITY_USERS_V2", [])
         v3_users = config.get("PRIORITY_USERS_V3", [])
         if (user in v2_users or user in v3_users) and _is_v2_auto_deposit_blocked(config):
@@ -563,6 +823,9 @@ def periodic_check_all_users():
     
     try:
         config = load_config()
+        if _is_new_strategy_enabled(config):
+            _run_new_strategy_online_topup(config)
+            return
         
         # Lấy danh sách V2/V3/PRIORITY từ config để phân loại
         v2 = config.get("PRIORITY_USERS_V2", [])
@@ -669,23 +932,39 @@ def periodic_check_all_users():
     except Exception as e:
         print(f"[PERIODIC] Lỗi trong periodic_check_all_users: {e}")
 
-def start_periodic_check(interval_seconds=300):
+def start_periodic_check(interval_seconds=None):
     """
-    Khởi động thread để check định kỳ mỗi interval_seconds giây (mặc định 5 phút = 300 giây).
+    Thread định kỳ gọi periodic_check_all_users (mỗi lần đều load_config lại).
+    Khoảng cách giữa các lần: PERIODIC_DEPOSIT_CHECK_SECONDS trong config.json (mặc định 60).
+    Nếu AUTO_REFRESH_V2_FROM_TOP480 cập nhật PRIORITY_USERS_V2 trên file, tối đa ~1 chu kỳ sau sẽ thấy user mới.
+    Tham số interval_seconds (nếu truyền) chỉ dùng khi config không có khóa trên (tương thích cũ).
     """
+    def _sleep_seconds_from_config():
+        try:
+            cfg = load_config()
+            raw = cfg.get("PERIODIC_DEPOSIT_CHECK_SECONDS", interval_seconds if interval_seconds is not None else 60)
+            sec = int(raw)
+        except Exception:
+            sec = int(interval_seconds) if interval_seconds is not None else 60
+        return max(15, sec)
+
     def periodic_worker():
         while True:
             try:
                 periodic_check_all_users()
             except Exception as e:
                 print(f"[PERIODIC] Lỗi trong periodic_worker: {e}")
-            
-            # Đợi interval_seconds trước khi check lần tiếp theo
-            time.sleep(interval_seconds)
-    
+
+            wait = _sleep_seconds_from_config()
+            time.sleep(wait)
+
     thread = threading.Thread(target=periodic_worker, daemon=True)
     thread.start()
-    print(f"[PERIODIC] Đã khởi động periodic check mỗi {interval_seconds} giây ({interval_seconds // 60} phút)")
+    initial = _sleep_seconds_from_config()
+    print(
+        f"[PERIODIC] Đã khởi động periodic check (config PERIODIC_DEPOSIT_CHECK_SECONDS, hiện ~{initial}s)",
+        flush=True,
+    )
     return thread
 
 # Example usage:

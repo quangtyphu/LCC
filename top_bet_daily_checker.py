@@ -4,10 +4,84 @@ Script lấy và in ra TOP cược ngày ở các khoảng 180-200 và 480-500.
 """
 
 from game_api_helper import game_request_with_retry
+from constants import load_config
 import sys
 from datetime import datetime
+import requests
 
-def fetch_top_bet_daily(username, date=None, limit=500):
+API_BASE = "http://127.0.0.1:3000"
+
+
+def _to_int(val, default=0):
+    try:
+        return int(float(val))
+    except Exception:
+        return default
+
+
+def _fetch_closest_users_below_target(target_amount: int, take: int = 8):
+    if target_amount <= 0 or take <= 0:
+        return []
+    try:
+        r = requests.get(f"{API_BASE}/api/bet-totals", params={"page": 1, "limit": 10000}, timeout=8)
+        if r.status_code != 200:
+            return []
+        payload = r.json()
+        items = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(items, list):
+            return []
+
+        candidates = []
+        for row in items:
+            username = str(row.get("username") or row.get("user") or "").strip()
+            if not username:
+                continue
+            total_day = _to_int(
+                row.get("total_day")
+                or row.get("today_bet")
+                or row.get("todayBet")
+                or row.get("total")
+                or row.get("totalBet"),
+                0,
+            )
+            if 0 < total_day < target_amount:
+                candidates.append(
+                    {
+                        "username": username,
+                        "total_day": total_day,
+                        "gap": target_amount - total_day,
+                    }
+                )
+        candidates.sort(key=lambda x: x["total_day"], reverse=True)
+        return candidates[:take]
+    except Exception:
+        return []
+
+
+def _get_v2_target_count(default_count: int = 8) -> int:
+    cfg = load_config() or {}
+    mode = cfg.get("AUTO_REFRESH_V2_FROM_TOP480", {})
+    if isinstance(mode, dict):
+        try:
+            count = int(mode.get("V2_COUNT", default_count) or default_count)
+            if count > 0:
+                return count
+        except Exception:
+            pass
+
+    v2_list = cfg.get("PRIORITY_USERS_V2", [])
+    if isinstance(v2_list, list):
+        normalized = [str(u or "").strip() for u in v2_list if str(u or "").strip()]
+        if normalized:
+            return len(normalized)
+
+    return default_count
+
+
+def fetch_top_bet_daily(username, date=None, limit=500, nearest_users_count=None):
+    if nearest_users_count is None:
+        nearest_users_count = _get_v2_target_count(default_count=8)
+
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
     url = "https://gameapi.tele68.com/v1/event/top-bet/daily"
@@ -67,6 +141,30 @@ def fetch_top_bet_daily(username, date=None, limit=500):
             printed_count += 1
     if printed_count == 0:
         print("⚠️ Không có dòng nào trong 2 khoảng yêu cầu từ dữ liệu API trả về.")
+
+    # Lấy mốc top 480 (moneyBet của idx=480), rồi in thêm N user có total_day gần dưới nhất.
+    target_top_480 = None
+    for entry in data:
+        idx = _to_int(entry.get("idx"), 0)
+        if idx == 480:
+            target_top_480 = _to_int(entry.get("moneyBet"), 0)
+            break
+
+    if not target_top_480:
+        print("\n⚠️ Không lấy được mốc idx=480 từ dữ liệu top-bet ngày (có thể do API giới hạn limit).")
+        return
+
+    closest = _fetch_closest_users_below_target(target_top_480, take=nearest_users_count)
+    print(f"\n{nearest_users_count} user có tổng cược ngày gần dưới mốc top 480 ({target_top_480:,}):\n")
+    print(f"{'No':>3} | {'Username':<20} | {'TotalDay':>12} | {'Gap':>12}")
+    print("-" * 60)
+    if not closest:
+        print("⚠️ Không có dữ liệu phù hợp từ API /api/bet-totals.")
+        return
+    for i, row in enumerate(closest, 1):
+        print(
+            f"{i:>3} | {row['username']:<20} | {row['total_day']:>12,} | {row['gap']:>12,}"
+        )
 
 if __name__ == "__main__":
     if len(sys.argv) >= 2:

@@ -96,10 +96,8 @@ def get_user_auth(username: str) -> tuple | None:
             return None
         
         user = resp.json()
-        status_raw = user.get("status")
-        if status_raw is not None and str(status_raw).strip() == "Proxy Lỗi":
-            _PROXY_CIRCUIT_OPEN.add(username)
-            return None
+        # Không chặn theo status "Proxy Lỗi": sau khi đổi proxy trên DB, WS vẫn vào được
+        # nhưng HTTP API cần đọc proxy mới; chặn ở đây sẽ luôn trả no_auth / proxy_exhausted.
 
         proxy_str = user.get("proxy")
         if not proxy_str:

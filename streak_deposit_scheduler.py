@@ -19,6 +19,8 @@ from auto_deposit_on_out_of_money import (
     auto_deposit_for_user,
     outside_decision_try_skip,
     outside_decision_done,
+    run_new_strategy_online_topup_if_enabled,
+    new_strategy_skip_priority_deposit_for_daily_total,
 )
 
 API_BASE = "http://127.0.0.1:3000"
@@ -69,6 +71,30 @@ def run_het_tien_deposit_decision(user: str) -> None:
             flush=True,
         )
         return
+
+    # NEW_STRATEGY:
+    # 1) Ưu tiên streak >= min trước (không phân biệt V2/V3)
+    # 2) Nếu không đạt streak thì mới chạy topup NEW_STRATEGY
+    new_strategy_cfg = config.get("NEW_STRATEGY", {})
+    try:
+        new_strategy_enabled = int((new_strategy_cfg or {}).get("ENABLED", 0) or 0) == 1
+    except Exception:
+        new_strategy_enabled = False
+
+    if new_strategy_enabled:
+        min_streak = int(config.get("HET_TIEN_STREAK_MIN", 4) or 4)
+        users = fetch_het_tien_streak_users(min_streak)
+        if user in users and can_create_deposit_order(user):
+            if not new_strategy_skip_priority_deposit_for_daily_total(user, config):
+                enqueue_deposit_order(user)
+                print(
+                    f"[NEW_STRATEGY][STREAK] [{user}] Hết tiền + dây thắng/thua (>={min_streak}) -> nạp ưu tiên",
+                    flush=True,
+                )
+                return
+        # Không đạt streak -> chạy nhánh NEW_STRATEGY ngay (không đợi periodic 60s)
+        if run_new_strategy_online_topup_if_enabled(config):
+            return
 
     if is_in_v2_v3(user, config):
         auto_deposit_for_user(user)
