@@ -64,34 +64,12 @@ def _new_strategy_step2_pick(
     bal: Dict[str, int],
     used: set,
     online_users: List[str],
-    log_label: str = "",
 ) -> Optional[Tuple[str, int, str]]:
     """
     Bước 2 / 4: với mỗi mức (cao → thấp) tính min(balance sau cược) trong user đủ tiền;
     chọn mức có giá trị min đó nhỏ nhất; hòa thì ưu tiên mức cược lớn hơn.
     """
     free = [u for u in online_users if u not in used]
-    if log_label and remaining:
-        parts: List[str] = []
-        for amt, door in sorted(remaining, key=lambda x: (-x[0], x[1])):
-            min_after_amt: Optional[int] = None
-            best_u_amt: Optional[str] = None
-            for u in free:
-                b = bal.get(u, 0)
-                if b >= amt:
-                    aft = b - amt
-                    if min_after_amt is None or aft < min_after_amt:
-                        min_after_amt = aft
-                        best_u_amt = u
-            if best_u_amt is not None and min_after_amt is not None:
-                parts.append(f"{amt:,}đ/{door}→{best_u_amt}(dư {min_after_amt:,})")
-        if parts:
-            print(
-                f"   [NEW_STRATEGY][{log_label}] Theo mức: ai có dư sau cược nhỏ nhất — "
-                + " | ".join(parts),
-                flush=True,
-            )
-
     best: Optional[Tuple[Tuple[int, int], str, int, str]] = None  # (key), u, amt, door
     for amt, door in sorted(remaining, key=lambda x: (-x[0], x[1])):
         min_after: Optional[int] = None
@@ -109,16 +87,8 @@ def _new_strategy_step2_pick(
         if best is None or key < best[0]:
             best = (key, best_u, amt, door)
     if best is None:
-        if log_label:
-            print(f"   [NEW_STRATEGY][{log_label}] Không chọn được (không ai đủ tiền).", flush=True)
         return None
     _k, u, amt, door = best
-    if log_label:
-        print(
-            f"   [NEW_STRATEGY][{log_label}] → Chốt: {u} | {amt:,}đ {door} "
-            f"| dư_sau={_k[0]:,} (ưu tiên dư nhỏ nhất, hòa thì mức lớn hơn)",
-            flush=True,
-        )
     return (u, amt, door)
 
 
@@ -137,29 +107,14 @@ def _new_strategy_build_assignment_plan(
     used: set = set()
     plan: List[Tuple[str, int, str]] = []
 
-    print(
-        "[NEW_STRATEGY][PLAN] --- Ghép phiên: B1 PRIORITY → B2 min-dư → B3 top3+shuffle → B4 min-dư ---",
-        flush=True,
-    )
-    print(
-        f"   Mức ban đầu (giảm dần): "
-        + ", ".join(f"{a:,}đ/{d}" for a, d in bets_sorted),
-        flush=True,
-    )
-
     # ---- Bước 1: PRIORITY_USERS — mức ≤ balance và lớn nhất (gần balance nhất từ dưới) ----
     pu_list = [str(u).strip() for u in (priority_users or []) if u and str(u).strip()]
     if pu_list:
-        print(
-            f"[NEW_STRATEGY][Bước 1] PRIORITY_USERS (thứ tự config): {pu_list}",
-            flush=True,
-        )
         chosen_u: Optional[str] = None
         chosen_amt: Optional[int] = None
         chosen_door: Optional[str] = None
         for u in pu_list:
             if u not in online_users:
-                print(f"   [Bước 1] Bỏ qua {u} (không online phiên này)", flush=True)
                 continue
             b = bal.get(u, 0)
             best_amt: Optional[int] = None
@@ -170,34 +125,16 @@ def _new_strategy_build_assignment_plan(
                     break
             if best_amt is not None and best_door is not None:
                 chosen_u, chosen_amt, chosen_door = u, best_amt, best_door
-                print(
-                    f"   [Bước 1] Chọn user đầu tiên đủ mức: {u} | balance={b:,}đ "
-                    f"→ mức lớn nhất ≤ balance: {best_amt:,}đ {best_door}",
-                    flush=True,
-                )
                 break
-            print(
-                f"   [Bước 1] Bỏ qua {u} (không mức nào trong remaining ≤ balance {b:,}đ)",
-                flush=True,
-            )
         if chosen_u is not None and chosen_amt is not None and chosen_door is not None:
             _new_strategy_remove_first(remaining, chosen_amt, chosen_door)
             bal[chosen_u] -= chosen_amt
             used.add(chosen_u)
             plan.append((chosen_u, chosen_amt, chosen_door))
-        else:
-            print("   [Bước 1] Không gán được (không ai PRIORITY thỏa).", flush=True)
-    else:
-        print("[NEW_STRATEGY][Bước 1] Không có PRIORITY_USERS trong config.", flush=True)
 
     # ---- Bước 2 ----
     if remaining:
-        print(
-            f"[NEW_STRATEGY][Bước 2] User chưa dùng: {[u for u in online_users if u not in used]} | "
-            f"Mức còn: {[(a, d) for a, d in remaining]}",
-            flush=True,
-        )
-        pick = _new_strategy_step2_pick(remaining, bal, used, online_users, log_label="Bước 2")
+        pick = _new_strategy_step2_pick(remaining, bal, used, online_users)
         if pick is None:
             return None
         u, amt, door = pick
@@ -218,61 +155,20 @@ def _new_strategy_build_assignment_plan(
     if top3:
         order = list(top3)
         random.shuffle(order)
-        top_info = [
-            f"{u}(cược_ngày={today_bets.get(u, 0):,},bal={bal.get(u, 0):,})"
-            for u in top3
-        ]
-        print(
-            f"[NEW_STRATEGY][Bước 3] Trong số chưa dùng, top {len(top3)} theo (cược_ngày↓, balance↓): "
-            + " | ".join(top_info),
-            flush=True,
-        )
-        print(
-            f"   [Bước 3] Thứ tự sau shuffle (thử lần lượt khi gán mỗi mức): {order}",
-            flush=True,
-        )
-        print(
-            f"   [Bước 3] Duyệt mức còn lại từ cao→thấp: {[(a, d) for a, d in amounts_to_try]}",
-            flush=True,
-        )
         for amt, door in amounts_to_try:
             if not any(t[0] == amt and t[1] == door for t in remaining):
                 continue
-            placed = False
             for u in order:
                 if u not in used and bal.get(u, 0) >= amt:
                     _new_strategy_remove_first(remaining, amt, door)
                     bal[u] -= amt
                     used.add(u)
                     plan.append((u, amt, door))
-                    print(
-                        f"   [Bước 3] Mức {amt:,}đ {door}: gán → {u} "
-                        f"(user đầu tiên trong thứ tự shuffle còn free và đủ tiền)",
-                        flush=True,
-                    )
-                    placed = True
                     break
-            if not placed:
-                print(
-                    f"   [Bước 3] Mức {amt:,}đ {door}: bỏ qua (cả 3 trong pool đều không đủ hoặc đã dùng) "
-                    f"→ để Bước 4",
-                    flush=True,
-                )
-    else:
-        print("[NEW_STRATEGY][Bước 3] Không còn user chưa dùng — bỏ qua.", flush=True)
 
     # ---- Bước 4: mức còn lại — lặp logic Bước 2 ----
-    b4_i = 0
     while remaining:
-        b4_i += 1
-        print(
-            f"[NEW_STRATEGY][Bước 4 #{b4_i}] Mức còn: {[(a, d) for a, d in remaining]} | "
-            f"Đã dùng: {sorted(used)}",
-            flush=True,
-        )
-        pick = _new_strategy_step2_pick(
-            remaining, bal, used, online_users, log_label=f"Bước 4 #{b4_i}"
-        )
+        pick = _new_strategy_step2_pick(remaining, bal, used, online_users)
         if pick is None:
             return None
         u, amt, door = pick
@@ -281,7 +177,6 @@ def _new_strategy_build_assignment_plan(
         used.add(u)
         plan.append((u, amt, door))
 
-    print("[NEW_STRATEGY][PLAN] --- Hết ghép ---", flush=True)
     return plan
 
 
