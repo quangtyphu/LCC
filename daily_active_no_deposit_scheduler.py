@@ -13,7 +13,6 @@ from auto_deposit_on_out_of_money import (
     can_create_deposit_order,
     enqueue_deposit_order,
     is_in_v2_v3,
-    _is_v2_auto_deposit_blocked,
 )
 
 API_BASE = "http://127.0.0.1:3000"
@@ -102,10 +101,6 @@ def deposit_active_no_deposit_users():
             continue
 
         if is_in_v2_v3(user, config):
-            v2_users = config.get("PRIORITY_USERS_V2", [])
-            v3_users = config.get("PRIORITY_USERS_V3", [])
-            if (user in v2_users or user in v3_users) and _is_v2_auto_deposit_blocked(config):
-                continue
             if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
                 continue
             if not can_create_deposit_order(user):

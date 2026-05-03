@@ -14,7 +14,6 @@ from auto_deposit_on_out_of_money import (
     can_create_deposit_order,
     enqueue_deposit_order,
     is_in_v2_v3,
-    _is_v2_auto_deposit_blocked,
     _get_active_window,
     auto_deposit_for_user,
     outside_decision_try_skip,
@@ -143,10 +142,6 @@ def _check_and_deposit_on_het_tien_if_streak_impl(user: str) -> bool:
     if user not in users:
         return False
     if is_in_v2_v3(user, config):
-        v2_users = config.get("PRIORITY_USERS_V2", [])
-        v3_users = config.get("PRIORITY_USERS_V3", [])
-        if (user in v2_users or user in v3_users) and _is_v2_auto_deposit_blocked(config):
-            return False
         if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
             return False
         return False

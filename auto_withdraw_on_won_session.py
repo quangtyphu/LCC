@@ -145,42 +145,12 @@ def get_withdraw_threshold(group: str = "DEFAULT") -> int:
     config = load_config()
 
     if group in ("V2", "V3"):
-        v2_min = _get_v2_withdraw_min(config)
-        if v2_min is not None:
-            return v2_min
         return int(config.get("WITHDRAW_THRESHOLD_MIN_V1", config.get("WITHDRAW_THRESHOLD_MIN", 300000)))
 
     if group == "V1":
         return int(config.get("WITHDRAW_THRESHOLD_MIN_V1", config.get("WITHDRAW_THRESHOLD_MIN", 300000)))
 
     return int(config.get("WITHDRAW_THRESHOLD_MIN", 300000))
-
-
-def _get_v2_withdraw_min(cfg: dict) -> Optional[int]:
-    """
-    Lấy min rút theo khung giờ V2_TIME_RULES (áp dụng cho V2/V3).
-    """
-    from datetime import datetime as dt
-    tz = ZoneInfo("Asia/Ho_Chi_Minh")
-    now = dt.now(tz).time()
-    windows = cfg.get("V2_TIME_RULES") or []
-    for w in windows:
-        try:
-            if int(w.get("enabled", 1)) != 1:
-                continue
-            start = w.get("start")
-            end = w.get("end")
-            min_withdraw = w.get("withdraw_min")
-            if min_withdraw is None or not start or not end:
-                continue
-            s = dt.strptime(start, "%H:%M").time()
-            e = dt.strptime(end, "%H:%M").time()
-            in_range = (s <= now < e) if s < e else (now >= s or now < e)
-            if in_range:
-                return int(min_withdraw)
-        except Exception:
-            continue
-    return None
 
 
 def find_nearest_withdraw_amount(balance: int) -> Optional[int]:

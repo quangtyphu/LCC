@@ -360,32 +360,6 @@ def random_amount():
     return random.choice([i for i in range(200_000, 300_000, 10_000)])
 
 
-def _is_v2_auto_deposit_blocked(cfg: dict) -> bool:
-    """
-    Trả True nếu trong khung giờ V2_TIME_RULES không cho auto nạp (áp dụng V2/V3).
-    """
-    from datetime import datetime as dt
-    tz = ZoneInfo("Asia/Ho_Chi_Minh")
-    now = dt.now(tz).time()
-    windows = cfg.get("V2_TIME_RULES") or []
-    for w in windows:
-        try:
-            if int(w.get("enabled", 1)) != 1:
-                continue
-            start = w.get("start")
-            end = w.get("end")
-            allow = int(w.get("auto_deposit_allow", 1))
-            if not start or not end:
-                continue
-            s = dt.strptime(start, "%H:%M").time()
-            e = dt.strptime(end, "%H:%M").time()
-            in_range = (s <= now < e) if s < e else (now >= s or now < e)
-            if in_range:
-                return allow == 0
-        except Exception:
-            continue
-    return False
-
 def _get_active_window(cfg: dict) -> dict:
     """
     Trả về nguyên window đang hiệu lực (inclusive start, exclusive end).
@@ -508,12 +482,6 @@ def auto_deposit_for_user(
         if _is_priority_v3_user(user, config):
             return
         if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
-            return
-        v2_users = config.get("PRIORITY_USERS_V2", [])
-        v3_users = config.get("PRIORITY_USERS_V3", [])
-        if (
-            _username_matches_list(user, v2_users) or _username_matches_list(user, v3_users)
-        ) and _is_v2_auto_deposit_blocked(config):
             return
         # Check xem có thể tạo lệnh nạp không (không có lệnh treo)
         if not can_create_deposit_order(user):

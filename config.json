@@ -8,22 +8,13 @@
   "PERIODIC_DEPOSIT_CHECK_SECONDS": 60,
   "PERIODIC_OUTSIDE_DEPOSIT": 1,
   "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 0,
-  "WITHDRAW_THRESHOLD_MIN": 210000,
+  "WITHDRAW_THRESHOLD_MIN": 510000,
   "WITHDRAW_THRESHOLD_MIN_V1": 1200000,
   "BET_RANGE": {
     "START": 50,
     "STOP": 201,
     "STEP": 10
   },
-  "V2_TIME_RULES": [
-    {
-      "start": "23:50",
-      "end": "23:59",
-      "auto_deposit_allow": 0,
-      "withdraw_min": 310000,
-      "enabled": 1
-    }
-  ],
   "ALL_IN_IF_REMAIN_LT_10K": 0,
   "PLAYER_COUNT": 8,
   "TIME_WINDOWS": [
