@@ -60,15 +60,6 @@ def _fetch_closest_users_below_target(target_amount: int, take: int = 8):
 
 def _get_v2_target_count(default_count: int = 8) -> int:
     cfg = load_config() or {}
-    mode = cfg.get("AUTO_REFRESH_V2_FROM_TOP480", {})
-    if isinstance(mode, dict):
-        try:
-            count = int(mode.get("V2_COUNT", default_count) or default_count)
-            if count > 0:
-                return count
-        except Exception:
-            pass
-
     v2_list = cfg.get("PRIORITY_USERS_V2", [])
     if isinstance(v2_list, list):
         normalized = [str(u or "").strip() for u in v2_list if str(u or "").strip()]

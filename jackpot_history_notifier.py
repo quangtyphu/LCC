@@ -12,11 +12,44 @@ import constants
 JACKPOT_API_URL = "https://wtx.tele68.com/v1/tx/jackpot-history"
 SESSION_SUMMARY_URL = "https://wtx.tele68.com/v1/tx/session-summary"
 
+# Sau khi biết nổ hũ (111/666), chờ N giây rồi mới gọi session-summary + ghi DB (API thường chốt tổng cược chậm).
+def _jackpot_db_delay_seconds() -> int:
+    try:
+        return max(0, int(os.environ.get("JACKPOT_DB_DELAY_SECONDS", "30")))
+    except (TypeError, ValueError):
+        return 30
+
 
 def _game_total_one_side(overall: dict | None) -> float | None:
+    """
+    Tổng cược một bên (Tài = Xỉu). Ưu tiên hai betSummaries khi Tài≈Xỉu; nếu lệch rõ
+    (API đang cập nhật dở) thì chỉ dùng overall.totalAmount/2 — tránh lấy nhầm phần tử [0].
+    """
     if not isinstance(overall, dict):
         return None
     summaries = overall.get("betSummaries")
+    total = overall.get("totalAmount")
+    from_overall = None
+    if total is not None:
+        try:
+            from_overall = float(total) / 2.0
+        except (TypeError, ValueError):
+            pass
+
+    if isinstance(summaries, list) and len(summaries) >= 2:
+        s0, s1 = summaries[0], summaries[1]
+        a = s0.get("totalAmount") if isinstance(s0, dict) else None
+        b = s1.get("totalAmount") if isinstance(s1, dict) else None
+        if a is not None and b is not None:
+            try:
+                fa, fb = float(a), float(b)
+                hi = max(fa, fb)
+                if hi > 0 and abs(fa - fb) / hi <= 0.01:
+                    return (fa + fb) / 2.0
+            except (TypeError, ValueError):
+                pass
+        return from_overall
+
     if isinstance(summaries, list) and summaries:
         first = summaries[0]
         if isinstance(first, dict) and first.get("totalAmount") is not None:
@@ -24,13 +57,7 @@ def _game_total_one_side(overall: dict | None) -> float | None:
                 return float(first["totalAmount"])
             except (TypeError, ValueError):
                 pass
-    total = overall.get("totalAmount")
-    if total is not None:
-        try:
-            return float(total) / 2.0
-        except (TypeError, ValueError):
-            pass
-    return None
+    return from_overall
 
 
 def _fetch_session_summary(username: str, session_id) -> tuple[dict | None, str | None]:
@@ -67,9 +94,22 @@ def _try_save_jackpot_db(
 ) -> str | None:
     """Ghi jackpot_session_records; không ném exception ra ngoài. Trả 'proxy_exhausted' nếu proxy hết retry."""
     try:
-        summary, tag = _fetch_session_summary(username, session_id)
-        if tag == "proxy_exhausted":
-            return "proxy_exhausted"
+        summary = None
+        tag = None
+        prev_tot = None
+        for _ in range(10):
+            summary, tag = _fetch_session_summary(username, session_id)
+            if tag == "proxy_exhausted":
+                return "proxy_exhausted"
+            if not summary:
+                time.sleep(0.4)
+                continue
+            ov = summary.get("overall")
+            ta = ov.get("totalAmount") if isinstance(ov, dict) else None
+            if ta is not None and prev_tot is not None and ta == prev_tot:
+                break
+            prev_tot = ta
+            time.sleep(0.4)
         if not summary:
             return None
         overall = summary.get("overall")
@@ -320,6 +360,25 @@ def check_and_notify_jackpot(username: str, session_data: dict):
         if session_id is None:
             session_id = detail.get("session_id") or detail.get("sessionId") or detail.get("id")
 
+    delay_sec = _jackpot_db_delay_seconds()
+    if delay_sec > 0:
+        print(
+            f"🎰 [{username}] Nổ hũ phiên {session_id} → chờ {delay_sec}s rồi gọi session-summary + ghi DB + Telegram",
+            flush=True,
+        )
+        time.sleep(delay_sec)
+
+    details2, _ = _fetch_jackpot_history(username, limit=30)
+    if details2:
+        detail2 = _find_detail_by_session(details2, session_id)
+        if isinstance(detail2, dict):
+            rt = detail2.get("result")
+            if rt:
+                result_text = rt
+            ja = detail2.get("jackpotAmount") or detail2.get("jackpot_amount")
+            if isinstance(ja, (int, float)) and float(ja) > 0:
+                jackpot_amount = ja
+
     total_bet = _fetch_total_bet_for_session(session_id)
 
     result_display = result_text or str(result_code)
@@ -334,7 +393,7 @@ def check_and_notify_jackpot(username: str, session_data: dict):
     )
 
     print(
-        f"🎰 [{username}] Nổ hũ 111/666 phiên {session_id} → ghi DB + gửi Telegram",
+        f"🎰 [{username}] Nổ hũ 111/666 phiên {session_id} → ghi DB + gửi Telegram (sau chờ)",
         flush=True,
     )
     save_tag = _try_save_jackpot_db(username, session_id, session_data, jackpot_amount, total_bet)

@@ -28,9 +28,32 @@ SESSION_SUMMARY_URL = "https://wtx.tele68.com/v1/tx/session-summary"
 
 
 def _game_total_one_side(overall: dict[str, Any] | None) -> float | None:
+    """Đồng bộ logic với jackpot_history_notifier._game_total_one_side."""
     if not isinstance(overall, dict):
         return None
     summaries = overall.get("betSummaries")
+    total = overall.get("totalAmount")
+    from_overall = None
+    if total is not None:
+        try:
+            from_overall = float(total) / 2.0
+        except (TypeError, ValueError):
+            pass
+
+    if isinstance(summaries, list) and len(summaries) >= 2:
+        s0, s1 = summaries[0], summaries[1]
+        a = s0.get("totalAmount") if isinstance(s0, dict) else None
+        b = s1.get("totalAmount") if isinstance(s1, dict) else None
+        if a is not None and b is not None:
+            try:
+                fa, fb = float(a), float(b)
+                hi = max(fa, fb)
+                if hi > 0 and abs(fa - fb) / hi <= 0.01:
+                    return (fa + fb) / 2.0
+            except (TypeError, ValueError):
+                pass
+        return from_overall
+
     if isinstance(summaries, list) and summaries:
         first = summaries[0]
         if isinstance(first, dict) and first.get("totalAmount") is not None:
@@ -38,13 +61,7 @@ def _game_total_one_side(overall: dict[str, Any] | None) -> float | None:
                 return float(first["totalAmount"])
             except (TypeError, ValueError):
                 pass
-    total = overall.get("totalAmount")
-    if total is not None:
-        try:
-            return float(total) / 2.0
-        except (TypeError, ValueError):
-            pass
-    return None
+    return from_overall
 
 
 def fetch_session_summary(username: str, session_id: int | str) -> dict[str, Any] | None:

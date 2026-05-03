@@ -51,135 +51,6 @@ def _clean(lst):
     return [str(x).strip() for x in lst if isinstance(x, str) and str(x).strip()]
 
 
-def _new_strategy_remove_first(remaining: List[Tuple[int, str]], amt: int, door: str) -> None:
-    for i, t in enumerate(remaining):
-        if t[0] == amt and t[1] == door:
-            remaining.pop(i)
-            return
-    raise RuntimeError(f"NEW_STRATEGY: thiếu mức ({amt}, {door}) trong remaining")
-
-
-def _new_strategy_step2_pick(
-    remaining: List[Tuple[int, str]],
-    bal: Dict[str, int],
-    used: set,
-    online_users: List[str],
-) -> Optional[Tuple[str, int, str]]:
-    """
-    Bước 2 / 4: với mỗi mức (cao → thấp) tính min(balance sau cược) trong user đủ tiền;
-    chọn mức có giá trị min đó nhỏ nhất; hòa thì ưu tiên mức cược lớn hơn.
-    """
-    free = [u for u in online_users if u not in used]
-    best: Optional[Tuple[Tuple[int, int], str, int, str]] = None  # (key), u, amt, door
-    for amt, door in sorted(remaining, key=lambda x: (-x[0], x[1])):
-        min_after: Optional[int] = None
-        best_u: Optional[str] = None
-        for u in free:
-            b = bal.get(u, 0)
-            if b >= amt:
-                aft = b - amt
-                if min_after is None or aft < min_after:
-                    min_after = aft
-                    best_u = u
-        if min_after is None or best_u is None:
-            continue
-        key = (min_after, -amt)
-        if best is None or key < best[0]:
-            best = (key, best_u, amt, door)
-    if best is None:
-        return None
-    _k, u, amt, door = best
-    return (u, amt, door)
-
-
-def _new_strategy_build_assignment_plan(
-    online_users: List[str],
-    balances: Dict[str, int],
-    today_bets: Dict[str, int],
-    priority_users: List[str],
-    bets_sorted: List[Tuple[int, str]],
-) -> Optional[List[Tuple[str, int, str]]]:
-    """
-    NEW_STRATEGY: danh sách mức đã sort giảm dần; B1 PRIORITY → B2 min-after → B3 top3+shuffle → B4 lặp B2.
-    """
-    bal = dict(balances)
-    remaining = list(bets_sorted)
-    used: set = set()
-    plan: List[Tuple[str, int, str]] = []
-
-    # ---- Bước 1: PRIORITY_USERS — mức ≤ balance và lớn nhất (gần balance nhất từ dưới) ----
-    pu_list = [str(u).strip() for u in (priority_users or []) if u and str(u).strip()]
-    if pu_list:
-        chosen_u: Optional[str] = None
-        chosen_amt: Optional[int] = None
-        chosen_door: Optional[str] = None
-        for u in pu_list:
-            if u not in online_users:
-                continue
-            b = bal.get(u, 0)
-            best_amt: Optional[int] = None
-            best_door: Optional[str] = None
-            for amt, door in sorted(remaining, key=lambda x: (-x[0], x[1])):
-                if amt <= b:
-                    best_amt, best_door = amt, door
-                    break
-            if best_amt is not None and best_door is not None:
-                chosen_u, chosen_amt, chosen_door = u, best_amt, best_door
-                break
-        if chosen_u is not None and chosen_amt is not None and chosen_door is not None:
-            _new_strategy_remove_first(remaining, chosen_amt, chosen_door)
-            bal[chosen_u] -= chosen_amt
-            used.add(chosen_u)
-            plan.append((chosen_u, chosen_amt, chosen_door))
-
-    # ---- Bước 2 ----
-    if remaining:
-        pick = _new_strategy_step2_pick(remaining, bal, used, online_users)
-        if pick is None:
-            return None
-        u, amt, door = pick
-        _new_strategy_remove_first(remaining, amt, door)
-        bal[u] -= amt
-        used.add(u)
-        plan.append((u, amt, door))
-
-    # ---- Bước 3: top 3 today_bets, shuffle; duyệt mức cao→thấp, thử user theo thứ tự đã trộn ----
-    amounts_to_try = sorted(remaining, key=lambda x: (-x[0], x[1]))
-    free_for_top = [u for u in online_users if u not in used]
-    top_pool = sorted(
-        free_for_top,
-        key=lambda u: (today_bets.get(u, 0), bal.get(u, 0)),
-        reverse=True,
-    )
-    top3 = top_pool[: min(3, len(top_pool))]
-    if top3:
-        order = list(top3)
-        random.shuffle(order)
-        for amt, door in amounts_to_try:
-            if not any(t[0] == amt and t[1] == door for t in remaining):
-                continue
-            for u in order:
-                if u not in used and bal.get(u, 0) >= amt:
-                    _new_strategy_remove_first(remaining, amt, door)
-                    bal[u] -= amt
-                    used.add(u)
-                    plan.append((u, amt, door))
-                    break
-
-    # ---- Bước 4: mức còn lại — lặp logic Bước 2 ----
-    while remaining:
-        pick = _new_strategy_step2_pick(remaining, bal, used, online_users)
-        if pick is None:
-            return None
-        u, amt, door = pick
-        _new_strategy_remove_first(remaining, amt, door)
-        bal[u] -= amt
-        used.add(u)
-        plan.append((u, amt, door))
-
-    return plan
-
-
 def _priority_users_from(cfg: dict, w: dict) -> List[str]:
     lst = w.get("PRIORITY_USERS") or cfg.get("PRIORITY_USERS") or []
     return [u for u in lst if u]
@@ -387,82 +258,16 @@ def assign_bets(
     PRIORITY_USERS = _priority_users_from(config, window)  # vẫn dùng cho các strategy khác
     PRIORITY_USERS_V2 = _priority_users_v2_from(config, window)
     PRIORITY_USERS_V3 = _priority_users_v3_from(config, window)
-    new_strategy_cfg = config.get("NEW_STRATEGY", {})
-    try:
-        new_strategy_enabled = int((new_strategy_cfg or {}).get("ENABLED", 0) or 0) == 1
-    except Exception:
-        new_strategy_enabled = False
 
     balances = _fresh_balances_for_online(online_users)
     today_bets = _fetch_today_bets_for_online(online_users) if (
-        strategy in (7, 8, 9, 10, 11, 12) or new_strategy_enabled
+        strategy in (7, 8, 9, 10, 11, 12)
     ) else {}
     weekly_bets = _fetch_weekly_bets_for_online(online_users) if strategy in (6, 7, 8) else {}
     monthly_bets = _fetch_monthly_bets_for_online(online_users) if strategy == 5 else {}
 
     # sort giảm dần theo amount để nhận diện bet lớn nhất
     to_assign = sorted([(amt, door) for (_dev, amt, door) in bets], key=lambda x: -x[0])
-
-    if new_strategy_enabled and to_assign:
-        plan = _new_strategy_build_assignment_plan(
-            online_users,
-            balances,
-            today_bets,
-            PRIORITY_USERS,
-            to_assign,
-        )
-        if plan is None:
-            msg = "⚠️ NEW_STRATEGY: không gán hết phiên (thiếu user đủ tiền cho bước 2/4). Hủy phiên."
-            print(msg)
-            send_telegram(msg)
-            return []
-        odd_applied_v2: set = set()
-        final: List[Tuple[str, int, str, int]] = []
-        for chosen, amount, door in plan:
-            current_bal = balances[chosen]
-            after = current_bal - amount
-
-            tz = ZoneInfo("Asia/Ho_Chi_Minh")
-            now_t = datetime.now(tz).time()
-            in_v2_odd_window = dt_time(1, 0) <= now_t <= dt_time(23, 59)
-            if (
-                in_v2_odd_window
-                and today_bets
-                and chosen in PRIORITY_USERS_V2
-                and chosen not in odd_applied_v2
-                and today_bets.get(chosen, 0) % 10000 == 0
-                and amount % 10000 == 0
-            ):
-                add = random.randint(1, 9999)
-                if current_bal >= amount + add:
-                    amount += add
-                    after = current_bal - amount
-                    odd_applied_v2.add(chosen)
-                    print(f"   [V2 odd] {chosen} +{add} → cược {amount} (tổng ngày khác bội 10k)")
-
-            cfg = load_config()
-            try:
-                all_in_flag = int(cfg.get("ALL_IN_IF_REMAIN_LT_10K", 1))
-            except Exception:
-                all_in_flag = 1
-
-            if all_in_flag == 1 and current_bal - amount < 10000:
-                amount = current_bal
-                after = 0
-
-            balances[chosen] = after
-
-            delay = random.randint(5, 25)
-            final.append((chosen, amount, door, delay))
-
-            print(
-                f"➡️  User {chosen.ljust(20)} "
-                f"Balance={str(current_bal).rjust(8)} "
-                f"→ Đặt {door.ljust(3)} {str(amount).rjust(7)} "
-                f"(Còn lại {str(after).rjust(8)}) "
-                f"Sau {str(delay).rjust(3)}s"
-            )
-        return final
 
     used = set()
     odd_applied_v2: set = set()  # V2: đã áp dụng đánh lẻ 1 lần/phiên để tổng cược ngày khác bội 10k
