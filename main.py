@@ -319,6 +319,7 @@ if __name__ == "__main__":
     from auto_deposit_on_out_of_money import reset_deposit_cache, start_periodic_check
     from daily_active_no_deposit_scheduler import auto_active_no_deposit_scheduler
     from pending_withdraw_checker import start_pending_withdraw_checker
+    from weekly_bet_mode_scheduler import start_weekly_bet_mode_scheduler
 
     # Reset cache khi khởi động chương trình (giống như pending_withdrawals reset về {})
     print("[INIT] Đang reset deposit cache...", flush=True)
@@ -337,6 +338,8 @@ if __name__ == "__main__":
     # (Đã bỏ streak_deposit_scheduler - thay bằng check streak khi user chuyển Hết Tiền trong chiaTien_Acc)
     # Chạy scheduler check lịch sử rút cho user đang chờ (10 phút)
     start_pending_withdraw_checker(interval_seconds=600)
+    # Chế độ Cược tuần: mỗi 60s cập nhật PRIORITY_USERS_V2 khi WEEKLY_BET_MODE.ENABLED=1
+    start_weekly_bet_mode_scheduler()
     # Chạy watcher_loop như cũ
     try:
         asyncio.run(watcher_loop())

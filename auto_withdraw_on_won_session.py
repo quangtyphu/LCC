@@ -7,7 +7,8 @@ import time
 import json
 import re
 import asyncio
-from typing import Dict, Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 # Fix encoding cho Windows console
@@ -38,6 +39,184 @@ import threading
 processing_users: Dict[str, threading.Lock] = {}
 global_withdraw_lock = threading.Lock()
 pending_worker_thread: Optional[threading.Thread] = None
+
+# --- Khung 23:55–hết ngày: tối đa 1 user rút / phiên (chọn balance cao nhất trong pool > min) ---
+_late_night_lock = threading.Lock()
+_late_night_buffer: Dict[str, Dict[str, int]] = {}
+_late_night_timers: Dict[str, threading.Timer] = {}
+_late_night_consumed: set[str] = set()
+_LATE_NIGHT_CONSUMED_MAX = 4000
+_LATE_NIGHT_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+_LATE_NIGHT_DEBOUNCE_SEC = 2.0
+
+
+def _late_night_settings(config: dict) -> dict:
+    """Đọc cụm LATE_NIGHT_AUTO_WITHDRAW; vẫn nhận key phẳng cũ nếu chưa có cụm."""
+    defaults = {
+        "ENABLED": 0,
+        "START": "23:55",
+        "END": "24:00",
+        "MIN_BALANCE": 0,
+    }
+    out = dict(defaults)
+    blk = config.get("LATE_NIGHT_AUTO_WITHDRAW")
+    if isinstance(blk, dict):
+        for k in defaults:
+            if k in blk:
+                out[k] = blk[k]
+        return out
+    legacy = {
+        "ENABLED": "LATE_NIGHT_AUTO_WITHDRAW_ENABLED",
+        "START": "LATE_NIGHT_AUTO_WITHDRAW_START",
+        "END": "LATE_NIGHT_AUTO_WITHDRAW_END",
+        "MIN_BALANCE": "LATE_NIGHT_AUTO_WITHDRAW_MIN_BALANCE",
+    }
+    for nk, ok in legacy.items():
+        if ok in config:
+            out[nk] = config[ok]
+    return out
+
+
+def _parse_hhmm_local(s: str, default_h: int, default_m: int) -> tuple[int, int]:
+    s = (s or "").strip()
+    if not s:
+        return default_h, default_m
+    parts = s.replace(":", " ").split()
+    if len(parts) >= 2:
+        try:
+            return int(parts[0]), int(parts[1])
+        except ValueError:
+            pass
+    if ":" in s:
+        a, b = s.split(":", 1)
+        try:
+            return int(a), int(b)
+        except ValueError:
+            pass
+    return default_h, default_m
+
+
+def _is_late_night_auto_withdraw_window(config: dict) -> bool:
+    s = _late_night_settings(config)
+    if int(s.get("ENABLED", 0)) != 1:
+        return False
+    now = time.time()
+    try:
+        dt = datetime.fromtimestamp(now, tz=_LATE_NIGHT_TZ)
+    except Exception:
+        dt = datetime.fromtimestamp(now, tz=ZoneInfo("Asia/Ho_Chi_Minh"))
+    minutes_now = dt.hour * 60 + dt.minute
+    sh, sm = _parse_hhmm_local(str(s.get("START", "23:55")), 23, 55)
+    eh, em = _parse_hhmm_local(str(s.get("END", "24:00")), 24, 0)
+    start_m = sh * 60 + sm
+    end_m = eh * 60 + em
+    if end_m <= start_m:
+        end_m = 24 * 60
+    return start_m <= minutes_now < end_m
+
+
+def _late_night_min_balance(config: dict) -> int:
+    try:
+        return int(_late_night_settings(config).get("MIN_BALANCE", 0))
+    except Exception:
+        return 0
+
+
+def _late_night_session_key(session_id: Any) -> str:
+    if session_id is None:
+        return "_unknown"
+    return str(session_id)
+
+
+def _prune_late_night_consumed() -> None:
+    if len(_late_night_consumed) <= _LATE_NIGHT_CONSUMED_MAX:
+        return
+    _late_night_consumed.clear()
+
+
+def _late_night_preliminary_eligible(username: str, balance: int, config: dict) -> bool:
+    if balance <= _late_night_min_balance(config):
+        return False
+    if not _is_required_bet_met(username):
+        return False
+    user_group = get_user_group(username)
+    threshold = get_withdraw_threshold(user_group)
+    if balance <= threshold:
+        return False
+    if not find_nearest_withdraw_amount(balance):
+        return False
+    return True
+
+
+def _flush_late_night_session(session_key: str) -> None:
+    with _late_night_lock:
+        _late_night_timers.pop(session_key, None)
+        candidates_map = _late_night_buffer.pop(session_key, {})
+        if session_key in _late_night_consumed:
+            return
+        if not candidates_map:
+            return
+
+    config = load_config()
+    if int(_late_night_settings(config).get("ENABLED", 0)) != 1:
+        return
+    if not _is_late_night_auto_withdraw_window(config):
+        return
+
+    ranked = sorted(candidates_map.items(), key=lambda kv: kv[1], reverse=True)
+    winner: Optional[str] = None
+    win_balance: int = 0
+    for uname, bal in ranked:
+        if not _late_night_preliminary_eligible(uname, bal, config):
+            continue
+        winner = uname
+        win_balance = bal
+        break
+
+    if not winner:
+        print(
+            f"🌙 [AutoWithdraw][LateNight] Phiên {session_key}: không có user đủ điều kiện (>{_late_night_min_balance(config):,}đ + mốc/cược)",
+            flush=True,
+        )
+        return
+
+    with _late_night_lock:
+        if session_key in _late_night_consumed:
+            return
+        _late_night_consumed.add(session_key)
+        _prune_late_night_consumed()
+
+    print(
+        f"🌙 [AutoWithdraw][LateNight] Phiên {session_key}: chọn [{winner}] balance={win_balance:,}đ để rút (tối đa 1 user/phiên)",
+        flush=True,
+    )
+
+    if winner not in processing_users:
+        processing_users[winner] = threading.Lock()
+    user_lock = processing_users[winner]
+    with user_lock:
+        try:
+            handle_won_session_withdrawal(winner, win_balance)
+        except Exception as e:
+            print(f"❌ [AutoWithdraw][LateNight][{winner}] {e}", flush=True)
+            import traceback
+
+            traceback.print_exc()
+
+
+def _schedule_late_night_flush(session_key: str) -> None:
+    delay = _LATE_NIGHT_DEBOUNCE_SEC
+    with _late_night_lock:
+        old = _late_night_timers.pop(session_key, None)
+        if old:
+            try:
+                old.cancel()
+            except Exception:
+                pass
+        t = threading.Timer(delay, _flush_late_night_session, args=[session_key])
+        t.daemon = True
+        _late_night_timers[session_key] = t
+        t.start()
 
 
 def _load_queue_state() -> dict:
@@ -716,35 +895,78 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
 
 # ================= ENTRY POINT (called from ws_events.py) =================
 
-def handle_won_session_auto_withdraw(username: str, balance: int):
+def handle_won_session_auto_withdraw(username: str, balance: int, session_id: Any = None):
     """
     Entry point từ ws_events.py.
     QUAN TRỌNG: Chạy trong thread riêng để không block event loop async
+
+    Khung LATE_NIGHT (mặc định 23:55–24:00 giờ Asia/Ho_Chi_Minh, bật trong
+    config LATE_NIGHT_AUTO_WITHDRAW.ENABLED): chỉ rút nếu balance > MIN_BALANCE;
+    gom theo session_id, sau debounce chọn đúng
+    1 user (balance cao nhất) rồi gọi handle_won_session_withdrawal (giữ mốc/cược như cũ).
     """
     # Tạo/lấy lock cho user này để tránh race condition
     if username not in processing_users:
         processing_users[username] = threading.Lock()
-    
+
     user_lock = processing_users[username]
-    
-    # Chạy trong thread để không block websocket event loop
+
     def _run_in_thread():
-        # Acquire lock để đảm bảo chỉ xử lý 1 request cho user này một lúc
+        try:
+            bal = int(balance) if balance is not None else 0
+        except (TypeError, ValueError):
+            bal = 0
+
+        config = load_config()
+        if _is_late_night_auto_withdraw_window(config):
+            if bal <= _late_night_min_balance(config):
+                return
+            sk = _late_night_session_key(session_id)
+            if sk == "_unknown":
+                print(
+                    "⚠️ [AutoWithdraw][LateNight] Thiếu session_id — không gom phiên, rút như bình thường",
+                    flush=True,
+                )
+                with user_lock:
+                    try:
+                        result = handle_won_session_withdrawal(username, bal)
+                        if result.get("pending"):
+                            pass
+                        elif not result.get("ok"):
+                            print(f"⚠️ [AutoWithdraw][{username}] Error: {result.get('error')}")
+                    except Exception as e:
+                        print(f"❌ [AutoWithdraw][{username}] Exception: {e}")
+                        import traceback
+
+                        traceback.print_exc()
+                return
+
+            with _late_night_lock:
+                if sk in _late_night_consumed:
+                    return
+                m = _late_night_buffer.setdefault(sk, {})
+                prev = m.get(username, 0)
+                if bal > prev:
+                    m[username] = bal
+            _schedule_late_night_flush(sk)
+            return
+
+        # Ngày thường: như cũ
         with user_lock:
             try:
-                result = handle_won_session_withdrawal(username, balance)
-                
+                result = handle_won_session_withdrawal(username, bal)
+
                 if result.get("pending"):
                     pass
                 elif not result.get("ok"):
                     print(f"⚠️ [AutoWithdraw][{username}] Error: {result.get('error')}")
-                    
+
             except Exception as e:
                 print(f"❌ [AutoWithdraw][{username}] Exception: {e}")
                 import traceback
+
                 traceback.print_exc()
-    
-    # Tạo thread daemon để chạy
+
     thread = threading.Thread(target=_run_in_thread, daemon=True)
     thread.start()
 

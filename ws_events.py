@@ -341,7 +341,12 @@ async def handle_event(user, msg):
             
             # AUTO WITHDRAW khi won-session
             try:
-                handle_won_session_auto_withdraw(user, balance)
+                sid = None
+                if isinstance(data, dict):
+                    sid = data.get("sessionId") or data.get("session_id")
+                if sid is None:
+                    sid = getattr(constants, "last_session_id", None)
+                handle_won_session_auto_withdraw(user, balance, session_id=sid)
             except Exception as e:
                 print(f"❌ [{user}] Lỗi auto withdraw: {e}")
                 import traceback
