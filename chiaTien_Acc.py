@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from chiaTien_Tho import distribute_for_devices
 from constants import active_ws, load_config
 from telegram_notifier import send_telegram
+from weekly_bet_mode_scheduler import weekly_bet_mode_forces_strategy
 from auto_withdraw_on_won_session import is_user_waiting_to_withdraw
 
 API_BASE = "http://127.0.0.1:3000"  # server.js
@@ -713,6 +714,9 @@ def run_assigner(online_users: List[str], strategy: int = None) -> List[Tuple[st
     # Lấy strategy theo giờ nếu caller không truyền
     if strategy is None:
         strategy = _strategy_from(cfg, w, fallback=1)
+    # Chế độ Cược tuần: ép strategy 6 (ưu tiên tổng cược tuần thấp nhất), V2 do scheduler cập nhật
+    if weekly_bet_mode_forces_strategy(cfg):
+        strategy = 6
 
     # Lấy danh sách bets từ chiaTien_Tho (đã áp khung giờ & pause)
     bets = distribute_for_devices([{}] * len(online_users))
