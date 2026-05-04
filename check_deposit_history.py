@@ -76,6 +76,18 @@ def get_deposit_order_meta(order_id: int) -> tuple[datetime | None, str]:
         return None, ""
 
 
+def _ndck_in_tx_content(transfer_content: str, tx_content: str) -> bool:
+    """NDCK lệnh phải xuất hiện trong nội dung GD game (không phân biệt hoa thường)."""
+    tc = (transfer_content or "").strip()
+    if not tc:
+        return False
+    c = str(tx_content or "").strip()
+    if not c:
+        return False
+    tcl, cl = tc.lower(), c.lower()
+    return tcl in cl or cl in tcl
+
+
 def tx_matches_deposit_order(
     tx: dict,
     expected_amount: int,
@@ -83,9 +95,10 @@ def tx_matches_deposit_order(
     transfer_content: str,
 ) -> bool:
     """
-    Tránh báo Thành Công nhầm: không chỉ trùng số tiền với GD cũ trong lịch sử.
-    - Nếu có sync_min: GD phải có dateTime >= mốc (sau thời điểm tạo lệnh ~).
-    - Nếu không có sync_min: bắt buộc khớp NDCK trong content (nếu không có NDCK → không khớp).
+    Tránh báo Thành Công nhầm: không chỉ trùng số tiền / mốc thời gian với GD cũ.
+    - Có NDCK: bắt buộc nội dung GD chứa đúng NDCK (cùng với điều kiện thời gian nếu có sync_min).
+    - Không có NDCK nhưng có sync_min: chỉ khớp theo thời gian + số tiền (trường hợp hiếm API không trả NDCK).
+    - Không NDCK và không sync_min: không khớp.
     """
     try:
         amt = int(tx.get("amount") or 0)
@@ -95,17 +108,17 @@ def tx_matches_deposit_order(
         return False
     tx_dt = _parse_tx_datetime(tx.get("dateTime"))
     tc = (transfer_content or "").strip()
+    content = str(tx.get("content") or "")
+
+    if tc and not _ndck_in_tx_content(tc, content):
+        return False
 
     if sync_min is not None:
         if tx_dt is None:
             return False
         return tx_dt >= sync_min
 
-    if tc:
-        content = str(tx.get("content") or "")
-        return tc in content or content in tc
-
-    return False
+    return bool(tc)
 
 
 def refresh_after_deposit_confirm(username: str) -> None:

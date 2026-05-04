@@ -176,12 +176,12 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
     """
     Chờ và check lịch sử nạp tiền theo chu kỳ.
 
-    So khớp: đúng số tiền VÀ (thời gian GD game sau lúc tạo lệnh HOẶC khớp NDCK).
-    Tránh báo Thành Công khi chỉ trùng số tiền với giao dịch nạp cũ trong lịch sử.
+    So khớp: đúng số tiền; nếu có NDCK thì nội dung GD game phải chứa NDCK; nếu có mốc tạo lệnh thì thêm dateTime >= mốc.
+    Tránh báo Thành Công khi chỉ trùng số tiền / khung giờ với giao dịch khác.
 
     Args:
         username: Username
-        transfer_content: NDCK (fallback nếu DB không có; ưu tiên khớp content khi không có mốc thời gian lệnh)
+        transfer_content: NDCK (fallback nếu DB không có; bắt buộc khớp trong content khi có giá trị)
         order_id: ID lệnh nạp trong deposit-orders
         expected_amount: Số tiền nạp cần khớp
 
