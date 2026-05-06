@@ -96,9 +96,8 @@ def tx_matches_deposit_order(
 ) -> bool:
     """
     Tránh báo Thành Công nhầm: không chỉ trùng số tiền / mốc thời gian với GD cũ.
-    - Có NDCK: bắt buộc nội dung GD chứa đúng NDCK (cùng với điều kiện thời gian nếu có sync_min).
-    - Không có NDCK nhưng có sync_min: chỉ khớp theo thời gian + số tiền (trường hợp hiếm API không trả NDCK).
-    - Không NDCK và không sync_min: không khớp.
+    - Bắt buộc có NDCK và nội dung GD chứa đúng NDCK.
+    - Không dùng điều kiện thời gian; NDCK là tiêu chí chính.
     """
     try:
         amt = int(tx.get("amount") or 0)
@@ -110,15 +109,12 @@ def tx_matches_deposit_order(
     tc = (transfer_content or "").strip()
     content = str(tx.get("content") or "")
 
-    if tc and not _ndck_in_tx_content(tc, content):
+    if not tc:
+        return False
+    if not _ndck_in_tx_content(tc, content):
         return False
 
-    if sync_min is not None:
-        if tx_dt is None:
-            return False
-        return tx_dt >= sync_min
-
-    return bool(tc)
+    return True
 
 
 def refresh_after_deposit_confirm(username: str) -> None:
@@ -168,15 +164,19 @@ def refresh_after_deposit_confirm(username: str) -> None:
 def _sync_deposit_order_by_amount(
     username: str,
     tx_amount: int,
+    tx_content: str,
     desired_status: str = "Thành Công",
     only_order_id: int | None = None,
 ) -> bool:
     """
-    Khớp lệnh nạp theo username + số tiền.
+    Khớp lệnh nạp theo username + số tiền + NDCK trong nội dung giao dịch.
     Chỉ nâng lên Thành Công khi lệnh đã «Đã Nạp» (callback bên thứ 3), không sync khi còn Chờ/Đang nạp.
     only_order_id: nếu có, chỉ cập nhật đúng lệnh đó (tránh trùng số tiền nhiều lệnh).
     """
     if not username or not tx_amount:
+        return False
+    tx_content_norm = str(tx_content or "").strip()
+    if not tx_content_norm:
         return False
     try:
         resp = requests.get(
@@ -205,12 +205,25 @@ def _sync_deposit_order_by_amount(
                 order_amount = 0
             if amt != order_amount:
                 continue
+            order_tc = str(
+                order.get("transferContent")
+                or order.get("transfer_content")
+                or ""
+            ).strip()
+            if not order_tc:
+                continue
+            if not _ndck_in_tx_content(order_tc, tx_content_norm):
+                continue
             if current_status == desired_status:
                 return True
             if current_status == "Huỷ":
                 return False
-            # Không ghi Thành Công nếu chưa qua Đã Nạp (tránh báo thành công ngay khi vừa tạo lệnh)
-            if current_status != "Đã Nạp":
+            # Chỉ nâng Thành Công khi lệnh đã qua callback "Đã Nạp".
+            # Ngoại lệ: cho phép cứu lệnh đã "Thất Bại" nếu đang sync strict theo đúng order_id
+            # (flow theo dõi 1 lệnh cụ thể với điều kiện NDCK/thời gian đã lọc từ trước).
+            if current_status not in ("Đã Nạp", "Thất Bại"):
+                continue
+            if current_status == "Thất Bại" and only_order_id is None:
                 continue
             update_resp = requests.put(
                 f"{NODE_SERVER_URL}/api/deposit-orders/{order_id}",
@@ -339,6 +352,7 @@ def check_deposit_history(
             if _sync_deposit_order_by_amount(
                 username,
                 int(tx_amount),
+                str(tx.get("content") or ""),
                 desired_status="Thành Công",
                 only_order_id=sync_only_order_id,
             ):

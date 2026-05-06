@@ -135,13 +135,8 @@ def _prune_late_night_consumed() -> None:
 
 
 def _late_night_preliminary_eligible(username: str, balance: int, config: dict) -> bool:
+    """Chỉ cần vượt MIN_BALANCE (Late Night) và có mức rút trong thang WITHDRAW_AMOUNTS."""
     if balance <= _late_night_min_balance(config):
-        return False
-    if not _is_required_bet_met(username):
-        return False
-    user_group = get_user_group(username)
-    threshold = get_withdraw_threshold(user_group)
-    if balance <= threshold:
         return False
     if not find_nearest_withdraw_amount(balance):
         return False
@@ -175,7 +170,7 @@ def _flush_late_night_session(session_key: str) -> None:
 
     if not winner:
         print(
-            f"🌙 [AutoWithdraw][LateNight] Phiên {session_key}: không có user đủ điều kiện (>{_late_night_min_balance(config):,}đ + mốc/cược)",
+            f"🌙 [AutoWithdraw][LateNight] Phiên {session_key}: không có user đủ điều kiện (>{_late_night_min_balance(config):,}đ + thang rút)",
             flush=True,
         )
         return
@@ -191,17 +186,35 @@ def _flush_late_night_session(session_key: str) -> None:
         flush=True,
     )
 
-    if winner not in processing_users:
-        processing_users[winner] = threading.Lock()
-    user_lock = processing_users[winner]
-    with user_lock:
-        try:
-            handle_won_session_withdrawal(winner, win_balance)
-        except Exception as e:
-            print(f"❌ [AutoWithdraw][LateNight][{winner}] {e}", flush=True)
-            import traceback
+    # Không bọc user_lock ở đây: handle_won_session_withdrawal tự khóa ngắn cho pending,
+    # rồi gọi API ngoài lock — tránh kẹt Late Night (đã in "chọn" nhưng không "Gửi lệnh rút").
+    try:
+        result = handle_won_session_withdrawal(winner, win_balance, late_night_flush=True)
+        if result.get("withdrew"):
+            print(
+                f"🌙 [AutoWithdraw][LateNight][{winner}] Đã rút {int(result.get('amount') or 0):,}đ",
+                flush=True,
+            )
+        elif result.get("pending"):
+            print(
+                f"⏳ [AutoWithdraw][LateNight][{winner}] Chưa rút xong: {result.get('message', 'pending')}",
+                flush=True,
+            )
+        elif result.get("ok") and result.get("message"):
+            print(
+                f"⏭️ [AutoWithdraw][LateNight][{winner}] {result.get('message')}",
+                flush=True,
+            )
+        elif not result.get("ok"):
+            print(
+                f"⚠️ [AutoWithdraw][LateNight][{winner}] {result.get('error', result)}",
+                flush=True,
+            )
+    except Exception as e:
+        print(f"❌ [AutoWithdraw][LateNight][{winner}] {e}", flush=True)
+        import traceback
 
-            traceback.print_exc()
+        traceback.print_exc()
 
 
 def _schedule_late_night_flush(session_key: str) -> None:
@@ -260,8 +273,18 @@ def _save_queue_state(state: dict) -> None:
 
 def _sync_state_to_file() -> None:
     state = _load_queue_state()
+    # withdraw_queue do module này quản lý vòng đời (mark/cancel/clear),
+    # nên giữ hành vi "source of truth" từ RAM để không sót thao tác xóa.
     state["withdraw_queue"] = pending_withdrawals
-    state["wager_queue"] = required_bets
+
+    # wager_queue có thể được cập nhật bởi module khác (vd: withdraw.py),
+    # vì vậy merge để tránh ghi đè mất dữ liệu vừa được cập nhật.
+    file_gq = state.get("wager_queue")
+    if not isinstance(file_gq, dict):
+        file_gq = {}
+    merged_gq = dict(file_gq)
+    merged_gq.update(required_bets)
+    state["wager_queue"] = merged_gq
     _save_queue_state(state)
 
 
@@ -376,10 +399,14 @@ def get_total_bet_for_user(username: str) -> int:
 def parse_required_bet_from_error(error_message: str) -> Optional[int]:
 
     try:
-        # Tìm pattern "vui lòng chơi thêm XXX"
+        # Chỉ lấy cụm số tiền ngay sau "vui lòng chơi thêm"
+        # để tránh ăn nhầm các số khác có trong message/log.
         import re
-        # Tìm số tiền (có thể có dấu chấm phân cách)
-        match = re.search(r'vui lòng chơi thêm\s+(.+)$', error_message, re.IGNORECASE)
+        match = re.search(
+            r"vui lòng chơi thêm\s+([0-9\.\,\s\u00a0]+)",
+            str(error_message or ""),
+            re.IGNORECASE,
+        )
         if match:
             raw = match.group(1)
             # Giữ lại chữ số, loại bỏ dấu chấm/phẩy/khoảng trắng/NBSP
@@ -466,9 +493,11 @@ def _can_attempt_withdraw_now() -> bool:
     return (time.time() - last_withdraw_at) >= WITHDRAW_GLOBAL_COOLDOWN_SECONDS
 
 
-def _withdraw_locked_first_then_retry_minus11(username: str, amount: int) -> dict:
+def _withdraw_locked_first_then_retry_minus11(
+    username: str, amount: int, *, bypass_global_cooldown: bool = False
+) -> dict:
     """
-    Lần rút đầu: check cooldown 60s.
+    Lần rút đầu: check cooldown 60s (trừ khi bypass_global_cooldown, vd. Late Night đã chọn 1 user/phiên).
     [-11] + nội dung 'Bạn cần chờ thêm': đợi (N + 2) giây (N = số giây game báo trong message, +2 giây đệm), rút lại (lần 2 không check cooldown 60s).
     [-11] khác: không retry, trả kết quả như bình thường.
     """
@@ -476,7 +505,7 @@ def _withdraw_locked_first_then_retry_minus11(username: str, amount: int) -> dic
     from withdraw import withdraw
 
     with global_withdraw_lock:
-        if not _can_attempt_withdraw_now():
+        if not bypass_global_cooldown and not _can_attempt_withdraw_now():
             return {"ok": False, "cooldown": True, "error": "Global cooldown active"}
         result = withdraw(username, amount)
         response_data = result.get("response") or {}
@@ -508,12 +537,16 @@ def _withdraw_locked_first_then_retry_minus11(username: str, amount: int) -> dic
         return result
 
 
-def _withdraw_with_global_cooldown(username: str, amount: int) -> dict:
+def _withdraw_with_global_cooldown(
+    username: str, amount: int, *, bypass_global_cooldown: bool = False
+) -> dict:
     """
     Chỉ set cooldown 60s khi rút thành công (code 0/1).
     [-11] + 'Bạn cần chờ thêm': sleep (N+2) giây rồi rút lại (lần 2 không check cooldown 60s).
     """
-    return _withdraw_locked_first_then_retry_minus11(username, amount)
+    return _withdraw_locked_first_then_retry_minus11(
+        username, amount, bypass_global_cooldown=bypass_global_cooldown
+    )
 
 
 def _withdraw_for_pending(username: str, amount: int) -> dict:
@@ -582,17 +615,6 @@ def _clear_required_bet(username: str):
         _sync_state_to_file()
 
 
-def _is_required_bet_met(username: str) -> bool:
-    target = required_bets.get(username)
-    if not target:
-        return True
-    current_total = get_total_bet_for_user(username)
-    if current_total >= target:
-        _clear_required_bet(username)
-        return True
-    return False
-
-
 def _ensure_pending_worker_running():
     global pending_worker_thread
     if pending_worker_thread and pending_worker_thread.is_alive():
@@ -628,6 +650,18 @@ def _process_pending_withdrawals():
     )
 
     for username, pending in candidates:
+        target_total_bet = required_bets.get(username)
+        if isinstance(target_total_bet, int) and target_total_bet > 0:
+            current_total = get_total_bet_for_user(username)
+            if current_total < target_total_bet:
+                _clear_pending_silent(username)
+                print(
+                    f"⏸️ [AutoWithdraw][{username}] Chưa đủ cược: {current_total:,}/{target_total_bet:,} (skip pending)",
+                    flush=True,
+                )
+                continue
+            _clear_required_bet(username)
+
         status = pending.get("status") or "ready"
         if status != "ready":
             _cancel_pending_withdrawal(username, f"invalid pending status: {status}")
@@ -641,24 +675,33 @@ def _process_pending_withdrawals():
             # handle_won_session đang xử lý user này → skip, chờ vòng sau
             continue
 
+        amount: Optional[int] = None
         try:
             # Re-check: user có thể đã bị clear bởi handle_won_session
             if username not in pending_withdrawals:
                 continue
-
-            # Lấy balance mới nhất nếu có
+            pend = pending_withdrawals[username]
             balance = _get_latest_balance(username)
             if balance is None:
-                balance = pending.get("last_balance", 0)
+                balance = pend.get("last_balance", 0)
+            amount = pend.get("amount") or find_nearest_withdraw_amount(balance)
+        finally:
+            # Không giữ user_lock trong lúc gọi API / sleep [-11] — tránh kẹt Late Night flush
+            # đang chờ cùng lock (in "chọn ..." nhưng không thấy "Gửi lệnh rút").
+            user_lock.release()
 
-            amount = pending.get("amount") or find_nearest_withdraw_amount(balance)
-            if not amount:
+        if not amount:
+            continue
+
+        user_lock.acquire(blocking=True)
+        try:
+            if username not in pending_withdrawals:
                 continue
-
-            print(f"⏳ [AutoWithdraw][{username}] Pending -> Try rút {amount:,}đ")
-            result = _withdraw_for_pending(username, amount)
         finally:
             user_lock.release()
+
+        print(f"⏳ [AutoWithdraw][{username}] Pending -> Try rút {amount:,}đ")
+        result = _withdraw_for_pending(username, amount)
 
         if result.get("cooldown"):
             return
@@ -673,8 +716,11 @@ def _process_pending_withdrawals():
             _clear_pending_silent(username)
             return
 
-        if error_code == -10 and "chưa đủ điều kiện" in str(full_message).lower():
-            need_more = parse_required_bet_from_error(full_message)
+        if error_code == -10:
+            combined_err_text = " ".join(
+                [str(full_message or ""), str(result.get("error") or "")]
+            )
+            need_more = parse_required_bet_from_error(combined_err_text)
             if need_more:
                 _set_required_bet(username, need_more)
             _clear_pending_silent(username)
@@ -695,189 +741,61 @@ def _process_pending_withdrawals():
 
 # ================= WITHDRAW LOGIC =================
 
-def handle_won_session_withdrawal(username: str, balance: int) -> dict:
-    config = load_config()
-    user_group = get_user_group(username)
-    threshold = get_withdraw_threshold(user_group)
-
-    # 0. Nếu đang còn yêu cầu cược (wager_queue) thì không rút
-    if not _is_required_bet_met(username):
-        target_total = required_bets.get(username)
-        return {
-            "ok": True,
-            "withdrew": False,
-            "message": f"Chưa đủ cược (target_total_bet={target_total}), skip withdraw"
-        }
-
-    # 1. Check balance threshold
-    if balance <= threshold:
-        return {
-            "ok": True,
-            "withdrew": False,
-            "message": f"Balance {balance:,} <= threshold {threshold:,} (group {user_group}), skip"
-        }
-    
-    # 2. Nếu đã có pending -> chỉ chờ cooldown (không chặn theo cược)
-    if username in pending_withdrawals:
-        pending = pending_withdrawals[username]
-
-    # 4. Calculate withdraw amount (ladder mốc chuẩn 200k/300k/500k/...)
-    withdraw_amount = find_nearest_withdraw_amount(balance)
-    if not withdraw_amount:
-        return {
-            "ok": True,
-            "withdrew": False,
-            "message": f"Balance {balance:,} too high (> 2M)"
-        }
-
-    # Đủ điều kiện rút => đưa vào danh sách đợi rút (để dừng cược)
-    if username not in pending_withdrawals:
+def _finalize_after_withdraw_api(
+    username: str,
+    balance: int,
+    amount: int,
+    result: dict,
+) -> dict:
+    """Cập nhật pending sau khi gọi API rút (hoặc cooldown); gọi trong user_lock."""
+    if result.get("cooldown"):
         _mark_pending_ready(
             username,
             balance,
-            reason="balance_ready",
+            reason="cooldown_wait",
         )
-    
-    # 5. CHECK: User có trong pending list không?
-    if username in pending_withdrawals:
-        pending = pending_withdrawals[username]
-        status = pending.get("status") or "ready"
-        if status != "ready":
-            _cancel_pending_withdrawal(username, f"invalid pending status: {status}")
-            return {
-                "ok": True,
-                "withdrew": False,
-                "message": "Pending status không hợp lệ, đã hủy"
-            }
-
-        amount = pending.get("amount") or find_nearest_withdraw_amount(balance)
-        if not amount:
-            return {
-                "ok": False,
-                "withdrew": False,
-                "error": f"Balance {balance:,} quá cao hoặc quá thấp"
-            }
-        result = _withdraw_with_global_cooldown(username, amount)
-        if result.get("cooldown"):
-            _mark_pending_ready(
-                username,
-                balance,
-                reason="cooldown_wait",
-            )
-            return {
-                "ok": True,
-                "withdrew": False,
-                "pending": True,
-                "message": "Global cooldown active, added to pending list"
-            }
-        response_data = result.get("response") or {}
-        if not isinstance(response_data, dict):
-            response_data = {}
-        error_code = _parse_code(response_data.get("code"))
-        full_message = response_data.get("message", "")
-        if result.get("ok") or error_code in (0, 1):
-            _clear_pending_silent(username)
-            return {
-                "ok": True,
-                "withdrew": True,
-                "amount": amount,
-                "message": "Rút tiền thành công"
-            }
-        if error_code == -14:
-            _cancel_pending_withdrawal(username, "[-14] Số dư không đủ")
-            return {
-                "ok": False,
-                "withdrew": False,
-                "error": "[-14] Số dư không đủ, hủy pending"
-            }
-        if error_code == -10 and "chưa đủ điều kiện" in str(full_message).lower():
-            # Lưu yêu cầu cược vào kho riêng, không giữ pending
-            need_more = parse_required_bet_from_error(full_message)
-            if need_more:
-                _set_required_bet(username, need_more)
-            _clear_pending_silent(username)
-            return {
-                "ok": False,
-                "withdrew": False,
-                "error": "[-10] Chưa đủ điều kiện rút, chờ đủ cược"
-            }
-        if error_code == -11 and _is_withdraw_chờ_thêm_message(full_message):
-            return {
-                "ok": True,
-                "withdrew": False,
-                "pending": True,
-                "message": "[-11 chờ thêm] Vẫn trong hàng chờ rút",
-            }
-
-        # Lỗi khác: nhả pending để user tiếp tục chơi
-        _cancel_pending_withdrawal(
-            username,
-            f"Code {error_code}" if error_code is not None else "Rút tiền thất bại"
+        print(
+            f"⏳ [AutoWithdraw][{username}] Global cooldown {WITHDRAW_GLOBAL_COOLDOWN_SECONDS}s — đưa vào pending, sẽ thử lại",
+            flush=True,
         )
-        return {
-            "ok": False,
-            "withdrew": False,
-            "error": result.get("error") or "Rút tiền thất bại"
-        }
-    
-    # 5. User KHÔNG có trong list → Try rút lần đầu
-    print(f"💰 [{username}] Try rút {withdraw_amount:,}đ (balance: {balance:,})")
-    
-    try:
-        result = _withdraw_with_global_cooldown(username, withdraw_amount)
-        if result.get("cooldown"):
-            _mark_pending_ready(
-                username,
-                balance,
-                reason="cooldown_wait",
-            )
-            return {
-                "ok": True,
-                "withdrew": False,
-                "pending": True,
-                "message": "Global cooldown active, added to pending list"
-            }
-    except Exception as e:
-        return {
-            "ok": False,
-            "withdrew": False,
-            "error": f"Exception when calling withdraw: {e}"
-        }
-    
-    if result.get("ok"):
-        _clear_pending_silent(username)
         return {
             "ok": True,
-            "withdrew": True,
-            "amount": withdraw_amount,
-            "message": "Rút tiền thành công"
+            "withdrew": False,
+            "pending": True,
+            "message": "Global cooldown active, added to pending list",
         }
-
-    error_msg = result.get("error", "")
     response_data = result.get("response") or {}
     if not isinstance(response_data, dict):
         response_data = {}
     error_code = _parse_code(response_data.get("code"))
     full_message = response_data.get("message", "")
-
-    print(f"❌ [{username}] Rút tiền thất bại: {error_msg}")
-
-    if error_code == -10 and "chưa đủ điều kiện" in str(full_message).lower():
-        need_more = parse_required_bet_from_error(full_message)
-        if need_more:
-            _set_required_bet(username, need_more)
+    if result.get("ok") or error_code in (0, 1):
         _clear_pending_silent(username)
         return {
-            "ok": False,
-            "withdrew": False,
-            "error": "[-10] Chưa đủ điều kiện rút, chờ đủ cược"
+            "ok": True,
+            "withdrew": True,
+            "amount": amount,
+            "message": "Rút tiền thành công",
         }
     if error_code == -14:
         _cancel_pending_withdrawal(username, "[-14] Số dư không đủ")
         return {
             "ok": False,
             "withdrew": False,
-            "error": "[-14] Số dư không đủ, hủy rút"
+            "error": "[-14] Số dư không đủ, hủy pending",
+        }
+    if error_code == -10:
+        combined_err_text = " ".join(
+            [str(full_message or ""), str(result.get("error") or "")]
+        )
+        need_more = parse_required_bet_from_error(combined_err_text)
+        if need_more:
+            _set_required_bet(username, need_more)
+        _clear_pending_silent(username)
+        return {
+            "ok": False,
+            "withdrew": False,
+            "error": "[-10] Chưa đủ điều kiện rút, chờ đủ cược",
         }
     if error_code == -11 and _is_withdraw_chờ_thêm_message(full_message):
         return {
@@ -886,11 +804,129 @@ def handle_won_session_withdrawal(username: str, balance: int) -> dict:
             "pending": True,
             "message": "[-11 chờ thêm] Vẫn trong hàng chờ rút",
         }
+
+    err_msg = result.get("error", "")
+    if err_msg:
+        print(f"❌ [{username}] Rút tiền thất bại: {err_msg}", flush=True)
+    _cancel_pending_withdrawal(
+        username,
+        f"Code {error_code}" if error_code is not None else "Rút tiền thất bại",
+    )
     return {
         "ok": False,
         "withdrew": False,
-        "error": result.get("message", "Unknown error")
+        "error": result.get("error") or "Rút tiền thất bại",
     }
+
+
+def handle_won_session_withdrawal(
+    username: str, balance: int, *, late_night_flush: bool = False
+) -> dict:
+    config = load_config()
+    user_group = get_user_group(username)
+    threshold = get_withdraw_threshold(user_group)
+    threshold_label = f"nhóm {user_group}"
+    # Trong khung LATE_NIGHT_AUTO_WITHDRAW (ENABLED + START–END): ưu tiên MIN_BALANCE, không dùng ngưỡng V1/V2.
+    if _is_late_night_auto_withdraw_window(config):
+        threshold = _late_night_min_balance(config)
+        threshold_label = "LATE_NIGHT MIN_BALANCE"
+
+    # Chỉ cần số dư > ngưỡng (theo khung giờ: Late Night hoặc nhóm); không chặn theo mốc cược phía client.
+    # 1. Check balance threshold
+    if balance <= threshold:
+        return {
+            "ok": True,
+            "withdrew": False,
+            "message": f"Balance {balance:,} <= threshold {threshold:,} ({threshold_label}), skip"
+        }
+
+    target_total_bet = required_bets.get(username)
+    if isinstance(target_total_bet, int) and target_total_bet > 0:
+        current_total = get_total_bet_for_user(username)
+        if current_total < target_total_bet:
+            _clear_pending_silent(username)
+            return {
+                "ok": True,
+                "withdrew": False,
+                "message": (
+                    f"Chưa đủ tổng cược: {current_total:,}/{target_total_bet:,}, "
+                    "đợi đủ cược rồi mới rút"
+                ),
+            }
+        _clear_required_bet(username)
+
+    if username not in processing_users:
+        processing_users[username] = threading.Lock()
+    user_lock = processing_users[username]
+
+    with user_lock:
+        withdraw_amount = find_nearest_withdraw_amount(balance)
+        if not withdraw_amount:
+            return {
+                "ok": True,
+                "withdrew": False,
+                "message": f"Balance {balance:,} too high (> 2M)",
+            }
+
+        if username not in pending_withdrawals:
+            marked = _mark_pending_ready(
+                username,
+                balance,
+                reason="balance_ready",
+            )
+            if marked is None:
+                return {
+                    "ok": True,
+                    "withdrew": False,
+                    "message": f"Balance {balance:,} không khớp thang rút",
+                }
+
+        if username not in pending_withdrawals:
+            return {
+                "ok": False,
+                "withdrew": False,
+                "error": "Mất trạng thái pending sau khi đánh dấu",
+            }
+
+        pending = pending_withdrawals[username]
+        status = pending.get("status") or "ready"
+        if status != "ready":
+            _cancel_pending_withdrawal(username, f"invalid pending status: {status}")
+            return {
+                "ok": True,
+                "withdrew": False,
+                "message": "Pending status không hợp lệ, đã hủy",
+            }
+
+        amount = pending.get("amount") or find_nearest_withdraw_amount(balance)
+        if not amount:
+            return {
+                "ok": False,
+                "withdrew": False,
+                "error": f"Balance {balance:,} quá cao hoặc quá thấp",
+            }
+
+        if late_night_flush:
+            print(
+                f"💰 [AutoWithdraw][LateNight][{username}] Gửi lệnh rút {amount:,}đ (số dư {balance:,})",
+                flush=True,
+            )
+        else:
+            print(f"💰 [{username}] Try rút {amount:,}đ (balance: {balance:,})", flush=True)
+
+    try:
+        result = _withdraw_with_global_cooldown(
+            username, amount, bypass_global_cooldown=late_night_flush
+        )
+    except Exception as e:
+        return {
+            "ok": False,
+            "withdrew": False,
+            "error": f"Exception when calling withdraw: {e}",
+        }
+
+    with user_lock:
+        return _finalize_after_withdraw_api(username, balance, amount, result)
 
 
 # ================= ENTRY POINT (called from ws_events.py) =================
@@ -903,14 +939,8 @@ def handle_won_session_auto_withdraw(username: str, balance: int, session_id: An
     Khung LATE_NIGHT (mặc định 23:55–24:00 giờ Asia/Ho_Chi_Minh, bật trong
     config LATE_NIGHT_AUTO_WITHDRAW.ENABLED): chỉ rút nếu balance > MIN_BALANCE;
     gom theo session_id, sau debounce chọn đúng
-    1 user (balance cao nhất) rồi gọi handle_won_session_withdrawal (giữ mốc/cược như cũ).
+    1 user (balance cao nhất) rồi gọi handle_won_session_withdrawal.
     """
-    # Tạo/lấy lock cho user này để tránh race condition
-    if username not in processing_users:
-        processing_users[username] = threading.Lock()
-
-    user_lock = processing_users[username]
-
     def _run_in_thread():
         try:
             bal = int(balance) if balance is not None else 0
@@ -927,18 +957,17 @@ def handle_won_session_auto_withdraw(username: str, balance: int, session_id: An
                     "⚠️ [AutoWithdraw][LateNight] Thiếu session_id — không gom phiên, rút như bình thường",
                     flush=True,
                 )
-                with user_lock:
-                    try:
-                        result = handle_won_session_withdrawal(username, bal)
-                        if result.get("pending"):
-                            pass
-                        elif not result.get("ok"):
-                            print(f"⚠️ [AutoWithdraw][{username}] Error: {result.get('error')}")
-                    except Exception as e:
-                        print(f"❌ [AutoWithdraw][{username}] Exception: {e}")
-                        import traceback
+                try:
+                    result = handle_won_session_withdrawal(username, bal)
+                    if result.get("pending"):
+                        pass
+                    elif not result.get("ok"):
+                        print(f"⚠️ [AutoWithdraw][{username}] Error: {result.get('error')}")
+                except Exception as e:
+                    print(f"❌ [AutoWithdraw][{username}] Exception: {e}")
+                    import traceback
 
-                        traceback.print_exc()
+                    traceback.print_exc()
                 return
 
             with _late_night_lock:
@@ -951,21 +980,20 @@ def handle_won_session_auto_withdraw(username: str, balance: int, session_id: An
             _schedule_late_night_flush(sk)
             return
 
-        # Ngày thường: như cũ
-        with user_lock:
-            try:
-                result = handle_won_session_withdrawal(username, bal)
+        # Ngày thường
+        try:
+            result = handle_won_session_withdrawal(username, bal)
 
-                if result.get("pending"):
-                    pass
-                elif not result.get("ok"):
-                    print(f"⚠️ [AutoWithdraw][{username}] Error: {result.get('error')}")
+            if result.get("pending"):
+                pass
+            elif not result.get("ok"):
+                print(f"⚠️ [AutoWithdraw][{username}] Error: {result.get('error')}")
 
-            except Exception as e:
-                print(f"❌ [AutoWithdraw][{username}] Exception: {e}")
-                import traceback
+        except Exception as e:
+            print(f"❌ [AutoWithdraw][{username}] Exception: {e}")
+            import traceback
 
-                traceback.print_exc()
+            traceback.print_exc()
 
     thread = threading.Thread(target=_run_in_thread, daemon=True)
     thread.start()

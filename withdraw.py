@@ -137,7 +137,13 @@ def _get_total_bet_for_user(username: str) -> int:
 
 def _parse_required_bet_from_error(error_message: str) -> Optional[int]:
     try:
-        match = re.search(r"vui lòng chơi thêm\s+(.+)$", error_message, re.IGNORECASE)
+        # Chỉ lấy số tiền ngay sau cụm "vui lòng chơi thêm"
+        # để tránh dính các số khác trong log/message nối chuỗi.
+        match = re.search(
+            r"vui lòng chơi thêm\s+([0-9\.\,\s\u00a0]+)",
+            str(error_message or ""),
+            re.IGNORECASE,
+        )
         if match:
             raw = match.group(1)
             digits = re.sub(r"[^\d]", "", raw)

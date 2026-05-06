@@ -176,7 +176,7 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
     """
     Chờ và check lịch sử nạp tiền theo chu kỳ.
 
-    So khớp: đúng số tiền; nếu có NDCK thì nội dung GD game phải chứa NDCK; nếu có mốc tạo lệnh thì thêm dateTime >= mốc.
+    So khớp: bắt buộc đúng số tiền + trùng NDCK.
     Tránh báo Thành Công khi chỉ trùng số tiền / khung giờ với giao dịch khác.
 
     Args:
@@ -188,12 +188,11 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
     Returns:
         True nếu tìm thấy giao dịch khớp số tiền, False nếu không
     """
-    sync_min, order_tc = get_deposit_order_meta(order_id)
+    _sync_min, order_tc = get_deposit_order_meta(order_id)
     tc_eff = (transfer_content or "").strip() or order_tc
-    if sync_min is None and not tc_eff:
+    if not tc_eff:
         print(
-            f"⚠️ [{username}] Order #{order_id}: không đọc được createdAt và không có NDCK — "
-            f"không xác nhận Thành Công chỉ vì trùng số tiền với lịch sử cũ.",
+            f"⚠️ [{username}] Order #{order_id}: thiếu NDCK — không cho phép chuyển Thành Công.",
             flush=True,
         )
 
@@ -215,7 +214,7 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
                     username,
                     limit=20,
                     status="SUCCESS",
-                    sync_min_datetime=sync_min,
+                    sync_min_datetime=None,
                     sync_only_order_id=order_id,
                     sync_transfer_content=tc_eff,
                 )
@@ -227,7 +226,7 @@ def wait_and_check_deposit(username: str, transfer_content: str, order_id: int, 
                 transactions = result.get("transactions", [])
                 for tx in transactions:
                     if not tx_matches_deposit_order(
-                        tx, int(expected_amount), sync_min, tc_eff
+                        tx, int(expected_amount), None, tc_eff
                     ):
                         continue
                     if update_deposit_order_status(order_id, "Thành Công"):

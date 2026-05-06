@@ -479,8 +479,6 @@ def auto_deposit_for_user(
     user = _canonical_priority_username(user, config)
 
     if is_in_v2_v3(user, config):
-        if _is_priority_v3_user(user, config):
-            return
         if config.get("AUTO_DEPOSIT_V2_V3", 0) != 1:
             return
         # Check xem có thể tạo lệnh nạp không (không có lệnh treo)
@@ -560,9 +558,7 @@ def auto_deposit_for_user(
             outside_count = 0  # Đếm số user outside đã thêm
 
             for acc_name in account_names:
-                if _is_priority_v3_user(acc_name, config):
-                    continue
-                # Nếu là V2/V3/PRIORITY (trừ V3 đã lọc) → nạp luôn (không giới hạn)
+                # Nếu là V2/V3/PRIORITY → nạp luôn (không giới hạn)
                 if is_in_v2_v3(acc_name, config):
                     users_to_deposit.append(_canonical_priority_username(acc_name, config))
                 # Nếu là outside và chưa đủ số lượng → nạp
@@ -626,15 +622,6 @@ def periodic_check_all_users():
     try:
         config = load_config()
         tick_log = _periodic_tick_log_enabled()
-        if tick_log:
-            try:
-                sec = int(config.get("PERIODIC_DEPOSIT_CHECK_SECONDS", 60))
-            except (TypeError, ValueError):
-                sec = 60
-            print(
-                f"[PERIODIC] tick — đã load_config() | chu kỳ ngủ tiếp theo ~{max(15, sec)}s",
-                flush=True,
-            )
 
         # Gọi API để lấy danh sách user có trạng thái "Hết Tiền"
         try:
@@ -669,21 +656,12 @@ def periodic_check_all_users():
                 if not acc_name:
                     continue
                 
-                # Phân loại V2/V3/PRIORITY hoặc outside; bỏ qua PRIORITY_USERS_V3 (không nạp từ out-of-money)
+                # Phân loại V2/V3/PRIORITY hoặc outside
                 if is_in_v2_v3(acc_name, config):
-                    if _is_priority_v3_user(acc_name, config):
-                        continue
                     v2_v3_users.append(_canonical_priority_username(acc_name, config))
                 else:
                     # Tất cả user không phải V2/V3/PRIORITY đều là outside
                     outside_users.append(acc_name)
-            
-            if tick_log:
-                print(
-                    f"[PERIODIC] tick — Hết Tiền: {len(accounts)} user | "
-                    f"V2/V3/PRIORITY trong list: {len(v2_v3_users)} | outside: {len(outside_users)}",
-                    flush=True,
-                )
             
             # ========== Xử lý V2/V3/PRIORITY ==========
             if v2_v3_users:

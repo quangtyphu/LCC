@@ -280,6 +280,21 @@ def receive_callback():
 			)
 
 	elif status in ["Thất Bại", "Huỷ"]:
+		# Không hạ trạng thái nếu lệnh đã Thành Công (tránh callback muộn ghi đè).
+		try:
+			r_prev = requests.get(f"{NODE_SERVER_URL}/api/deposit-orders/{order_id}", timeout=5)
+			if r_prev.ok:
+				prev_order = _extract_order_dict(r_prev.json() or {})
+				prev_status = (prev_order.get("status") or prev_order.get("Status") or "").strip()
+				if prev_status == "Thành Công":
+					print(
+						f"ℹ️ Order #{order_id} đã Thành Công — bỏ qua callback {status}",
+						flush=True,
+					)
+					return jsonify({"success": True, "order_id": order_id, "status": prev_status, "skipped": "already_thanh_cong"}), 200
+		except Exception as e:
+			print(f"⚠️ Không đọc được trạng thái hiện tại trước khi set {status}: {e}", flush=True)
+
 		print(f"📝 Cập nhật order #{order_id} → {status}", flush=True)
 		update_deposit_order_status(order_id, status)
 		if username:
