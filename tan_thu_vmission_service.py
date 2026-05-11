@@ -58,7 +58,7 @@ CMS_API_BASE = os.environ.get("CMS_API_BASE", "http://127.0.0.1:3000")
 
 
 def _cms_stored_onboarding_task(username: str) -> int | None:
-    """Đọc onboarding_task (1/2/3) từ CMS user_vip_x10_params. None nếu chưa có dòng / lỗi."""
+    """Đọc onboarding_task từ CMS. Chỉ trả 1/2/3; 0 hoặc thiếu → None (vẫn gọi API tân thủ trừ khi gate = 3)."""
     try:
         r = requests.get(f"{CMS_API_BASE}/api/vip-x10-params/{username}", timeout=6)
         if r.status_code != 200:

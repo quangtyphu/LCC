@@ -19,7 +19,7 @@ def _vip_point_to_db_int(point_raw) -> int | None:
 
 def sync_vip_point_to_cms(username: str, point_raw) -> bool:
     """
-    Cập nhật điểm VIP (point) vào CMS: cột `vip` trong user_vip_x10_params
+    Cập nhật điểm VIP (point) vào CMS: cột `vip` trong user_vip_x10_params (số nguyên >= 0, gồm 0)
     qua PUT /api/vip-x10-params/:username (server.js).
     Đã có dòng thì UPDATE; chưa có (GET 404) vẫn PUT để upsert (server dùng default x10_next = 0).
     """

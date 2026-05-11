@@ -4,7 +4,7 @@ Script kiểm tra và nhận thưởng nhiệm vụ x10 (x-10dep) cho tài kho�
 - Kiểm tra nhiệm vụ x10 qua API
 - Nếu có thưởng chưa nhận, tự động nhận thưởng và cập nhật balance
 - Log chỉ khi nhận thành công
-- Đồng bộ total_bet_amount + mốc roadMap tiếp theo → CMS user_vip_x10_params (x10_total_bet, x10_next_reward_total_bet)
+- Đồng bộ total_bet_amount + mốc roadMap tiếp theo → CMS user_vip_x10_params (x10_total_bet, x10_next_reward_total_bet; cả hai >= 0, gồm 0)
 """
 
 import os
