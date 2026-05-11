@@ -77,6 +77,24 @@ def user_full_check_logic(username: str) -> dict:
         results['vip'] = f'Lỗi: {e}'
     time.sleep(2)
 
+    # 5.5. Đồng bộ hoàn tiền tuần / tháng (papi preview) qua proxy → user_reward_periods
+    try:
+        from cashback_reward_periods_api import fetch_and_sync_month_cashback, fetch_and_sync_week_cashback
+    except Exception as e:
+        results['week_cashback'] = {'ok': False, 'error': str(e)}
+        results['month_cashback'] = {'ok': False, 'error': str(e)}
+    else:
+        try:
+            results['week_cashback'] = fetch_and_sync_week_cashback(username)
+        except Exception as e:
+            results['week_cashback'] = {'ok': False, 'error': str(e)}
+        try:
+            results['month_cashback'] = fetch_and_sync_month_cashback(username)
+        except Exception as e:
+            results['month_cashback'] = {'ok': False, 'error': str(e)}
+
+    time.sleep(2)
+
     # 6. Check balance
     try:
         results['balance'] = get_balance(username)

@@ -497,9 +497,9 @@ def _withdraw_locked_first_then_retry_minus11(
     username: str, amount: int, *, bypass_global_cooldown: bool = False
 ) -> dict:
     """
-    Lần rút đầu: check cooldown 60s (trừ khi bypass_global_cooldown, vd. Late Night đã chọn 1 user/phiên).
-    [-11] + nội dung 'Bạn cần chờ thêm': đợi (N + 2) giây (N = số giây game báo trong message, +2 giây đệm), rút lại (lần 2 không check cooldown 60s).
-    [-11] khác: không retry, trả kết quả như bình thường.
+    Lần rút đầu: check global cooldown (trừ khi bypass_global_cooldown, vd. Late Night đã chọn 1 user/phiên).
+    [-11] + nội dung 'Bạn cần chờ thêm': không sleep giữ lock; trả về delay để caller hẹn retry riêng theo user.
+    [-11] khác: trả kết quả như bình thường.
     """
     global last_withdraw_at
     from withdraw import withdraw
@@ -521,19 +521,14 @@ def _withdraw_locked_first_then_retry_minus11(
                 wait = _parse_wait_seconds_from_withdraw_message(msg)
                 if wait is None or wait < 1:
                     wait = 8
-                # wait: giây từ message game; delay: tổng giây trước khi time.sleep rồi gọi rút lại
                 delay = wait + 2
                 print(
-                    f"⏳ [AutoWithdraw][{username}] [-11 chờ thêm] Đợi {delay} giây ({wait}s game + 2s đệm) rồi rút lại (bỏ qua cooldown 60s)...",
+                    f"⏳ [AutoWithdraw][{username}] [-11 chờ thêm] Đợi {delay} giây ({wait}s game + 2s đệm) rồi retry riêng user này...",
                     flush=True,
                 )
-                time.sleep(delay)
-                result = withdraw(username, amount)
-                response_data = result.get("response") or {}
-                if isinstance(response_data, dict):
-                    error_code = _parse_code(response_data.get("code"))
-                    if error_code in (0, 1):
-                        last_withdraw_at = time.time()
+                if isinstance(result, dict):
+                    result["retry_after_seconds"] = delay
+                    result["pending"] = True
         return result
 
 
@@ -601,6 +596,17 @@ def _clear_pending_silent(username: str):
         _sync_state_to_file()
 
 
+def _defer_pending_retry(username: str, delay_seconds: int, reason: str = "wait_minus11"):
+    pending = pending_withdrawals.get(username)
+    if not isinstance(pending, dict):
+        return
+    wait_seconds = max(1, int(delay_seconds))
+    pending["next_retry_at"] = time.time() + wait_seconds
+    pending["reason"] = reason
+    pending_withdrawals[username] = pending
+    _sync_state_to_file()
+
+
 def _set_required_bet(username: str, need_more: int):
     if need_more <= 0:
         return
@@ -642,6 +648,7 @@ def _process_pending_withdrawals():
         return
     if not _can_attempt_withdraw_now():
         return
+    now_ts = time.time()
 
     # FIFO theo added_at
     candidates = sorted(
@@ -650,6 +657,10 @@ def _process_pending_withdrawals():
     )
 
     for username, pending in candidates:
+        next_retry_at = pending.get("next_retry_at")
+        if isinstance(next_retry_at, (int, float)) and next_retry_at > now_ts:
+            continue
+
         target_total_bet = required_bets.get(username)
         if isinstance(target_total_bet, int) and target_total_bet > 0:
             current_total = get_total_bet_for_user(username)
@@ -731,7 +742,12 @@ def _process_pending_withdrawals():
             return
 
         if error_code == -11 and _is_withdraw_chờ_thêm_message(full_message):
-            return
+            delay = result.get("retry_after_seconds")
+            if not isinstance(delay, int):
+                delay = _parse_wait_seconds_from_withdraw_message(full_message) or 8
+                delay += 2
+            _defer_pending_retry(username, delay, reason="wait_minus11")
+            continue
 
         _cancel_pending_withdrawal(
             username,
@@ -798,11 +814,16 @@ def _finalize_after_withdraw_api(
             "error": "[-10] Chưa đủ điều kiện rút, chờ đủ cược",
         }
     if error_code == -11 and _is_withdraw_chờ_thêm_message(full_message):
+        delay = result.get("retry_after_seconds")
+        if not isinstance(delay, int):
+            delay = _parse_wait_seconds_from_withdraw_message(full_message) or 8
+            delay += 2
+        _defer_pending_retry(username, delay, reason="wait_minus11")
         return {
             "ok": True,
             "withdrew": False,
             "pending": True,
-            "message": "[-11 chờ thêm] Vẫn trong hàng chờ rút",
+            "message": f"[-11 chờ thêm] Hẹn retry riêng sau {delay}s",
         }
 
     err_msg = result.get("error", "")

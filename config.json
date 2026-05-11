@@ -1,17 +1,17 @@
 {
   "WEEKLY_BET_MODE": {
     "ENABLED": 0,
-    "THRESHOLD": 20000000,
+    "THRESHOLD": 10100000,
     "THRESHOLD_MIN": 0,
-    "USER_COUNT": 10
+    "USER_COUNT": 8
   },
   "ASSIGN_STRATEGY": 11,
   "PRIORITY_USERS": ["", "", "", "", ""],
-  "PRIORITY_USERS_V2": ["khanhlyn34", "honda1998", "hainam1989", "phongcutonnn", "", "pokerslyte", "chungman12", "haimummim", "haichodienn", "", "", "", "", "", "", "", "", "", ""],
-  "PRIORITY_USERS_V3": ["haicuccec", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+  "PRIORITY_USERS_V2": ["lyquanbg", "maibenemh1", "longgthaibinh", "thua100mnghi", "ngoinhathuhai", "hhnow11", "hoamoclanlc79", "thungphasanhd", "thinhhaihoa", "", "", "", "", "", "", "", "", "", ""],
+  "PRIORITY_USERS_V3": ["", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
   "AUTO_DEPOSIT_V2_V3": 1,
   "AUTO_DEPOSIT_OUTSIDE_V2_V3": 1,
-  "PERIODIC_DEPOSIT_CHECK_SECONDS": 300,
+  "PERIODIC_DEPOSIT_CHECK_SECONDS": 60,
   "PERIODIC_OUTSIDE_DEPOSIT": 1,
   "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 0,
   "WITHDRAW_THRESHOLD_MIN": 510000,
@@ -31,7 +31,7 @@
     {"start": "07:00", "end": "08:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 20, "STOP": 101, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 0},
     {"start": "08:00", "end": "10:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 20, "STOP": 151, "STEP": 10}},
     {"start": "10:00", "end": "20:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 20, "STOP": 201, "STEP": 10}},
-    {"start": "20:00", "end": "21:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 201, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 8},
+    {"start": "20:00", "end": "21:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 251, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 17},
     {"start": "21:00", "end": "22:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 251, "STEP": 10}},
     {"start": "22:00", "end": "23:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 301, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 8},
     {"start": "23:00", "end": "23:30", "PRIORITY_USERS": [], "BET_RANGE": {"START": 100, "STOP": 301, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 8},
@@ -39,8 +39,8 @@
   ],
   "LATE_NIGHT_AUTO_WITHDRAW": {
     "ENABLED": 1,
-    "START": "23:52",
-    "END": "23:57",
+    "START": "23:50",
+    "END": "23:56",
     "MIN_BALANCE": 310000
   },
   "LAST_SWAP_DATE": "2026-05-02",
