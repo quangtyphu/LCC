@@ -119,14 +119,7 @@ def check_and_claim_vip(username):
                 except Exception:
                     pass
     # Không in log không đủ điểm, không in log tổng quan
-
-    resp_final = game_request_with_retry(username, "GET", api_url)
-    if resp_final and resp_final.status_code == 200:
-        try:
-            data_final = resp_final.json()
-            sync_vip_point_to_cms(username, data_final.get("point"))
-        except Exception:
-            pass
+    # Chỉ một GET vippoint đầu hàm: đã sync point lên CMS; không GET lại (hạn chế API game).
 
     return True
 
