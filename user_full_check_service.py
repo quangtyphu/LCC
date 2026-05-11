@@ -16,6 +16,7 @@ def user_full_check_logic(username: str) -> dict:
     1. Check lịch sử nạp
     2. Check lịch sử rút
     3. Check & nhận hòm quà
+    3.5. Check & nhận nhiệm vụ tân thủ (tan-thu-vmission)
     4. Check & nhận nhiệm vụ
     5. Check & nhận VIP
     6. Check balance
@@ -53,7 +54,19 @@ def user_full_check_logic(username: str) -> dict:
         results['gift_box'] = f'Lỗi: {e}'
     time.sleep(2)
 
-    # 2.5. Check & nhận thưởng x10
+    # 3.5. Check & nhận nhiệm vụ tân thủ (tan-thu-vmission)
+    try:
+        from tan_thu_vmission_service import check_user, claim_user
+
+        tan_res = check_user(username)
+        # Tự nhận nếu có level sẵn sàng; theo yêu cầu thì cần isWon=true + status=ready
+        claim_user(username, restrict_to_last_check=False)
+        results['tan_thu_vmission'] = tan_res or 'OK'
+    except Exception as e:
+        results['tan_thu_vmission'] = f'Lỗi: {e}'
+    time.sleep(2)
+
+    # 4.5. Check & nhận thưởng x10
     try:
         from x10_mission_checker import check_and_claim_x10
         check_and_claim_x10(username)

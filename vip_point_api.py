@@ -1,4 +1,63 @@
-from game_api_helper import game_request_with_retry, update_user_balance, get_user_auth
+import os
+import requests
+
+from game_api_helper import game_request_with_retry, update_user_balance
+
+CMS_API_BASE = os.environ.get("CMS_API_BASE", "http://127.0.0.1:3000")
+
+
+def _vip_point_to_db_int(point_raw) -> int | None:
+    """API vippoint trả point float → lưu DB số nguyên (làm tròn)."""
+    if point_raw is None:
+        return None
+    try:
+        n = int(round(float(point_raw)))
+    except (TypeError, ValueError):
+        return None
+    return max(0, n)
+
+
+def sync_vip_point_to_cms(username: str, point_raw) -> bool:
+    """
+    Cập nhật điểm VIP (point) vào CMS: cột `vip` trong user_vip_x10_params
+    qua PUT /api/vip-x10-params/:username (server.js).
+    Đã có dòng thì UPDATE; chưa có (GET 404) vẫn PUT để upsert (server dùng default x10_next = 0).
+    """
+    vip_int = _vip_point_to_db_int(point_raw)
+    if vip_int is None:
+        return False
+    try:
+        url = f"{CMS_API_BASE}/api/vip-x10-params/{username}"
+        chk = requests.get(url, timeout=6)
+        if chk.status_code == 200:
+            try:
+                payload = chk.json()
+                row = payload.get("data") if isinstance(payload, dict) else None
+                if isinstance(row, dict):
+                    cur = _vip_point_to_db_int(row.get("vip"))
+                    if cur is not None and cur == vip_int:
+                        return True
+            except Exception:
+                pass
+        elif chk.status_code not in (404, 200):
+            print(
+                f"⚠️ [{username}] Đọc vip-x10-params HTTP {chk.status_code}: {chk.text[:120]}",
+                flush=True,
+            )
+            return False
+
+        r = requests.put(url, json={"vip": vip_int}, timeout=8)
+        if not r.ok:
+            print(
+                f"⚠️ [{username}] Đồng bộ VIP point→CMS (vip={vip_int}) HTTP {r.status_code}: {r.text[:160]}",
+                flush=True,
+            )
+            return False
+        return True
+    except Exception as e:
+        print(f"⚠️ [{username}] Đồng bộ VIP point→CMS: {e}", flush=True)
+        return False
+
 
 def check_and_claim_vip(username):
     """
@@ -15,12 +74,15 @@ def check_and_claim_vip(username):
         return False
     try:
         data = resp.json()
+        point = data.get("point")
         pointExchangeable = data.get("pointExchangeable")
         level = data.get("level")
         bonusClaimed = data.get("bonusClaimed")
     except Exception as e:
         print(f"❌ [{username}] Lỗi parse VIP-point: {e}", flush=True)
         return False
+
+    sync_vip_point_to_cms(username, point)
 
     # 2. Nhận thưởng VIP cho tất cả các cấp chưa nhận từ 1 đến level hiện tại
     if level and bonusClaimed and 1 <= level <= 9:
@@ -57,6 +119,14 @@ def check_and_claim_vip(username):
                 except Exception:
                     pass
     # Không in log không đủ điểm, không in log tổng quan
+
+    resp_final = game_request_with_retry(username, "GET", api_url)
+    if resp_final and resp_final.status_code == 200:
+        try:
+            data_final = resp_final.json()
+            sync_vip_point_to_cms(username, data_final.get("point"))
+        except Exception:
+            pass
 
     return True
 
