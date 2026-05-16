@@ -99,6 +99,7 @@ _watcher_last_api_status = {}
 # ============================================================
 async def watcher_loop():
     tz = pytz.timezone("Asia/Ho_Chi_Minh")
+    _jackpot_bootstrapped = False
 
     while True:
         now = datetime.now(tz)
@@ -157,7 +158,30 @@ async def watcher_loop():
                     task = asyncio.create_task(handle_ws(acc, conn_id))
                     active_ws[u]["task"] = task
 
+        if not _jackpot_bootstrapped:
+            try:
+                from constants import load_config
+                from jackpot_night_extend import refresh_jackpot_cache
+
+                _done = await asyncio.to_thread(
+                    lambda: refresh_jackpot_cache(load_config(), force=True)
+                )
+                if _done:
+                    _jackpot_bootstrapped = True
+            except Exception as _jb:
+                print(f"[WARN] jackpot bootstrap: {_jb}", flush=True)
+
         await asyncio.sleep(20)
+
+        try:
+            from constants import load_config
+            from jackpot_night_extend import refresh_jackpot_cache, try_run_daily_check
+
+            _cfg = load_config()
+            await asyncio.to_thread(lambda: refresh_jackpot_cache(_cfg, force=False))
+            await asyncio.to_thread(try_run_daily_check, _cfg)
+        except Exception as _je:
+            print(f"[WARN] jackpot_night_extend: {_je}", flush=True)
 
 
 # ============================================================
@@ -272,6 +296,27 @@ def force_check():
     return jsonify({"ok": True, "mode": "force-reconnect"}), 200
 
 
+@app.route("/api/ws-slot-out-of-money", methods=["POST"])
+def ws_slot_out_of_money():
+    """
+    ws_slot_client (subprocess) gọi khi postBalance < ngưỡng dừng quay (WS slot đã đóng ở tiến trình slot):
+    chỉ loại user khỏi ưu tiên SLOT_NV — không đụng WS tài xỉu/minigame.
+    """
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or data.get("user") or "").strip()
+    if not username:
+        return jsonify({"ok": False, "error": "Thiếu username"}), 400
+
+    try:
+        from slot_near_mission_scheduler import note_slot_nv_balance_skip_from_ws_client
+
+        note_slot_nv_balance_skip_from_ws_client(username)
+    except Exception as ex:
+        print(f"⚠️ [{username}] SLOT_NV skip sau hết tiền slot: {ex}", flush=True)
+
+    return jsonify({"ok": True}), 200
+
+
 # ============================================================
 # =============== API CHECK NẠP/RÚT + NHẬN QUÀ ===============
 # ============================================================
@@ -314,34 +359,75 @@ def run_flask():
     print("🚀 Flask API server đang chạy tại http://0.0.0.0:8080 ...", flush=True)
     app.run(host="0.0.0.0", port=8080, debug=False, use_reloader=False)
 
+
+_shutdown_lc79_done = False
+
+
+def shutdown_lc79_background_services() -> None:
+    """
+    Giống kỳ vọng khi dừng tài xỉu: hủy WS + dừng quay slot NV.
+    Trên Windows, Ctrl+C thường không tới tiến trình con ``ws_slot_client`` — phải terminate thủ công.
+    """
+    global _shutdown_lc79_done
+    if _shutdown_lc79_done:
+        return
+    _shutdown_lc79_done = True
+    try:
+        from slot_near_mission_scheduler import terminate_slot_near_mission_subprocesses
+
+        terminate_slot_near_mission_subprocesses()
+    except Exception as e:
+        print(f"[SHUTDOWN] SLOT_NV: {e}", flush=True)
+    try:
+
+        async def _disconnect_all_ws():
+            users = list(active_ws.keys())
+            for u in users:
+                await disconnect_user(u)
+
+        asyncio.run(_disconnect_all_ws())
+    except Exception as e:
+        print(f"[SHUTDOWN] WS tài xỉu: {e}", flush=True)
+
+
 if __name__ == "__main__":
+    import atexit
+
+    atexit.register(shutdown_lc79_background_services)
+
     import threading
     from auto_deposit_on_out_of_money import reset_deposit_cache, start_periodic_check
     from daily_active_no_deposit_scheduler import auto_active_no_deposit_scheduler
     from pending_withdraw_checker import start_pending_withdraw_checker
     from weekly_bet_mode_scheduler import start_weekly_bet_mode_scheduler
+    from slot_near_mission_scheduler import start_slot_near_mission_scheduler
+    from withdraw_threshold_scheduler import start_withdraw_threshold_reset_scheduler
 
     # Reset cache khi khởi động chương trình (giống như pending_withdrawals reset về {})
     print("[INIT] Đang reset deposit cache...", flush=True)
     reset_deposit_cache()
     
-    # Periodic nạp/quét: mỗi PERIODIC_DEPOSIT_CHECK_SECONDS (config, mặc định 60s) đọc lại config + user nạp
-    print("[INIT] Đang khởi động periodic check (PERIODIC_DEPOSIT_CHECK_SECONDS trong config.json)...", flush=True)
+    # Periodic nạp/quét: mỗi 60s (cố định trong auto_deposit_on_out_of_money)
+    print("[INIT] Đang khởi động periodic check auto nạp (60s)...", flush=True)
     start_periodic_check()
     
     # Chạy Flask main ở thread riêng
     threading.Thread(target=run_flask, daemon=True).start()
     # Chạy third_party_deposit_handler ở thread riêng
     threading.Thread(target=run_third_party_handler, daemon=True).start()
-    # Chạy scheduler nạp tiền user chưa nạp hôm nay (từ 23h, mỗi 60s gọi API)
+    # Chạy scheduler nạp tiền user chưa nạp hôm nay (ACTIVE_NO_DEPOSIT_SCHEDULER trong config.json)
     threading.Thread(target=auto_active_no_deposit_scheduler, daemon=True).start()
     # (Đã bỏ streak_deposit_scheduler - thay bằng check streak khi user chuyển Hết Tiền trong chiaTien_Acc)
     # Chạy scheduler check lịch sử rút cho user đang chờ (10 phút)
     start_pending_withdraw_checker(interval_seconds=600)
     # Chế độ Cược tuần: mỗi 60s cập nhật PRIORITY_USERS_V2 khi WEEKLY_BET_MODE.ENABLED=1
     start_weekly_bet_mode_scheduler()
+    start_slot_near_mission_scheduler()
+    start_withdraw_threshold_reset_scheduler()
     # Chạy watcher_loop như cũ
     try:
         asyncio.run(watcher_loop())
     except KeyboardInterrupt:
         print("\n⏹ Đã dừng chương trình.", flush=True)
+    finally:
+        shutdown_lc79_background_services()

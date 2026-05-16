@@ -1,6 +1,9 @@
 """
-Từ 23:00 đến cuối ngày (giờ máy chủ): mỗi 60 giây gọi API /api/users/active-no-deposit-today
+Từ giờ START (config ACTIVE_NO_DEPOSIT_SCHEDULER.START, mặc định 23:00) đến cuối ngày
+(giờ máy chủ): mỗi INTERVAL_SECONDS (mặc định 60) gọi API /api/users/active-no-deposit-today
 và thử đưa user vào hàng chờ nạp (enqueue; trùng lặp vẫn bị chặn bởi can_create_deposit_order).
+
+Bật/tắt: ACTIVE_NO_DEPOSIT_SCHEDULER.ENABLED (1 = bật, mặc định khi thiếu khối config).
 """
 
 import time
@@ -16,6 +19,49 @@ from auto_deposit_on_out_of_money import (
 )
 
 API_BASE = "http://127.0.0.1:3000"
+
+
+def _parse_hhmm(s: str, default_h: int, default_m: int) -> tuple[int, int]:
+    s = (s or "").strip()
+    if not s:
+        return default_h, default_m
+    parts = s.split(":")
+    try:
+        h = int(parts[0])
+        m = int(parts[1]) if len(parts) > 1 else 0
+        return max(0, min(23, h)), max(0, min(59, m))
+    except (ValueError, IndexError):
+        return default_h, default_m
+
+
+def _active_no_deposit_scheduler_settings(config: dict | None) -> tuple[bool, int, int, int]:
+    """
+    (enabled, start_hour, start_minute, interval_seconds).
+    Thiếu ACTIVE_NO_DEPOSIT_SCHEDULER: coi như ENABLED=1, START=23:00, INTERVAL_SECONDS=60.
+    """
+    default = (True, 23, 0, 60)
+    if not config:
+        return default
+    block = config.get("ACTIVE_NO_DEPOSIT_SCHEDULER")
+    if not isinstance(block, dict):
+        return default
+    try:
+        enabled = int(block.get("ENABLED", 1)) == 1
+    except (TypeError, ValueError):
+        enabled = True
+    sh, sm = _parse_hhmm(str(block.get("START", "23:00")).strip(), 23, 0)
+    try:
+        interval = int(block.get("INTERVAL_SECONDS", 60))
+    except (TypeError, ValueError):
+        interval = 60
+    interval = max(1, interval)
+    return enabled, sh, sm, interval
+
+
+def _in_active_no_deposit_time_window(now: datetime, start_h: int, start_m: int) -> bool:
+    start_minutes = start_h * 60 + start_m
+    now_minutes = now.hour * 60 + now.minute
+    return now_minutes >= start_minutes
 
 
 def _normalize_username(item) -> str:
@@ -87,6 +133,11 @@ def deposit_active_no_deposit_users():
         print("[NO-DEPOSIT] ❌ Không đọc được config", flush=True)
         return
 
+    enabled, sh, sm, _iv = _active_no_deposit_scheduler_settings(config)
+    if not enabled:
+        return
+    start_label = f"{sh:02d}:{sm:02d}"
+
     users = fetch_active_no_deposit_users()
     if not users:
         return
@@ -107,7 +158,7 @@ def deposit_active_no_deposit_users():
                 continue
             enqueue_deposit_order(
                 user,
-                "active-no-deposit-today (≥23h): V2/V3/PRIORITY — API /api/users/active-no-deposit-today",
+                f"active-no-deposit-today (≥{start_label}): V2/V3/PRIORITY — API /api/users/active-no-deposit-today",
             )
         else:
             if config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) != 1:
@@ -116,25 +167,36 @@ def deposit_active_no_deposit_users():
                 continue
             enqueue_deposit_order(
                 user,
-                "active-no-deposit-today (≥23h): outside — API /api/users/active-no-deposit-today",
+                f"active-no-deposit-today (≥{start_label}): outside — API /api/users/active-no-deposit-today",
             )
 
 
 def auto_active_no_deposit_scheduler():
     """
-    Vòng lặp 60s. Khi giờ máy >= 23:00 (cùng ngày dương lịch), mỗi vòng gọi deposit_active_no_deposit_users.
+    Vòng lặp theo INTERVAL_SECONDS trong config. Khi giờ máy >= START (cùng ngày dương lịch),
+    mỗi vòng gọi deposit_active_no_deposit_users nếu ENABLED=1.
     """
-    print("[NO-DEPOSIT] 🕐 Scheduler: từ 23h mỗi 60s gọi API user chưa nạp trong ngày", flush=True)
+    cfg0 = load_config() or {}
+    _en0, sh0, sm0, iv0 = _active_no_deposit_scheduler_settings(cfg0)
+    print(
+        f"[NO-DEPOSIT] 🕐 Scheduler: ENABLED={int(_en0)} từ {sh0:02d}:{sm0:02d} "
+        f"mỗi {iv0}s gọi API user chưa nạp trong ngày (ACTIVE_NO_DEPOSIT_SCHEDULER)",
+        flush=True,
+    )
 
     while True:
         try:
+            config = load_config() or {}
+            enabled, sh, sm, interval = _active_no_deposit_scheduler_settings(config)
             now = datetime.now()
-            if now.hour >= 23:
+            if enabled and _in_active_no_deposit_time_window(now, sh, sm):
                 deposit_active_no_deposit_users()
 
-            time.sleep(60)
+            time.sleep(interval)
 
         except Exception as e:
             print(f"[NO-DEPOSIT] ❌ Lỗi scheduler: {e}", flush=True)
-            time.sleep(60)
+            _cfg = load_config() or {}
+            _, _, _, _iv = _active_no_deposit_scheduler_settings(_cfg)
+            time.sleep(_iv)
 

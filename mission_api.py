@@ -135,44 +135,49 @@ def claim_mission(username: str, mission_name: str, event_date: str, mission_typ
         return {"ok": False, "error": f"Lỗi parse: {e}"}
 
 
-def auto_claim_missions(username: str, mission_type: str = "daily"):
+def auto_claim_missions(username: str, mission_type: str = "daily") -> list[str]:
     """
     Tự động nhận tất cả nhiệm vụ đã hoàn thành (isWon=true, claimedAt=null).
-    
-    Args:
-        username: Username trong DB
-        mission_type: Loại nhiệm vụ (daily, weekly...)
+
+    Returns:
+        Danh sách `name` nhiệm vụ claim thành công (claim_mission trả ok).
     """
     # 1. Lấy danh sách nhiệm vụ
     result = fetch_missions(username, mission_type)
-    
+
     if not result.get("ok"):
-        return
-    
+        return []
+
     missions = result.get("data", [])
-    
+
     # 2. Lọc nhiệm vụ đã hoàn thành nhưng chưa nhận
     # isWon=true AND claimedAt=null
     unclaimed = [
-        m for m in missions 
+        m for m in missions
         if m.get("isWon") and not m.get("claimedAt")
     ]
-    
+
     if not unclaimed:
-        return
-    
+        return []
+
+    claimed_ok: list[str] = []
+
     # 3. Nhận từng nhiệm vụ
     for i, mission in enumerate(unclaimed, 1):
         name = mission.get("name")
         event_date = mission.get("eventDate")
         prize = mission.get("prizeVinAmount", 0)
-        
+
         # Nhận thưởng (truyền prize_amount để log)
         claim_result = claim_mission(username, name, event_date, mission_type, prize)
-        
+        if isinstance(claim_result, dict) and claim_result.get("ok") and name:
+            claimed_ok.append(str(name))
+
         # Delay 2s giữa các lần claim
         if i < len(unclaimed):
             time.sleep(2)
+
+    return claimed_ok
 
 
 if __name__ == "__main__":

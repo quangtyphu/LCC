@@ -5,8 +5,6 @@ import time
 import os
 import threading
 from queue import Queue
-from datetime import datetime
-from zoneinfo import ZoneInfo
 from constants import load_config
 from status_utils import update_status
 from user_full_check_service import user_full_check_logic
@@ -14,11 +12,17 @@ from user_full_check_service import user_full_check_logic
 API_BASE = "http://127.0.0.1:3000"  # Node.js server
 THIRD_PARTY_API_BASE = "http://127.0.0.1:5000"  # Third party deposit handler
 
+# Số tiền mỗi lệnh auto nạp (VND) — cố định cho mọi lần gọi từ hàng chờ.
+AUTO_DEPOSIT_AMOUNT_VND = 200_000
+# Chọn user outside cần nạp: random trong N user đầu danh sách API (không lấy cố định user [0]).
+OUTSIDE_DEPOSIT_PICK_POOL_SIZE = 5
+
 # Cache file để lưu username đã tạo lệnh nạp (tránh tạo 2 lệnh treo gần nhau)
 DEPOSIT_CACHE_FILE = "deposit_pending_cache.json"
 DEPOSIT_CACHE_LOCK_FILE = "deposit_pending_cache.json.lock"
 DEPOSIT_CACHE_DELAY_SECONDS = 15 * 60  # 15 phút = 900 giây
 DEPOSIT_QUEUE_INTERVAL_SECONDS = 60  # Khoảng cách giữa 2 lệnh nạp liên tục
+PERIODIC_DEPOSIT_CHECK_SECONDS = 60  # Chu kỳ quét auto nạp (Hết Tiền / MAX_ACTIVE)
 _CACHE_LOCK_TIMEOUT = 5.0  # Giây chờ lock tối đa
 
 _deposit_queue = Queue()
@@ -200,6 +204,18 @@ def _wait_for_deposit_slot():
     with _last_deposit_lock:
         _last_deposit_time = time.time()
 
+def _pick_outside_users_from_head(candidates: list, need: int, head: int | None = None) -> list:
+    """Random tối đa `need` user trong `head` user đầu của danh sách (mặc định 5)."""
+    if need <= 0 or not candidates:
+        return []
+    n_head = head if head is not None else OUTSIDE_DEPOSIT_PICK_POOL_SIZE
+    pool = list(candidates[: max(0, n_head)])
+    if not pool:
+        return []
+    k = min(need, len(pool))
+    return random.sample(pool, k)
+
+
 def _log_auto_deposit_reason(user: str, reason: str) -> None:
     u = str(user or "").strip() or "?"
     r = (reason or "").strip() or "không ghi rõ"
@@ -263,8 +279,7 @@ def _deposit_queue_worker():
             with _processing_lock:
                 _processing_users.add(user)
             _wait_for_deposit_slot()
-            amount = random_amount()
-            _perform_deposit_request(user, amount)
+            _perform_deposit_request(user, AUTO_DEPOSIT_AMOUNT_VND)
         except Exception as e:
             print(f"[ERROR] Deposit queue worker: {e}")
         finally:
@@ -302,6 +317,20 @@ def enqueue_deposit_order(user, reason: str = ""):
             return
         _enqueued_users.add(u)
     _deposit_queue.put((u, r))
+
+
+def try_enqueue_deposit_if_cache_allows(user: str, reason: str = "") -> bool:
+    """
+    Chỉ xếp hàng nạp khi ``can_create_deposit_order`` (không cache treo).
+    Trả True nếu đã gọi ``enqueue_deposit_order``.
+    """
+    u = str(user or "").strip()
+    if not u:
+        return False
+    if not can_create_deposit_order(u):
+        return False
+    enqueue_deposit_order(u, reason)
+    return True
 
 
 def _username_matches_list(username: str, lst) -> bool:
@@ -356,36 +385,8 @@ def _is_priority_v3_user(user, config) -> bool:
     return _username_matches_list(user, v3)
 
 
-def random_amount():
-    return random.choice([i for i in range(200_000, 300_000, 10_000)])
+from time_windows import get_active_window as _get_active_window
 
-
-def _get_active_window(cfg: dict) -> dict:
-    """
-    Trả về nguyên window đang hiệu lực (inclusive start, exclusive end).
-    Hỗ trợ khoảng qua nửa đêm (start > end).
-    Không khớp thì trả {}
-    """
-    tz = ZoneInfo("Asia/Ho_Chi_Minh")
-    now = datetime.now(tz).time()
-    windows = cfg.get("TIME_WINDOWS") or []
-
-    # parse HH:MM
-    from datetime import datetime as dt
-    for w in windows:
-        s_raw, e_raw = w.get("start"), w.get("end")
-        if not s_raw or not e_raw:
-            continue
-        try:
-            s = dt.strptime(s_raw, "%H:%M").time()
-            e = dt.strptime(e_raw, "%H:%M").time()
-        except Exception:
-            continue
-
-        in_range = (s <= now < e) if s < e else (now >= s or now < e)
-        if in_range:
-            return w
-    return {}
 
 def _get_max_active_users_outside_v2_v3(cfg: dict) -> int:
     """
@@ -553,22 +554,17 @@ def auto_deposit_for_user(
                     if str(x or "").strip().lower() != u_trigger.lower()
                 ]
 
-            # 6. Duyệt danh sách, nạp V2/V3 và đủ số lượng outside
+            # 6. V2/V3 nạp hết; outside: random trong 5 user đầu danh sách hết tiền
             users_to_deposit = []
-            outside_count = 0  # Đếm số user outside đã thêm
-
+            outside_candidates = []
             for acc_name in account_names:
-                # Nếu là V2/V3/PRIORITY → nạp luôn (không giới hạn)
                 if is_in_v2_v3(acc_name, config):
                     users_to_deposit.append(_canonical_priority_username(acc_name, config))
-                # Nếu là outside và chưa đủ số lượng → nạp
-                elif outside_count < need_deposit:
-                    users_to_deposit.append(acc_name)
-                    outside_count += 1
-
-                # Nếu đã đủ số lượng outside → dừng
-                if outside_count >= need_deposit:
-                    break
+                else:
+                    outside_candidates.append(acc_name)
+            users_to_deposit.extend(
+                _pick_outside_users_from_head(outside_candidates, need_deposit)
+            )
             
             if not users_to_deposit:
                 return
@@ -675,7 +671,7 @@ def periodic_check_all_users():
                             # Nếu không có trong cache → gọi auto_deposit_for_user
                             auto_deposit_for_user(
                                 user,
-                                deposit_reason="PERIODIC: V2/V3/PRIORITY trong /api/accounts/out-of-money (~PERIODIC_DEPOSIT_CHECK_SECONDS)",
+                                deposit_reason="PERIODIC: V2/V3/PRIORITY trong /api/accounts/out-of-money (quét 60s)",
                             )
                         except Exception as e:
                             print(f"[PERIODIC] Lỗi khi nạp tiền cho {user} (V2/V3/PRIORITY): {e}")
@@ -698,19 +694,15 @@ def periodic_check_all_users():
                         # 4. Tính số user cần nạp
                         need_deposit = max_limit - active_count
 
-                        # 5. Chọn user cần nạp với logic check cache
-                        users_to_deposit = []
-                        for user in outside_users:
-                            if not can_create_deposit_order(user):
-                                continue
-                            users_to_deposit.append(user)
-                            if len(users_to_deposit) >= need_deposit:
-                                break
+                        # 5. Random trong 5 user outside đầu (đủ cache mới nạp)
+                        pool5 = outside_users[:OUTSIDE_DEPOSIT_PICK_POOL_SIZE]
+                        eligible = [u for u in pool5 if can_create_deposit_order(u)]
+                        pick = random.choice(eligible) if eligible else None
 
-                        if users_to_deposit:
+                        if pick:
                             try:
                                 auto_deposit_for_user(
-                                    users_to_deposit[0],
+                                    pick,
                                     prioritize_outside_trigger=False,
                                     deposit_reason="PERIODIC: outside hết tiền — lấp MAX_ACTIVE_USERS_OUTSIDE_V2_V3",
                                 )
@@ -723,20 +715,12 @@ def periodic_check_all_users():
     except Exception as e:
         print(f"[PERIODIC] Lỗi trong periodic_check_all_users: {e}")
 
-def start_periodic_check(interval_seconds=None):
+def start_periodic_check():
     """
     Thread định kỳ gọi periodic_check_all_users (mỗi lần đều load_config lại).
-    Khoảng cách giữa các lần: PERIODIC_DEPOSIT_CHECK_SECONDS trong config.json (mặc định 60).
-    Tham số interval_seconds (nếu truyền) chỉ dùng khi config không có khóa trên (tương thích cũ).
+    Chu kỳ: PERIODIC_DEPOSIT_CHECK_SECONDS (cố định trong module).
     """
-    def _sleep_seconds_from_config():
-        try:
-            cfg = load_config()
-            raw = cfg.get("PERIODIC_DEPOSIT_CHECK_SECONDS", interval_seconds if interval_seconds is not None else 60)
-            sec = int(raw)
-        except Exception:
-            sec = int(interval_seconds) if interval_seconds is not None else 60
-        return max(15, sec)
+    wait_sec = max(15, int(PERIODIC_DEPOSIT_CHECK_SECONDS))
 
     def periodic_worker():
         while True:
@@ -744,17 +728,11 @@ def start_periodic_check(interval_seconds=None):
                 periodic_check_all_users()
             except Exception as e:
                 print(f"[PERIODIC] Lỗi trong periodic_worker: {e}")
-
-            wait = _sleep_seconds_from_config()
-            time.sleep(wait)
+            time.sleep(wait_sec)
 
     thread = threading.Thread(target=periodic_worker, daemon=True)
     thread.start()
-    initial = _sleep_seconds_from_config()
-    print(
-        f"[PERIODIC] Đã khởi động periodic check (config PERIODIC_DEPOSIT_CHECK_SECONDS, hiện ~{initial}s)",
-        flush=True,
-    )
+    print(f"[PERIODIC] Đã khởi động periodic check (mỗi {wait_sec}s)", flush=True)
     return thread
 
 # Example usage:
@@ -763,7 +741,7 @@ if __name__ == "__main__":
     reset_deposit_cache()
     
     # Khởi động periodic check (mỗi 60 giây)
-    start_periodic_check(interval_seconds=60)  # 60 giây = 1 phút
+    start_periodic_check()
     
     # Giữ chương trình chạy
     try:

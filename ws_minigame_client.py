@@ -89,12 +89,17 @@ async def connect_minigame(username: str, keep_alive: bool = False):
 
     ws = None
     try:
+        # Tránh additional_headers + sock= → lỗi create_connection (websockets 14+).
         ws = await websockets.connect(
             WS_URL,
             sock=sock,
             ssl=True,
             ping_interval=None,
-            extra_headers=EXTRA_HEADERS,
+            origin=EXTRA_HEADERS.get("Origin", "https://play.lc79.bet"),
+            user_agent_header=EXTRA_HEADERS.get(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            ),
         )
 
         ping_interval_ms = 25000

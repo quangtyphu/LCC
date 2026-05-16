@@ -63,7 +63,7 @@ def check_and_claim_vip(username):
     """
     - Check VIP-point
     - Nếu chưa nhận thưởng VIP ở cấp hiện tại thì nhận thưởng
-    - Nếu đủ điều kiện đổi điểm (VIP >= 5 và pointExchangeable >= 1) thì đổi điểm
+    - Nếu có điểm đổi được (pointExchangeable >= 1) thì đổi — không chặn theo cấp VIP
     - Cập nhật balance vào DB sau mỗi lần nhận thưởng hoặc đổi điểm thành công
     """
     # 1. Check VIP-point
@@ -102,22 +102,24 @@ def check_and_claim_vip(username):
                         pass
     # Không in log đã nhận rồi, không in log tổng quan
 
-    # 3. Đổi điểm VIP nếu đủ điều kiện
-    if level and pointExchangeable and level >= 5:
-        point_int = int(pointExchangeable)
-        if point_int >= 1:
-            exchange_url = "https://wlb.tele68.com/v1/lobby/vippoint/exchange"
-            exchange_body = {"point": point_int}
-            resp3 = game_request_with_retry(username, "POST", exchange_url, json_data=exchange_body)
-            if resp3 and resp3.status_code in (200, 201):
-                try:
-                    exchange_data = resp3.json()
-                    balance = exchange_data.get("balance")
-                    print(f"[{username}] Đã đổi {point_int} điểm VIP, balance mới: {balance}", flush=True)
-                    if balance is not None:
-                        update_user_balance(username, float(balance))
-                except Exception:
-                    pass
+    # 3. Đổi điểm VIP khi server cho phép đổi (pointExchangeable), bất kể đang VIP mấy
+    try:
+        point_int = int(round(float(pointExchangeable or 0)))
+    except (TypeError, ValueError):
+        point_int = 0
+    if point_int >= 1:
+        exchange_url = "https://wlb.tele68.com/v1/lobby/vippoint/exchange"
+        exchange_body = {"point": point_int}
+        resp3 = game_request_with_retry(username, "POST", exchange_url, json_data=exchange_body)
+        if resp3 and resp3.status_code in (200, 201):
+            try:
+                exchange_data = resp3.json()
+                balance = exchange_data.get("balance")
+                print(f"[{username}] Đã đổi {point_int} điểm VIP, balance mới: {balance}", flush=True)
+                if balance is not None:
+                    update_user_balance(username, float(balance))
+            except Exception:
+                pass
     # Không in log không đủ điểm, không in log tổng quan
     # Chỉ một GET vippoint đầu hàm: đã sync point lên CMS; không GET lại (hạn chế API game).
 

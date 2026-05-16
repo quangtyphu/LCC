@@ -167,10 +167,17 @@ def _sync_deposit_order_by_amount(
     tx_content: str,
     desired_status: str = "Thành Công",
     only_order_id: int | None = None,
+    game_tx_confirmed: bool = False,
 ) -> bool:
     """
     Khớp lệnh nạp theo username + số tiền + NDCK trong nội dung giao dịch.
-    Chỉ nâng lên Thành Công khi lệnh đã «Đã Nạp» (callback bên thứ 3), không sync khi còn Chờ/Đang nạp.
+
+    Mặc định (game_tx_confirmed=False): chỉ nâng Thành Công khi lệnh «Đã Nạp» (hoặc Thất Bại
+    khi sync đúng only_order_id) — an toàn cho gọi từ luồng không có GD game.
+
+    game_tx_confirmed=True: đã có GD SUCCESS trên game (lịch sử / vừa lưu transaction-details) —
+    cho phép cập nhật Thành Công kể cả lệnh đang Thất Bại/Chờ/Đang nạp (trừ Huỷ), để cứu lệnh
+    sau khi hết vòng chờ wait_and_check.
     only_order_id: nếu có, chỉ cập nhật đúng lệnh đó (tránh trùng số tiền nhiều lệnh).
     """
     if not username or not tx_amount:
@@ -218,13 +225,16 @@ def _sync_deposit_order_by_amount(
                 return True
             if current_status == "Huỷ":
                 return False
-            # Chỉ nâng Thành Công khi lệnh đã qua callback "Đã Nạp".
-            # Ngoại lệ: cho phép cứu lệnh đã "Thất Bại" nếu đang sync strict theo đúng order_id
-            # (flow theo dõi 1 lệnh cụ thể với điều kiện NDCK/thời gian đã lọc từ trước).
-            if current_status not in ("Đã Nạp", "Thất Bại"):
-                continue
-            if current_status == "Thất Bại" and only_order_id is None:
-                continue
+            if game_tx_confirmed:
+                # Có bằng chứng GD trên game — bỏ chặn trạng thái CMS (cứu Thất Bại / Chờ / …).
+                pass
+            else:
+                # Chỉ nâng Thành Công khi lệnh đã qua callback "Đã Nạp".
+                # Ngoại lệ: Thất Bại + only_order_id (sync strict một lệnh).
+                if current_status not in ("Đã Nạp", "Thất Bại"):
+                    continue
+                if current_status == "Thất Bại" and only_order_id is None:
+                    continue
             update_resp = requests.put(
                 f"{NODE_SERVER_URL}/api/deposit-orders/{order_id}",
                 json={"status": desired_status},
@@ -262,8 +272,7 @@ def check_deposit_history(
     Sử dụng game_api_helper để lấy token, proxy, headers, params.
 
     sync_min_datetime / sync_only_order_id / sync_transfer_content:
-      Khi theo dõi một lệnh cụ thể (wait_and_check), bắt buộc lọc GD theo thời gian hoặc NDCK
-      trước khi sync Thành Công — tránh khớp nhầm GD cũ cùng số tiền.
+      Chỉ áp dụng khi vừa lưu mới GD (200/201). wait_and_check: strict NDCK/amount trước khi sync.
     """
     api_url = "https://wsslot.tele68.com/v1/lobby/transaction/history"
     params = {
@@ -294,8 +303,7 @@ def check_deposit_history(
         print(f"❌ [{username}] Lỗi parse lịch sử: {e}", flush=True)
         return {"ok": False, "error": str(e)}
 
-    # 2. Lưu giao dịch mới vào DB thực tế
-    # Thứ tự bình thường (giao dịch mới): (1) dòng "Đã lưu 1 giao dịch nạp ..." rồi (2) "✅ Đã cập nhật deposit_orders #... → Thành Công"
+    # 2. Lưu giao dịch mới vào DB — chỉ khi vừa lưu mới (200/201) mới sync deposit_orders → Thành Công (bỏ qua 409/GD đã có).
     saved = []
     new_saved = 0
     synced_order_success = False
@@ -305,6 +313,7 @@ def check_deposit_history(
         or sync_only_order_id is not None
     )
     for tx in transactions:
+        saved_new_this_tx = False
         record = {
             "username": username,
             "nickname": username,  # Nếu có nickname thực thì truyền vào
@@ -317,6 +326,7 @@ def check_deposit_history(
         try:
             resp2 = requests.post(f"{NODE_SERVER_URL}/api/transaction-details", json=record, timeout=5)
             if resp2.status_code in (200, 201):
+                saved_new_this_tx = True
                 saved.append(record)
                 new_saved += 1
                 print(f"Đã lưu 1 giao dịch nạp {int(tx['amount']):,} cho [{username}] với nội dung {tx['content']}", flush=True)
@@ -338,25 +348,28 @@ def check_deposit_history(
         except Exception as e:
             print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')} cho [{username}]: {e}", flush=True)
 
-        # Sync deposit_orders theo số tiền; có chế độ strict khi theo dõi lệnh (tránh GD cũ cùng amount)
+        if not saved_new_this_tx:
+            continue
+
         tx_amount = tx.get("amount", 0)
-        if tx_amount:
-            if sync_strict:
-                if not tx_matches_deposit_order(
-                    tx,
-                    int(tx_amount),
-                    sync_min_datetime,
-                    (sync_transfer_content or "").strip(),
-                ):
-                    continue
-            if _sync_deposit_order_by_amount(
-                username,
-                int(tx_amount),
-                str(tx.get("content") or ""),
-                desired_status="Thành Công",
-                only_order_id=sync_only_order_id,
-            ):
-                synced_order_success = True
+        if not tx_amount:
+            continue
+        if sync_strict and not tx_matches_deposit_order(
+            tx,
+            int(tx_amount),
+            sync_min_datetime,
+            (sync_transfer_content or "").strip(),
+        ):
+            continue
+        if _sync_deposit_order_by_amount(
+            username,
+            int(tx_amount),
+            str(tx.get("content") or ""),
+            desired_status="Thành Công",
+            only_order_id=sync_only_order_id,
+            game_tx_confirmed=True,
+        ):
+            synced_order_success = True
 
     # Có giao dịch mới lưu DB HOẶC vừa đồng bộ lệnh → Đã Nạp → Thành Công: đều cần làm mới số dư
     # (Trước đây chỉ khi new_saved > 0 nên khi giao dịch đã tồn tại 409 thì không gọi get_balance.)

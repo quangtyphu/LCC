@@ -1,45 +1,19 @@
 import random, json
 from typing import List, Tuple, Dict
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 heSoNhan = 1000   # hệ số nhân mặc định
 MAX_BET = 200000
 max_amt = MAX_BET // heSoNhan   # ví dụ 200.000 / 1000 = 200
+
+# Dải cược mặc định (fallback khi TIME_WINDOWS không override)
+_DEFAULT_BET_RANGE = {"START": 50, "STOP": 201, "STEP": 10}
 # ====== Hàm load config ======
 def load_config():
     with open("config.json", "r", encoding="utf-8") as f:
         return json.load(f)
 
 # ====== Helper: lấy window đang hiệu lực (giờ VN) ======
-def _get_active_window(cfg: dict) -> dict:
-    """
-    Trả về nguyên item trong TIME_WINDOWS nếu giờ hiện tại thuộc khoảng
-    - Inclusive start, exclusive end
-    - Hỗ trợ qua nửa đêm khi start > end (vd 20:00 -> 00:00)
-    Không khớp thì trả {}
-    """
-    tz = ZoneInfo("Asia/Ho_Chi_Minh")
-    now = datetime.now(tz).time()
-    windows = cfg.get("TIME_WINDOWS") or []
-
-    # dùng datetime.strptime để parse HH:MM
-    from datetime import datetime as dt
-
-    for w in windows:
-        s_raw, e_raw = w.get("start"), w.get("end")
-        if not s_raw or not e_raw:
-            continue
-        try:
-            s = dt.strptime(s_raw, "%H:%M").time()
-            e = dt.strptime(e_raw, "%H:%M").time()
-        except Exception:
-            continue
-
-        in_range = (s <= now < e) if s < e else (now >= s or now < e)
-        if in_range:
-            return w
-    return {}
+from time_windows import get_active_window as _get_active_window
 
 # ====== Public getters theo khung giờ ======
 def get_priority_users() -> List[str]:
@@ -67,17 +41,12 @@ def get_assign_strategy(default_value: int = 1) -> int:
 # ====== Hàm lấy dải đặt cược (có override theo giờ) ======
 def get_bet_range():
     """
-    Ưu tiên BET_RANGE trong window nếu có key hợp lệ; phần nào thiếu lấy từ root.
-    Nếu window không có/không hợp lệ -> dùng root.
-    Cuối cùng bổ sung mặc định để đủ START/STOP/STEP và đúng kiểu int.
+    BET_RANGE mặc định cố định; TIME_WINDOWS có thể override từng khung giờ.
     """
-    default_bet_range = {"START": 50, "STOP": 71, "STEP": 10}
     config = load_config()
     w = _get_active_window(config)
 
-    # Lấy BET_RANGE gốc từ root (nếu có)
-    root_br = config.get("BET_RANGE")
-    root_br = root_br if isinstance(root_br, dict) else {}
+    root_br = dict(_DEFAULT_BET_RANGE)
 
     # Lấy BET_RANGE từ window (chỉ dùng phần có giá trị int)
     win_br = w.get("BET_RANGE")
@@ -91,7 +60,7 @@ def get_bet_range():
     bet_range_cfg.update(filtered_win)
 
     # Điền nốt mặc định & ép kiểu
-    for k, v in default_bet_range.items():
+    for k, v in _DEFAULT_BET_RANGE.items():
         if k not in bet_range_cfg or not isinstance(bet_range_cfg[k], int):
             bet_range_cfg[k] = v
 
@@ -164,9 +133,27 @@ def distribute_for_devices(devices: List[Dict]) -> List[Tuple[None, int, str]]:
     cfg = load_config()
     w = _get_active_window(cfg)
 
-    # Nếu khung giờ đang PAUSE => không tạo cược
+    # Khung PAUSE trong TIME_WINDOWS => không cược (kể cả jackpot cao)
     if w.get("PAUSE"):
         print("⏸️ PAUSE theo khung giờ: không tạo cược.")
+        return []
+
+    try:
+        from jackpot_night_extend import (
+            format_jackpot_gate_skip_reason,
+            jackpot_periodic_gate_allows_betting,
+        )
+    except ImportError:
+        jackpot_periodic_gate_allows_betting = None  # type: ignore
+        format_jackpot_gate_skip_reason = None  # type: ignore
+    if jackpot_periodic_gate_allows_betting and not jackpot_periodic_gate_allows_betting(cfg):
+        if format_jackpot_gate_skip_reason:
+            print(format_jackpot_gate_skip_reason(cfg, action="không tạo cược"), flush=True)
+        else:
+            print(
+                "⏸️ Jackpot: chưa trên JACKPOT_THRESHOLD hoặc đã dừng sau nổ hũ → không tạo cược.",
+                flush=True,
+            )
         return []
 
     total_players = get_player_count()

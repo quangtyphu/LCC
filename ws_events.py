@@ -9,27 +9,24 @@ import constants  # dùng constants.session_seen (tránh global cục bộ)
 from chiaTien_Acc import run_assigner, enqueue_bets
 from auto_withdraw_on_won_session import handle_won_session_auto_withdraw
 from jackpot_history_notifier import check_and_notify_jackpot
+from bet_totals_increment import increment_bet_totals
+import tai_xiu_skew_tracker as skew_tracker
 
 API_BASE = "http://127.0.0.1:3000"  # URL server.js của bạn
 
 
-def increment_bet_totals(username: str, amount) -> None:
-    """Cộng dồn bet_totals trên CMS (không qua bet_history)."""
-    if amount is None:
+async def _delayed_skew_finalize(session_id, attempt: int = 1) -> None:
+    """Tối đa 10s sau phiên mới: chốt phiên trước nếu chưa có KQ (đã có KQ thì báo sớm hơn)."""
+    if not session_id:
         return
+    await asyncio.sleep(10)
     try:
-        amt = int(amount)
-        if amt <= 0:
+        if skew_tracker.try_finalize(session_id):
             return
-        r = requests.post(
-            f"{API_BASE}/api/bet-totals/increment",
-            json={"username": username, "amount": amt},
-            timeout=3,
-        )
-        if r.status_code != 200:
-            print(f"⚠️ Lỗi bet-totals increment: {r.status_code} {r.text[:200]}", flush=True)
+        if attempt == 1:
+            skew_tracker.mark_needs_retry(session_id)
     except Exception as e:
-        print(f"⚠️ Không gọi được bet-totals increment: {e}", flush=True)
+        print(f"⚠️ [Tài/Xỉu lệch] finalize phiên {session_id}: {e}", flush=True)
 
 
 # ------------------- Phiên trước để kiểm tra streak -------------------
@@ -171,6 +168,8 @@ async def handle_event(user, msg):
             session_started_at = time.time()
             print(f"🆕 [{user}] xử lý phiên {session_id}", flush=True)
 
+            prev_sid_for_skew = getattr(constants, "last_session_id", None)
+
             # --- Kiểm tra phiên trước để update lost nếu chưa nhận win ---
             if hasattr(constants, "last_session_id") and constants.last_session_id in prev_session_users:
                 previous_users = prev_session_users.pop(constants.last_session_id)
@@ -242,6 +241,7 @@ async def handle_event(user, msg):
                     "xiu": int(total_xiu),
                     "total": int(total_any),
                 }
+                skew_tracker.register_session(session_id, total_tai, total_xiu)
                 if len(constants.session_bet_totals) > 500:
                     constants.session_bet_totals.clear()
             except Exception:
@@ -250,6 +250,11 @@ async def handle_event(user, msg):
             # --- Lưu user cược của phiên hiện tại ---
             # lưu CHỈ username (chuỗi) để dễ xoá khi có win
             prev_session_users[session_id] = [str(u) for u, *_ in final_bets]
+
+            if prev_sid_for_skew:
+                asyncio.create_task(_delayed_skew_finalize(prev_sid_for_skew, 1))
+            for retry_sid in skew_tracker.pop_retry_sessions():
+                asyncio.create_task(_delayed_skew_finalize(retry_sid, 2))
 
 
         elif event == "bet-result":
@@ -316,16 +321,34 @@ async def handle_event(user, msg):
             if post_balance is None and matched_pending:
                 asyncio.create_task(refresh_balance_via_api(user, "Bet refund"))
 
+        elif event == "session-result":
+            sid = data.get("id") or data.get("sessionId") or data.get("session_id")
+            dices = data.get("dices") or data.get("dice")
+            skew_tracker.note_session_winner(sid, dices, source="session-result")
+
         elif event == "won-session":
             balance = data.get("balance")
             prize = data.get("prize", 0)
             dices = data.get("dices", [])
             update_balance(user, balance, silent=True)
             print(f"🎲 [{user}] Thắng phiên | Dices={dices} | Prize={prize} | Balance={balance}", flush=True)
+            sid_skew = (
+                data.get("sessionId")
+                or data.get("session_id")
+                or data.get("id")
+                or getattr(constants, "last_session_id", None)
+            )
+            skew_tracker.note_session_winner(sid_skew, dices, source="won-session")
             # Fallback: check 111/666 on won-session, then notify jackpot
             try:
                 dices_str = "".join(str(int(x)) for x in dices) if isinstance(dices, (list, tuple)) else ""
                 if dices_str in ("111", "666"):
+                    try:
+                        from jackpot_night_extend import cancel_extend_on_jackpot_hit
+
+                        cancel_extend_on_jackpot_hit()
+                    except Exception as _ex:
+                        print(f"⚠️ [{user}] jackpot_night_extend cancel: {_ex}", flush=True)
                     session_payload = dict(data) if isinstance(data, dict) else {}
                     if "session_id" not in session_payload and "sessionId" not in session_payload:
                         if hasattr(constants, "last_session_id"):

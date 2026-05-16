@@ -1,7 +1,8 @@
 import requests
 import sys
 
-TELEGRAM_TOKEN = "8353962219:AAELQcRiBBGGZdNIjyaaAYBx7VEN8ok2hTY"
+# Bot: @mitomtrungbot
+TELEGRAM_TOKEN = "8999935594:AAFbzTQI5tEmhTPzP7GcN7xLCJ545wVAuzo"
 CHAT_ID = "7129501938"
 
 def send_telegram(msg: str):
