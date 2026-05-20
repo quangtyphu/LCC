@@ -139,10 +139,6 @@ def _strategy9_choose_user(
                 after = b - amount
                 break
     if chosen is not None:
-        print(
-            f"[STRAT9] mức={amount} → PRIORITY_USERS: {chosen} (bal={bal})",
-            flush=True,
-        )
         return chosen, after, bal, outside_max_slot_used
 
     outside_pool = _strategy9_outside_pool(
@@ -157,16 +153,8 @@ def _strategy9_choose_user(
     if use_max_slot:
         after, chosen, bal = max(pool9, key=lambda t: t[2])
         outside_max_slot_used = True
-        reason = (
-            f"mức={amount} → tầng 2: cược lớn nhất còn lại, balance max "
-            f"(không PRIORITY/V2/V3): {chosen} (bal={bal})"
-        )
     else:
         after, chosen, bal = random.choice(pool9)
-        reason = f"mức={amount} → tầng 2: random (không PRIORITY/V2/V3): {chosen} (bal={bal})"
-    if not outside_pool:
-        reason += " [fallback: không có ai trong pool tầng 2]"
-    print(f"[STRAT9] {reason}", flush=True)
     return chosen, after, bal, outside_max_slot_used
 
 
@@ -759,12 +747,6 @@ def assign_bets(
             config,
             window,
         )
-        if strategy9_outside_max_amount is not None:
-            print(
-                f"[STRAT9] Tầng 2: mức lớn nhất sau PRIORITY = {strategy9_outside_max_amount} "
-                f"→ 1 acc balance max (pool không gồm PRIORITY_USERS/V2/V3)",
-                flush=True,
-            )
     # State chỉ strategy 7
     strategy7_max_user: Optional[str] = None
     strategy7_max_amt: Optional[int] = None

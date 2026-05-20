@@ -173,6 +173,19 @@ def _set_withdraw_lock() -> None:
     _save_withdraw_state(data)
 
 
+# [-10] profile bị khóa rút (khác [-10] "chơi thêm" / chưa đủ điều kiện)
+PROFILE_WITHDRAW_LOCK_MARKERS = (
+    "Profile của bạn đang có vấn đề",
+    "rút tiền bị khóa, mời bạn ping",
+)
+
+
+def withdraw_response_message(data: dict) -> str:
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("msg") or data.get("message") or "")
+
+
 def _parse_code(code):
     if isinstance(code, int):
         return code
@@ -185,6 +198,51 @@ def _parse_code(code):
         if s.isdigit():
             return int(s)
     return code
+
+
+def is_withdraw_profile_locked(data: dict, extra_error: str = "") -> bool:
+    """True chỉ khi code -10 và nội dung là khóa profile (không phải thiếu cược)."""
+    code_int = _parse_code((data or {}).get("code"))
+    if code_int != -10:
+        return False
+    text = f"{withdraw_response_message(data)} {extra_error or ''}".strip()
+    low = text.lower()
+    if "chơi thêm" in low or "chưa đủ điều kiện" in low:
+        return False
+    return any(m in text for m in PROFILE_WITHDRAW_LOCK_MARKERS)
+
+
+def notify_withdraw_profile_locked(
+    username: str,
+    data: dict,
+    *,
+    context: str = "",
+) -> None:
+    """Gửi Telegram khi [-10] profile bị khóa rút (không gửi với [-10] chơi thêm)."""
+    if not is_withdraw_profile_locked(data):
+        return
+    try:
+        from telegram_notifier import send_telegram
+
+        msg_text = withdraw_response_message(data)
+        bal = (data or {}).get("current_money")
+        lines = [
+            "🔒 Rút tiền: profile bị khóa ([-10])",
+            f"User: {username}",
+        ]
+        if context:
+            lines.append(f"Ngữ cảnh: {context}")
+        if msg_text:
+            lines.append(msg_text)
+        if bal is not None:
+            try:
+                lines.append(f"Số dư: {int(bal):,}đ")
+            except (TypeError, ValueError):
+                lines.append(f"Số dư: {bal}")
+        send_telegram("\n".join(lines))
+    except Exception as e:
+        print(f"⚠️ [{username}] Không gửi được Telegram profile khóa: {e}", flush=True)
+
 
 def _post_withdraw_check_async(username: str, delay_seconds: int = 3) -> None:
     def _run():
@@ -285,7 +343,7 @@ def withdraw(
         # Parse response
         code = data.get("code")
         code_int = _parse_code(code)
-        message = data.get("message")
+        message = withdraw_response_message(data)
         
         # Chỉ log một dòng theo yêu cầu
         try:
@@ -406,11 +464,18 @@ def withdraw(
                 _set_withdraw_lock()
                 _enqueue_withdraw_queue(username, amount)
             if code_int == -10:
-                need_more = _parse_required_bet_from_error(str(message or ""))
-                if need_more:
-                    current_total = _get_total_bet_for_user(username)
-                    target_total_bet = current_total + need_more
-                    _set_wager_queue(username, target_total_bet)
+                if is_withdraw_profile_locked(data, str(message or "")):
+                    notify_withdraw_profile_locked(
+                        username,
+                        data,
+                        context=f"rút {amount:,}đ",
+                    )
+                else:
+                    need_more = _parse_required_bet_from_error(str(message or ""))
+                    if need_more:
+                        current_total = _get_total_bet_for_user(username)
+                        target_total_bet = current_total + need_more
+                        _set_wager_queue(username, target_total_bet)
             return {
                 "ok": False,
                 "error": f"[{code}] {message}",

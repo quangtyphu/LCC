@@ -1,0 +1,18 @@
+{
+  "_note": "Chỉ các key dưới đây đọc từ file. Còn lại: xoso66_config_util.py → HARDCODED_CONFIG. Proxy: DEFAULT_PROXY trong file đó hoặc env XOSO66_DEFAULT_PROXY.",
+  "_assign_strategy": "1 = cược ngày cao (còn cap) → slot lớn nhất; 2 = bet lớn → tổng cược/ngày thấp (≤ cap)",
+  "auto_deposit": {
+    "amount_vnd": 100000
+  },
+  "game_worker": {
+    "ws_account_count": 12
+  },
+  "auto_bet": {
+    "enabled": true,
+    "min_jackpot_vnd": 2500000000,
+    "side_total_vnd": 100000,
+    "bet_step_vnd": 10000,
+    "daily_bet_cap_vnd": 892000,
+    "assign_strategy": 2
+  }
+}

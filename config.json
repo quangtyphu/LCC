@@ -1,9 +1,15 @@
 {
-  "ASSIGN_STRATEGY": 9,
+  "LC79_DEPOSIT": {
+    "handler_port": 5000,
+    "callback_url": "http://127.0.0.1:5000/callback",
+    "third_party_url": "http://127.0.0.1:8888/api/deposit"
+  },
+  "ASSIGN_STRATEGY": 8,
   "JACKPOT_NIGHT_EXTEND": {
     "ENABLED": 1,
     "CACHE_SECONDS": 300,
-    "JACKPOT_THRESHOLD": 300000000,
+    "JACKPOT_THRESHOLD": 200000000,
+    "POST_JACKPOT_EXTRA_ROUNDS": 5,
     "PERIODIC_CHECK_ENABLED": 0,
     "PERIODIC_CHECK_SECONDS": 300
   },
@@ -20,7 +26,7 @@
   "AUTO_DEPOSIT_OUTSIDE_V2_V3": 1,
   "PERIODIC_OUTSIDE_DEPOSIT": 1,
   "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 10,
-  "WITHDRAW_THRESHOLD_MIN": 510000,
+  "WITHDRAW_THRESHOLD_MIN": 310000,
   "WITHDRAW_THRESHOLD_MIN_V1": 1200000,
   "ALL_IN_IF_REMAIN_LT_10K": 1,
   "PLAYER_COUNT": 8,
@@ -32,11 +38,10 @@
     {"start": "07:30", "end": "08:30", "PRIORITY_USERS": [], "BET_RANGE": {"START": 20, "STOP": 81, "STEP": 10}},
     {"start": "08:30", "end": "10:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 20, "STOP": 151, "STEP": 10}},
     {"start": "10:00", "end": "20:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 20, "STOP": 201, "STEP": 10}},
-    {"start": "20:00", "end": "21:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 251, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 10},
+    {"start": "20:00", "end": "21:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 251, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 12},
     {"start": "21:00", "end": "22:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 251, "STEP": 10}},
-    {"start": "22:00", "end": "23:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 301, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 10},
-    {"start": "23:00", "end": "23:30", "PRIORITY_USERS": [], "BET_RANGE": {"START": 100, "STOP": 301, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 10},
-    {"start": "23:30", "end": "23:59", "PRIORITY_USERS": [], "BET_RANGE": {"START": 100, "STOP": 301, "STEP": 10}}
+    {"start": "22:00", "end": "23:00", "PRIORITY_USERS": [], "BET_RANGE": {"START": 50, "STOP": 301, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 12},
+    {"start": "23:00", "end": "23:59", "PRIORITY_USERS": [], "BET_RANGE": {"START": 100, "STOP": 301, "STEP": 10}, "MAX_ACTIVE_USERS_OUTSIDE_V2_V3": 12}
   ],
   "STRATEGY_7": {
     "TARGET_SUM": 320000

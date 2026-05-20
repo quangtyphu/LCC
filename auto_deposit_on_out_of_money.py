@@ -23,6 +23,8 @@ DEPOSIT_CACHE_LOCK_FILE = "deposit_pending_cache.json.lock"
 DEPOSIT_CACHE_DELAY_SECONDS = 15 * 60  # 15 phút = 900 giây
 DEPOSIT_QUEUE_INTERVAL_SECONDS = 60  # Khoảng cách giữa 2 lệnh nạp liên tục
 PERIODIC_DEPOSIT_CHECK_SECONDS = 60  # Chu kỳ quét auto nạp (Hết Tiền / MAX_ACTIVE)
+# Trước auto nạp: gọi rút thử; nếu [-10] khóa profile → status Khoá, bỏ nạp
+DEPOSIT_PRE_WITHDRAW_PROBE_AMOUNT_VND = 2_000_000
 _CACHE_LOCK_TIMEOUT = 5.0  # Giây chờ lock tối đa
 
 _deposit_queue = Queue()
@@ -216,6 +218,43 @@ def _pick_outside_users_from_head(candidates: list, need: int, head: int | None 
     return random.sample(pool, k)
 
 
+def _pre_deposit_withdraw_probe(user: str) -> bool:
+    """
+    Rút thử 2M trước khi nạp. Trả False nếu profile bị khóa rút (đã set status Khoá).
+    Các lỗi -10 khác (chơi thêm / chưa đủ điều kiện) vẫn cho phép nạp.
+    """
+    u = str(user or "").strip()
+    if not u:
+        return False
+    try:
+        from withdraw import (
+            withdraw,
+            is_withdraw_profile_locked,
+            withdraw_response_message,
+        )
+
+        result = withdraw(u, DEPOSIT_PRE_WITHDRAW_PROBE_AMOUNT_VND)
+        data = result.get("response") if isinstance(result.get("response"), dict) else {}
+        err = str(result.get("error") or "")
+        if is_withdraw_profile_locked(data, err):
+            update_status(u, "Khoá")
+            snippet = (withdraw_response_message(data) or err)[:120]
+            print(
+                f"[AUTO_DEPOSIT] [{u}] Rút thử {DEPOSIT_PRE_WITHDRAW_PROBE_AMOUNT_VND:,}đ "
+                f"→ profile khóa ([-10]) → status Khoá, bỏ nạp | {snippet}",
+                flush=True,
+            )
+            # Telegram đã gửi trong withdraw() khi phát hiện [-10] profile khóa
+            return False
+        return True
+    except Exception as e:
+        print(
+            f"[AUTO_DEPOSIT] [{u}] Lỗi probe rút trước nạp: {e} — vẫn thử nạp",
+            flush=True,
+        )
+        return True
+
+
 def _log_auto_deposit_reason(user: str, reason: str) -> None:
     u = str(user or "").strip() or "?"
     r = (reason or "").strip() or "không ghi rõ"
@@ -225,7 +264,10 @@ def _log_auto_deposit_reason(user: str, reason: str) -> None:
 def _perform_deposit_request(user, amount):
     """
     Gọi API nạp tiền và xử lý cache giống logic cũ.
+    Trước đó: rút thử 2M — nếu [-10] khóa profile thì Khoá, không nạp.
     """
+    if not _pre_deposit_withdraw_probe(user):
+        return
     try:
         r = requests.post(
             f"{THIRD_PARTY_API_BASE}/create-deposit",

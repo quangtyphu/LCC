@@ -23,3 +23,8 @@ tai_xiu_skew_stats.json.tmp
 
 # Khóa 1 user / 1 tiến trình ws_slot_client
 slot_client_locks/
+
+# XOSO66 session (cookie/token — không commit)
+xoso66_standalone/xoso66_sessions.json
+xoso66_standalone/xoso66_config.json
+xoso66_standalone/data/

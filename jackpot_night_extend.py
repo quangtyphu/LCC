@@ -2,7 +2,7 @@
 # - ENABLED: cả ngày — ngoài PAUSE chỉ cược khi TxMini > JACKPOT_THRESHOLD; CACHE_SECONDS giới hạn tần suất API;
 #   trong PAUSE của TIME_WINDOWS luôn nghỉ (không overlay template).
 # - PERIODIC_CHECK_ENABLED: (tuỳ chọn) cổng jackpot + overlay PAUSE theo template khi ENABLED tắt; interval PERIODIC_CHECK_SECONDS.
-# - Nổ hũ 111/666 → dừng cược tới khi TxMini lại > ngưỡng.
+# - Nổ hũ 111/666 → dừng cược tới khi TxMini lại > ngưỡng (trừ POST_JACKPOT_EXTRA_ROUNDS grace).
 from __future__ import annotations
 
 import json
@@ -46,6 +46,32 @@ def _jackpot_gate_enabled(j: dict) -> bool:
     return bool(j.get("ENABLED")) or bool(j.get("PERIODIC_CHECK_ENABLED"))
 
 
+def _post_jackpot_extra_rounds(j: dict) -> int:
+    """Số phiên được cược thêm sau nổ hũ (0 = tắt grace)."""
+    try:
+        return max(0, int(j.get("POST_JACKPOT_EXTRA_ROUNDS", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _grace_rounds_left(st: dict) -> int:
+    try:
+        return max(0, int(st.get("post_jackpot_rounds_left") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def post_jackpot_grace_active(cfg: dict | None = None) -> bool:
+    if cfg is None:
+        from constants import load_config
+
+        cfg = load_config()
+    j = _default_jcfg(cfg)
+    if _post_jackpot_extra_rounds(j) <= 0:
+        return False
+    return _grace_rounds_left(read_state()) > 0
+
+
 def _state_defaults() -> dict[str, Any]:
     return {
         "last_check_date": None,
@@ -58,6 +84,8 @@ def _state_defaults() -> dict[str, Any]:
         "last_check_error": None,
         "last_periodic_txmini": None,
         "last_periodic_error": None,
+        "post_jackpot_rounds_left": 0,
+        "post_jackpot_last_session_id": None,
     }
 
 
@@ -84,15 +112,64 @@ def write_state(st: dict[str, Any]) -> None:
         print(f"⚠️ [jackpot_night_extend] Ghi state lỗi: {e}", flush=True)
 
 
-def cancel_extend_on_jackpot_hit() -> None:
+def cancel_extend_on_jackpot_hit(cfg: dict | None = None) -> None:
     """Gọi khi 111/666: jackpot về ~0 → dừng cược tới khi TxMini lại > ngưỡng."""
+    if cfg is None:
+        from constants import load_config
+
+        cfg = load_config()
+    j = _default_jcfg(cfg)
+    extra = _post_jackpot_extra_rounds(j)
+
     st = read_state()
     st["extend_until"] = None
     st["periodic_extend_until"] = None
     st["periodic_bet_allowed"] = False
     st["cancelled"] = True
+    st["post_jackpot_last_session_id"] = None
+    if extra > 0:
+        st["post_jackpot_rounds_left"] = extra
+        write_state(st)
+        print(
+            f"🎰 [jackpot_night_extend] Nổ hũ → dừng theo ngưỡng hũ; grace {extra} phiên cược thêm.",
+            flush=True,
+        )
+    else:
+        st["post_jackpot_rounds_left"] = 0
+        write_state(st)
+        print("🎰 [jackpot_night_extend] Nổ hũ → dừng cược theo ngưỡng jackpot.", flush=True)
+
+
+def consume_post_jackpot_round(session_id: Any, cfg: dict | None = None) -> None:
+    """
+    Gọi một lần mỗi new-session (ws_events). Trừ grace nếu đang còn phiên grace.
+    """
+    if session_id is None:
+        return
+    if cfg is None:
+        from constants import load_config
+
+        cfg = load_config()
+    j = _default_jcfg(cfg)
+    if _post_jackpot_extra_rounds(j) <= 0:
+        return
+
+    sid = str(session_id)
+    st = read_state()
+    left = _grace_rounds_left(st)
+    if left <= 0:
+        return
+    if st.get("post_jackpot_last_session_id") == sid:
+        return
+
+    st["post_jackpot_last_session_id"] = sid
+    st["post_jackpot_rounds_left"] = left - 1
     write_state(st)
-    print("🎰 [jackpot_night_extend] Nổ hũ → dừng cược theo ngưỡng jackpot.", flush=True)
+    remaining = st["post_jackpot_rounds_left"]
+    print(
+        f"🎰 [jackpot_night_extend] Grace phiên {sid}: còn {remaining} phiên sau nổ hũ.",
+        flush=True,
+    )
 
 
 def _find_template_window(cfg: dict, start: str, end: str) -> dict | None:
@@ -228,6 +305,9 @@ def refresh_jackpot_cache(cfg: dict | None = None, *, force: bool = False) -> bo
             st["periodic_bet_allowed"] = True
             st["periodic_extend_until"] = None
             st["cancelled"] = False
+            if _grace_rounds_left(st) > 0:
+                st["post_jackpot_rounds_left"] = 0
+                st["post_jackpot_last_session_id"] = None
             if force or not prev_allowed:
                 mode = "ENABLED" if bool(j.get("ENABLED")) else "periodic"
                 print(
@@ -268,6 +348,8 @@ def jackpot_periodic_gate_allows_betting(cfg: dict) -> bool:
         return True
     refresh_jackpot_cache(cfg, force=False)
     st = read_state()
+    if _grace_rounds_left(st) > 0:
+        return True
     if st.get("cancelled"):
         return False
     if bool(st.get("periodic_bet_allowed")):

@@ -1,0 +1,22 @@
+﻿{
+  "ok": false,
+  "account_id": "acc1",
+  "amount": 50000,
+  "pay_url": null,
+  "trade_no": null,
+  "order_no": null,
+  "deposit_raw": {
+    "code": 1,
+    "msg": "Ho├án tß║Ñt",
+    "time": 1778954988,
+    "v": null,
+    "data": {
+      "action": "jump",
+      "money": 50000,
+      "img": "",
+      "link": "https://timepay.timepay003.com/bank_transfer.html?621bed825f829cf4dd2bd894d66cf00490b5006745579ad5226964f99b81fc1f",
+      "info": []
+    }
+  },
+  "error": "Response kh├┤ng c├│ pay_url/trade_no ΓÇö kiß╗âm tra decrypt / payload"
+}

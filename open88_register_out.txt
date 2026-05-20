@@ -1,0 +1,37 @@
+﻿=== captcha probe ===
+{
+  "success": true,
+  "value": "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"
+}
+
+=== register attempt ===
+username=quangbd81jmnd password=Abc902508 phone=0971462825
+{
+  "http_status": 400,
+  "headers": {
+    "Date": "Tue, 19 May 2026 05:21:38 GMT",
+    "Content-Type": "application/json; charset=UTF-8",
+    "Content-Length": "134",
+    "Connection": "keep-alive",
+    "Nel": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}",
+    "X-Error-Code": "encryption.required",
+    "X-App-Trace-ID": "5f0jhwv632",
+    "X-Robots-Tag": "noindex,nofollow",
+    "X-Module-ID": "REG3",
+    "X-Elapsed-Time": "6",
+    "Server": "cloudflare",
+    "Content-Security-Policy": "default-src 'self' 'unsafe-inline' data: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; connect-src 'self' data: https: wss:; worker-src 'self' blob: https:; img-src 'self' data: blob: https:; frame-src 'self' https: kbzpay: wavepay: gcash:; font-src 'self' https: data:; object-src 'none'; base-uri 'self';",
+    "cf-cache-status": "DYNAMIC",
+    "Strict-Transport-Security": "max-age=0",
+    "X-Content-Type-Options": "nosniff",
+    "Report-To": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=QGUHWcy0%2Bf98yrozyzUcrIp9H91ioelQOUXfrPEjHso7U5K4RC6EQEuCHxHAQJGSSEIpbtdRSN7KXgJLcTaXO0mG0YnLhs2yd%2BRj2u%2FWurs0H4Vvo5lQ0mkgfpIHzC4rt7HQ\"}]}",
+    "CF-RAY": "9fe0a8c75f6081bf-SIN"
+  },
+  "json": {
+    "success": false,
+    "errorCode": "encryption.required",
+    "message": "─É─âng nhß║¡p thß║Ñt bß║íi, vui l├▓ng ─æ─âng nhß║¡p lß║íi (#573-5f0jh)"
+  }
+}
+
+Ch╞░a th├ánh c├┤ng: encryption.required

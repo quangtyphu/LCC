@@ -1,0 +1,19 @@
+{
+  "base_url": "https://v100.pgsoft.gold",
+  "game_slug": "wild-bounty-sd",
+  "atk": "PASTE_ATK_FROM_BROWSER",
+  "cookies": {
+    "__cf_bm": "PASTE_FROM_BROWSER",
+    "think_var": "vi-vn"
+  },
+  "referer": "https://v100.pgsoft.gold/135/index.html?ot=YOUR_OT_TOKEN&l=vi&btt=1&ops=1",
+  "cs": 0.02,
+  "ml": 1,
+  "sn": 1,
+  "wk": "0_C",
+  "fb": false,
+  "btt": 1,
+  "pf": 1,
+  "delay_seconds": 5,
+  "max_rounds": 0
+}

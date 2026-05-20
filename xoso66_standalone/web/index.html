@@ -1,0 +1,2073 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>XOSO66 — Quản lý tài khoản</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 16px; background: #f5f6fa; }
+    h2 { color: #2c3e50; margin-top: 24px; }
+    .form-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .form-grid input, .form-grid select {
+      padding: 8px; border: 1px solid #ccc; border-radius: 4px; min-width: 160px;
+    }
+    .btn {
+      padding: 8px 14px; border: none; border-radius: 4px; color: #fff; cursor: pointer; margin-right: 6px;
+    }
+    .btn-primary { background: #27ae60; }
+    .btn-primary:hover { background: #219150; }
+    .btn-blue { background: #3498db; }
+    .btn-blue:hover { background: #2980b9; }
+    .btn-gray { background: #7f8c8d; }
+    .btn-danger { background: #e74c3c; }
+    .btn-deposit { background: #16a085; font-size: 12px; padding: 6px 10px; }
+    .btn-withdraw { background: #e67e22; font-size: 12px; padding: 6px 10px; }
+    .btn-balance { background: #8e44ad; font-size: 12px; padding: 6px 10px; }
+    .btn-balance:hover { background: #7d3c98; }
+    .btn-balance:disabled { opacity: 0.55; cursor: wait; }
+    .btn-sm { font-size: 12px; padding: 6px 10px; }
+    td .cell-actions {
+      display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; align-items: center;
+    }
+    .inline-input {
+      width: 100%; max-width: 100%; box-sizing: border-box;
+      padding: 0; margin: 0; border: none; border-radius: 0; background: transparent;
+      font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      outline: none; box-shadow: none; appearance: none; -webkit-appearance: none;
+    }
+    .inline-input.field-device {
+      color: #2980b9; font-weight: 600;
+      border-bottom: 1px dashed #5dade2;
+    }
+    .inline-input.field-proxy { color: #222; border-bottom: none; }
+    .inline-input:focus { background: rgba(41, 128, 185, 0.06); }
+    .inline-input.field-device:focus { border-bottom-color: #2980b9; }
+    .inline-input.saving { opacity: 0.55; }
+    .inline-input.saved.field-device { color: #1e8449; border-bottom-color: #27ae60; }
+    .inline-input.saved.field-proxy { color: #1e8449; }
+    .inline-input.error { color: #c0392b !important; border-bottom-color: #e74c3c !important; }
+    select.status-select {
+      width: 100%; max-width: 118px; box-sizing: border-box;
+      padding: 4px 2px; border: 1px solid #d5d8dc; border-radius: 4px;
+      font-size: 12px; background: #fff; cursor: pointer;
+    }
+    /* Màu dropdown trạng thái — giống menu LC79 */
+    select.status-select.playing { background: #2ecc71; color: #fff; font-weight: bold; border-color: #27ae60; }
+    select.status-select.status-du-ngay { background: #9b59b6; color: #fff; font-weight: bold; border-color: #8e44ad; }
+    select.status-select.done { background: #e74c3c; color: #fff; font-weight: bold; border-color: #c0392b; }
+    select.status-select.saving { opacity: 0.55; }
+    select.status-select.saved { outline: 2px solid #f1c40f; }
+    select.status-select.error { border-color: #e74c3c; background: #fdecea !important; color: #c0392b !important; }
+    /* Nền dòng theo trạng thái — giống getRowColor LC79 */
+    #tbl tbody tr.row-status-dang-choi { background: #b3ffcc; }
+    #tbl tbody tr.row-status-du-ngay { background: #e6ccff; }
+    #tbl tbody tr.row-status-het-tien { background: #ffb3b3; }
+    #tbl tbody tr.row-status-dang-choi:hover { background: #99f0b8; }
+    #tbl tbody tr.row-status-du-ngay:hover { background: #d9b3ff; }
+    #tbl tbody tr.row-status-het-tien:hover { background: #ff9999; }
+    #tbl tfoot tr.tbl-totals-row { background: #34495e; color: #fff; font-weight: 700; }
+    #tbl tfoot tr.tbl-totals-row td { border-color: #2c3e50; }
+    #tbl tfoot .tbl-total-bet { font-size: 15px; color: #f1c40f; }
+    #tbl tfoot .tbl-total-bal { font-size: 15px; color: #2ecc71; }
+    #tbl tfoot .tbl-total-dep { font-size: 14px; color: #3498db; }
+    #tbl tfoot .tbl-total-wd { font-size: 14px; color: #e67e22; }
+    #tbl tfoot .tbl-total-profit { font-size: 15px; font-weight: 700; }
+    #tbl tfoot .tbl-total-profit.profit-pos { color: #2ecc71; }
+    #tbl tfoot .tbl-total-profit.profit-neg { color: #e74c3c; }
+    td.td-profit.profit-pos { color: #27ae60; font-weight: 600; }
+    td.td-profit.profit-neg { color: #c0392b; font-weight: 600; }
+    td.td-dep { color: #2980b9; }
+    td.td-wd { color: #d35400; }
+    .acc-list-totals .tot-dep { color: #5dade2; font-weight: 700; font-size: 16px; }
+    .acc-list-totals .tot-wd { color: #f39c12; font-weight: 700; font-size: 16px; }
+    .acc-list-totals .tot-profit { font-weight: 700; font-size: 16px; }
+    .acc-list-totals .tot-profit.profit-pos { color: #2ecc71; }
+    .acc-list-totals .tot-profit.profit-neg { color: #e74c3c; }
+    .acc-list-totals {
+      display: flex; flex-wrap: wrap; gap: 16px 28px; align-items: center;
+      margin: 0 0 10px 0; padding: 10px 14px;
+      background: #34495e; color: #fff; border-radius: 6px; font-size: 14px;
+    }
+    .acc-list-totals .tot-label { color: #bdc3c7; font-weight: normal; margin-right: 6px; }
+    .acc-list-totals .tot-bal { color: #2ecc71; font-weight: 700; font-size: 16px; }
+    .acc-list-totals .tot-bet { color: #f1c40f; font-weight: 700; font-size: 16px; }
+    .acc-list-totals .tot-count { color: #ecf0f1; font-size: 13px; }
+    #btnRefreshStatus {
+      position: fixed;
+      top: 20px;
+      right: 30px;
+      z-index: 9999;
+      width: 160px;
+      padding: 10px;
+      font-size: 16px;
+      border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+    #btnRefreshStatus:disabled { opacity: 0.6; cursor: wait; }
+    body.page-payments #btnRefreshStatus { background: #2980b9; }
+    body.page-payments #btnRefreshStatus:hover { background: #2471a3; }
+    th.th-proxy, td.td-proxy { width: 100px; max-width: 100px; padding: 6px 4px; }
+    th.th-device, td.td-device { width: 56px; max-width: 56px; padding: 6px 4px; }
+    th.th-mission, td.td-mission { min-width: 88px; font-size: 12px; }
+    th.th-mini, td.td-mini { min-width: 220px; font-size: 12px; text-align: left; }
+    .mini-cell-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+    button.mini-day.mini-check {
+      cursor: pointer;
+      font: inherit;
+      margin: 0;
+      vertical-align: top;
+    }
+    .mini-day.mini-check {
+      background: #ebdef0;
+      border-color: #8e44ad;
+      color: #6c3483;
+    }
+    .mini-day.mini-check:hover:not(:disabled) { background: #d7bde2; }
+    .mini-day.mini-check:disabled { opacity: 0.5; cursor: wait; }
+    .mission-daily { font-weight: 600; }
+    .mission-daily.st-0 { color: #7f8c8d; }
+    .mission-daily.st-1 { color: #e67e22; }
+    .mission-daily.st-2 { color: #27ae60; }
+    .mission-daily-sub { font-size: 11px; color: #666; font-weight: normal; }
+    th.th-vip, td.td-vip { width: 96px; max-width: 108px; font-size: 12px; padding: 6px 4px; vertical-align: middle; }
+    .vip-cell-wrap {
+      display: flex; flex-direction: row; flex-wrap: nowrap; gap: 4px;
+      align-items: center; justify-content: center;
+    }
+    button.vip-box.vip-lv {
+      flex: 0 0 auto;
+      box-sizing: border-box;
+      min-width: 0;
+      padding: 6px 8px;
+      border-radius: 4px;
+      border: 1px solid #5dade2;
+      background: #eaf2f8;
+      color: #1a5276;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.2;
+      text-align: center;
+      cursor: pointer;
+      font-family: inherit;
+      display: inline-flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      white-space: nowrap;
+    }
+    button.vip-box.vip-lv .vip-lv-txt { font-size: 12px; line-height: 1.2; }
+    button.vip-box.vip-lv .vip-lv-pct { font-size: 12px; font-weight: 700; line-height: 1.2; color: #2874a6; }
+    button.vip-box.vip-lv:hover:not(:disabled) { background: #d4e6f1; }
+    button.vip-box.vip-lv:disabled { opacity: 0.55; cursor: wait; }
+    .vip-dot {
+      flex: 0 0 auto; width: 14px; height: 14px; border-radius: 50%;
+      border: 1px solid rgba(0,0,0,0.12); box-sizing: border-box;
+    }
+    .vip-dot.st-0 { background: #95a5a6; }
+    .vip-dot.st-1 { background: #e67e22; }
+    .vip-dot.st-2 { background: #27ae60; }
+    .vip-dot.st-3 { background: #8e44ad; }
+    .vip-dot.st-none { background: #dfe6e9; border-color: #bdc3c7; }
+    .mini-head { font-weight: 600; margin-bottom: 4px; color: #2c3e50; }
+    .mini-days { display: flex; flex-wrap: wrap; gap: 3px; justify-content: flex-start; }
+    .mini-day {
+      display: inline-flex; flex-direction: column; align-items: center;
+      min-width: 26px; padding: 2px 3px; border-radius: 4px; font-size: 10px; line-height: 1.1;
+      border: 1px solid #ddd; background: #f4f6f7;
+    }
+    .mini-day.mini-done { background: #d5f5e3; border-color: #27ae60; color: #1e8449; }
+    .mini-day.mini-claim { background: #fdebd0; border-color: #e67e22; color: #d35400; font-weight: 700; }
+    .mini-day.mini-pending { background: #f8f9fa; color: #95a5a6; }
+    .mini-day.mini-none { background: #fff; color: #bdc3c7; }
+    .mini-day.current { outline: 2px solid #8e44ad; outline-offset: 1px; }
+    .mini-day-num { font-size: 9px; color: #666; }
+    .mini-day-icon { font-size: 12px; }
+    #logBox {
+      background: #1e272e; color: #dfe6e9; padding: 10px; border-radius: 4px;
+      font-size: 12px; max-height: 200px; overflow: auto; white-space: pre-wrap; margin-bottom: 16px;
+    }
+    table { width: 100%; border-collapse: collapse; background: #fff; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: center; font-size: 13px; }
+    th { background: #8e44ad; color: #fff; }
+    tr:hover { background: #f9f0ff; }
+    .hint { color: #666; font-size: 13px; margin-bottom: 8px; }
+    #qrModalOverlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center; z-index: 9999;
+    }
+    #qrModalOverlay .qr-modal-box {
+      background: #fff; padding: 28px; border-radius: 15px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.3); max-width: 480px; width: 92%;
+      text-align: center; max-height: 90vh; overflow-y: auto;
+    }
+    #qrModalOverlay h2 { margin-top: 0; color: #2ecc71; font-size: 20px; }
+    #qrModalOverlay .qr-info {
+      background: #f8f9fa; padding: 16px; border-radius: 10px; margin: 16px 0; text-align: left;
+    }
+    #qrModalOverlay .qr-info p { margin: 8px 0; font-size: 14px; }
+    #qrModalOverlay .qr-img {
+      max-width: 300px; width: 100%; border: 2px solid #ddd; border-radius: 8px;
+    }
+    #qrModalOverlay .btn-close-modal {
+      width: 100%; padding: 12px; font-size: 16px; background: #3498db; color: #fff;
+      border: none; border-radius: 8px; cursor: pointer; font-weight: bold; margin-top: 12px;
+    }
+    .cms-nav {
+      display: flex; gap: 8px; margin: 12px 0 20px; flex-wrap: wrap;
+    }
+    .cms-nav .nav-btn {
+      padding: 10px 20px; border: 2px solid #8e44ad; border-radius: 6px;
+      background: #fff; color: #8e44ad; font-weight: 600; cursor: pointer; font-size: 14px;
+    }
+    .cms-nav .nav-btn.active {
+      background: #8e44ad; color: #fff;
+    }
+    .page-panel { display: none; }
+    .page-panel.active { display: block; }
+    .pay-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+    .pay-tabs .tab-btn {
+      padding: 8px 14px; border: 1px solid #8e44ad; border-radius: 4px;
+      background: #fff; color: #8e44ad; cursor: pointer; font-size: 13px;
+    }
+    .pay-tabs .tab-btn.active { background: #8e44ad; color: #fff; }
+    #payTbl th { font-size: 12px; }
+    #payTbl td { font-size: 12px; }
+    .st-ok { color: #27ae60; font-weight: 600; }
+    .st-pending { color: #e67e22; font-weight: 600; }
+    .st-fail { color: #e74c3c; font-weight: 600; }
+    .type-dep { color: #16a085; font-weight: 600; }
+    .type-wd { color: #e67e22; font-weight: 600; }
+    #paySummary { font-size: 13px; color: #555; margin: 8px 0; }
+    .pay-page-header {
+      display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start;
+      justify-content: space-between; margin-bottom: 12px;
+    }
+    .pay-page-header .pay-header-left { flex: 1; min-width: 280px; }
+    .pay-stats {
+      display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr));
+      gap: 10px; min-width: 300px; max-width: 420px;
+      background: #fff; border: 2px solid #e67e22; border-radius: 8px;
+      padding: 12px 14px; box-shadow: 0 2px 8px rgba(230, 126, 34, 0.15);
+    }
+    .pay-stats .pay-stat-label { font-size: 11px; color: #7f8c8d; text-transform: uppercase; }
+    .pay-stats .pay-stat-value { font-size: 17px; font-weight: 700; color: #2c3e50; margin-top: 2px; }
+    .pay-stats .pay-stat-value.dep { color: #16a085; }
+    .pay-stats .pay-stat-value.wd { color: #e67e22; }
+    .pay-stats .pay-stat-value.bal { color: #2980b9; }
+    .pay-stats .pay-stat-value.profit-pos { color: #27ae60; }
+    .pay-stats .pay-stat-value.profit-neg { color: #e74c3c; }
+    .pay-stats .pay-stat-scope { grid-column: 1 / -1; font-size: 11px; color: #8e44ad; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <h1>XOSO66 CMS <span style="font-size:14px;font-weight:normal;color:#8e44ad">· Tài khoản · Nạp/Rút</span></h1>
+  <p class="hint">
+    Chạy <code>python main.py</code> trong <b>xoso66_standalone</b>.
+    Có thể mở trực tiếp <code>http://127.0.0.1:8799/</code> hoặc từ menu <b>CMS → XOSO66</b> (cùng một trang này).
+    Đăng ký site: bắt buộc <b>proxy</b> host:port:user:pass.
+  </p>
+  <p class="hint" id="connStatus">Đang kiểm tra kết nối…</p>
+  <div id="logBox"></div>
+
+  <nav class="cms-nav" aria-label="Menu CMS">
+    <button type="button" class="nav-btn active" data-page="accounts">Tài khoản</button>
+    <button type="button" class="nav-btn" data-page="payments">Nạp / Rút</button>
+  </nav>
+
+  <button type="button" id="btnRefreshStatus" class="btn btn-blue" title="Tải lại danh sách từ DB (không gọi site)">
+    🔄 Refresh
+  </button>
+
+  <div id="pageAccounts" class="page-panel active">
+
+  <h2 id="formTitle">Thêm / đăng ký tài khoản</h2>
+  <form id="accForm">
+    <div class="form-grid">
+      <input type="text" id="username" placeholder="Username *" required>
+      <input type="text" id="password" placeholder="Mật khẩu đăng nhập *" value="Valentine1" required>
+      <input type="text" id="phone" placeholder="SĐT 10 số *" required maxlength="10">
+      <input type="text" id="account_holder" placeholder="Tên đăng ký *" required>
+      <input type="text" id="proxy" placeholder="Proxy host:port:user:pass *" required style="min-width:280px">
+    </div>
+    <div class="form-grid">
+      <input type="text" id="fund_password" placeholder="MK rút 6 số" value="270288">
+      <select id="bank">
+        <option value="">-- Ngân hàng --</option>
+        <option value="MSB">MSB</option>
+        <option value="VPB">VPBank</option>
+        <option value="VIB">VIB</option>
+      </select>
+      <input type="text" id="account_number" placeholder="Số TK NH">
+      <input type="text" id="device" placeholder="Thiết bị">
+      <input type="text" id="vip_level" placeholder="VIP">
+      <select id="status" title="Trạng thái CMS — đổi trực tiếp trên bảng danh sách">
+        <option value="new">new</option>
+        <option value="fund_password_ok">fund_password_ok</option>
+        <option value="bank_linked">bank_linked</option>
+        <option value="Đang Chơi">Đang Chơi</option>
+        <option value="Đủ ngày">Đủ ngày</option>
+        <option value="Hết Tiền">Hết Tiền</option>
+      </select>
+    </div>
+    <button type="button" class="btn btn-blue" id="btnProvision">Đăng ký trên XOSO66</button>
+    <button type="submit" class="btn btn-primary" id="btnSave">Chỉ lưu DB (không đăng ký)</button>
+    <button type="button" class="btn btn-gray" id="btnReset">Reset form</button>
+  </form>
+
+  <h2>Đăng ký theo file (hàng loạt)</h2>
+  <p class="hint">
+    File CSV/TXT: <code>username,password,phone,account_holder,proxy,fund_password,bank,account_number,device</code>
+    (có header hoặc không). Dòng <code>#</code> bỏ qua. Ô trống lấy mặc định từ form (MK đăng nhập / MK rút).
+    <a href="/bulk_register.example.csv" download>mẫu CSV</a>
+  </p>
+  <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+    <input type="file" id="bulkFile" accept=".csv,.txt,.tsv,text/csv,text/plain">
+    <label style="font-size:13px;">Giãn cách (giây):
+      <input type="number" id="bulkDelay" value="5" min="0" max="120" style="width:56px;padding:6px;">
+    </label>
+    <label style="font-size:13px;"><input type="checkbox" id="bulkStopOnError"> Dừng hẳn khi lỗi (mặc định: bỏ qua, chạy acc sau)</label>
+    <button type="button" class="btn btn-blue" id="btnBulkPreview">Xem trước</button>
+    <button type="button" class="btn btn-primary" id="btnBulkRun">Đăng ký hàng loạt</button>
+    <button type="button" class="btn btn-danger" id="btnBulkCancel" style="display:none;">Dừng</button>
+  </div>
+  <p class="hint" id="bulkSummary">Chưa chọn file.</p>
+
+  <h2>Danh sách</h2>
+  <div class="acc-list-totals" id="accListTotals" aria-live="polite">
+    <span><span class="tot-label">Tổng số dư:</span> <span class="tot-bal" id="accTotalBalance">0</span></span>
+    <span><span class="tot-label">Tổng nạp:</span> <span class="tot-dep" id="accTotalDeposit">0</span></span>
+    <span><span class="tot-label">Tổng rút:</span> <span class="tot-wd" id="accTotalWithdraw">0</span></span>
+    <span><span class="tot-label">Lợi nhuận:</span> <span class="tot-profit" id="accTotalProfit">0</span></span>
+    <span><span class="tot-label">Tổng cược ngày:</span> <span class="tot-bet" id="accTotalDailyBet">0</span></span>
+    <span class="tot-count" id="accTotalCount">0 tài khoản</span>
+  </div>
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th>STT</th><th>Username</th><th>Phone</th><th>Tên ĐK</th><th>Status</th>
+        <th>Số dư</th><th>Tổng nạp</th><th>Tổng rút</th><th title="Tổng rút + số dư − tổng nạp">Lợi nhuận</th><th>Tổng cược ngày</th>
+        <th class="th-mission" title="Điểm danh mỗi ngày — level 161">161</th>
+        <th class="th-mini" title="MINI GAME điểm danh 7 ngày">MINI GAME</th>
+        <th class="th-device">Thiết Bị</th><th class="th-proxy">Proxy</th><th>Bank</th><th>STK</th>
+        <th class="th-vip" title="VIP · thưởng tuần · thưởng tháng (account_vip)">VIP</th>
+        <th>Nạp / Rút</th><th>Check</th><th>Sửa / Xóa</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+    <tfoot>
+      <tr class="tbl-totals-row">
+        <td colspan="5" style="text-align:right">Tổng</td>
+        <td id="tblTotalBalance" class="tbl-total-bal" title="Tổng số dư mọi acc">0</td>
+        <td id="tblTotalDeposit" class="tbl-total-dep" title="Tổng nạp Hoàn tất">0</td>
+        <td id="tblTotalWithdraw" class="tbl-total-wd" title="Tổng rút Hoàn tất">0</td>
+        <td id="tblTotalProfit" class="tbl-total-profit" title="Tổng rút + số dư − tổng nạp">0</td>
+        <td id="tblTotalDailyBet" class="tbl-total-bet" title="Tổng cược hôm nay (giờ VN)">0</td>
+        <td colspan="10"></td>
+      </tr>
+    </tfoot>
+  </table>
+
+  </div><!-- /pageAccounts -->
+
+  <div id="pagePayments" class="page-panel">
+    <div class="pay-page-header">
+      <div class="pay-header-left">
+        <h2 style="margin-top:0">Quản lý Nạp / Rút</h2>
+        <p class="hint" style="margin-bottom:0">
+          Lịch sử từ <code>paymentorderlist</code> (đã lưu DB). <b>Đồng bộ site</b> kéo mới qua proxy.
+          <b>Check rút</b> gọi API site và cập nhật trạng thái Hoàn tất.
+        </p>
+      </div>
+      <div class="pay-stats" id="payStats">
+        <div class="pay-stat-scope" id="payStatScope">—</div>
+        <div>
+          <div class="pay-stat-label">Tổng Nạp</div>
+          <div class="pay-stat-value dep" id="payStatDeposit">—</div>
+        </div>
+        <div>
+          <div class="pay-stat-label">Tổng Rút</div>
+          <div class="pay-stat-value wd" id="payStatWithdraw">—</div>
+        </div>
+        <div>
+          <div class="pay-stat-label">Số Dư</div>
+          <div class="pay-stat-value bal" id="payStatBalance">—</div>
+        </div>
+        <div>
+          <div class="pay-stat-label">Lợi nhuận</div>
+          <div class="pay-stat-value" id="payStatProfit">—</div>
+        </div>
+      </div>
+    </div>
+    <div class="pay-tabs">
+      <button type="button" class="tab-btn active" data-pay-tab="history">Lịch sử nạp/rút</button>
+      <button type="button" class="tab-btn" data-pay-tab="auto">Lệnh auto nạp</button>
+    </div>
+
+    <div id="payPanelHistory">
+      <div class="form-grid" style="margin-top:8px;">
+        <input type="text" id="payFilterUser" placeholder="Username / account_id">
+        <select id="payFilterType">
+          <option value="">— Loại: tất cả —</option>
+          <option value="1">Nạp tiền</option>
+          <option value="2">Rút tiền</option>
+        </select>
+        <select id="payFilterStatus">
+          <option value="">— Trạng thái site —</option>
+          <option value="1">Hoàn tất (1)</option>
+          <option value="0">Chưa hoàn tất (0)</option>
+        </select>
+        <input type="number" id="paySyncDays" value="7" min="1" max="30" style="width:72px" title="Ngày đồng bộ">
+        <button type="button" class="btn btn-blue btn-sm" id="btnPayRefresh">🔄 Refresh</button>
+        <button type="button" class="btn btn-primary btn-sm" id="btnPaySync">Đồng bộ site</button>
+        <button type="button" class="btn btn-deposit btn-sm" id="btnPayDeposit">+ Nạp</button>
+        <button type="button" class="btn btn-withdraw btn-sm" id="btnPayWithdraw">+ Rút</button>
+      </div>
+      <p id="paySummary">—</p>
+      <table id="payTbl">
+        <thead>
+          <tr>
+            <th>Thời gian</th><th>User</th><th>Loại</th><th>Số tiền</th>
+            <th>Trạng thái</th><th>Serial</th><th>Bank / TK</th><th>Thao tác</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+        <button type="button" class="btn btn-gray btn-sm" id="btnPayPrev">← Trước</button>
+        <span id="payPageInfo" style="font-size:13px;">Trang 1</span>
+        <button type="button" class="btn btn-gray btn-sm" id="btnPayNext">Sau →</button>
+      </div>
+    </div>
+
+    <div id="payPanelAuto" style="display:none;">
+      <div class="form-grid" style="margin-top:8px;">
+        <input type="text" id="depFilterUser" placeholder="Username / account_id">
+        <select id="depFilterStatus">
+          <option value="">— Trạng thái lệnh —</option>
+          <option value="Chờ Nạp">Chờ Nạp</option>
+          <option value="Thành Công">Thành Công</option>
+          <option value="Thất Bại">Thất Bại</option>
+          <option value="Huỷ">Huỷ</option>
+        </select>
+        <button type="button" class="btn btn-blue btn-sm" id="btnDepRefresh">🔄 Refresh</button>
+      </div>
+      <p id="depSummary">—</p>
+      <table id="depTbl">
+        <thead>
+          <tr>
+            <th>#</th><th>User</th><th>Số tiền</th><th>Trạng thái</th>
+            <th>Serial</th><th>Trade no</th><th>Cập nhật</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+let editId = null;
+let API_KEY = "";
+let DEFAULT_FUND_PASSWORD = "270288";
+let DEFAULT_LOGIN_PASSWORD = "Valentine1";
+
+/** Trạng thái CMS (khớp xoso66_accounts_db + bot). */
+const ACCOUNT_STATUSES = [
+  "Đang Chơi",
+  "Đủ ngày",
+  "Hết Tiền",
+  "new",
+  "fund_password_ok",
+  "bank_linked",
+];
+
+/** Thứ tự sắp xếp mặc định danh sách (giống yêu cầu menu LC79). */
+const STATUS_SORT_PRIORITY = {
+  "Đang Chơi": 1,
+  "Đủ ngày": 2,
+  "Đủ Ngày": 2,
+  "Hết Tiền": 3,
+};
+
+function statusSortKey(status) {
+  const s = String(status || "").trim();
+  return STATUS_SORT_PRIORITY[s] ?? 99;
+}
+
+function sortAccountsForList(rows) {
+  return [...rows].sort((a, b) => {
+    const pa = statusSortKey(a.status);
+    const pb = statusSortKey(b.status);
+    if (pa !== pb) return pa - pb;
+    const betDiff = dailyBetToday(b) - dailyBetToday(a);
+    if (betDiff !== 0) return betDiff;
+    return String(a.username || "").localeCompare(String(b.username || ""), "vi");
+  });
+}
+
+function statusRowClass(status) {
+  const s = String(status || "").trim();
+  if (s === "Đang Chơi") return "row-status-dang-choi";
+  if (s === "Đủ ngày" || s === "Đủ Ngày") return "row-status-du-ngay";
+  if (s === "Hết Tiền") return "row-status-het-tien";
+  return "";
+}
+
+function statusSelectClasses(status) {
+  const s = String(status || "").trim();
+  const cls = ["status-select"];
+  if (s === "Đang Chơi") cls.push("playing");
+  else if (s === "Đủ ngày" || s === "Đủ Ngày") cls.push("status-du-ngay");
+  else if (s === "Hết Tiền") cls.push("done");
+  return cls.join(" ");
+}
+
+function applyStatusSelectStyle(sel) {
+  sel.classList.remove("playing", "status-du-ngay", "done");
+  const s = String(sel.value || "").trim();
+  if (s === "Đang Chơi") sel.classList.add("playing");
+  else if (s === "Đủ ngày" || s === "Đủ Ngày") sel.classList.add("status-du-ngay");
+  else if (s === "Hết Tiền") sel.classList.add("done");
+}
+
+function log(msg) {
+  const box = document.getElementById("logBox");
+  box.textContent = new Date().toLocaleTimeString() + " — " + msg + "\n" + box.textContent;
+}
+
+function apiHeaders(extra) {
+  const h = { "Content-Type": "application/json", ...(extra || {}) };
+  if (API_KEY) h["X-API-Key"] = API_KEY;
+  return h;
+}
+
+async function apiFetch(path, options) {
+  options = options || {};
+  const headers = apiHeaders(options.headers);
+  return fetch(path, { ...options, headers });
+}
+
+async function initApi() {
+  try {
+    const r = await fetch("/api/ui-config");
+    const c = await r.json();
+    API_KEY = c.api_key || "";
+    if (c.default_fund_password) DEFAULT_FUND_PASSWORD = c.default_fund_password;
+    if (c.default_login_password) DEFAULT_LOGIN_PASSWORD = c.default_login_password;
+  } catch (_) {}
+}
+
+function setFormDefaults() {
+  document.getElementById("password").value = DEFAULT_LOGIN_PASSWORD;
+  document.getElementById("fund_password").value = DEFAULT_FUND_PASSWORD;
+}
+
+function val(id) { return document.getElementById(id).value.trim(); }
+
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function escAttr(s) {
+  return esc(s).replace(/'/g, "&#39;");
+}
+
+function todayIso() {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return d.getFullYear() + "-" + m + "-" + day;
+}
+
+function fmtVnd(n) {
+  const v = Math.round(Number(n) || 0);
+  try {
+    return v.toLocaleString("vi-VN");
+  } catch (_) {
+    return String(v);
+  }
+}
+
+function accountProfit(row) {
+  const p = Number(row.profit);
+  if (Number.isFinite(p)) return p;
+  const dep = Number(row.total_deposit) || 0;
+  const wd = Number(row.total_withdraw) || 0;
+  const bal = Number(row.balance) || 0;
+  return wd + bal - dep;
+}
+
+function fmtProfit(p) {
+  const v = Math.round(Number(p) || 0);
+  return (v >= 0 ? "+" : "") + fmtVnd(v);
+}
+
+function profitTdClass(p) {
+  const v = Number(p) || 0;
+  return "td-profit " + (v >= 0 ? "profit-pos" : "profit-neg");
+}
+
+function dailyBetToday(row) {
+  const day = String(row.daily_bet_day || "").trim();
+  if (day !== todayIso()) return 0;
+  return Number(row.daily_bet_total) || 0;
+}
+
+function renderDaily161Cell(row) {
+  const isToday = row.daily_161_is_today !== false;
+  const st = isToday ? row.daily_161_status : null;
+  const label = esc(isToday ? (row.daily_161_label || "—") : "—");
+  const bet = fmtVnd(isToday ? (row.daily_161_done_bet || 0) : 0);
+  const cls = st === null || st === undefined ? "" : " st-" + st;
+  let tip = "Chưa có dữ liệu — chạy xoso66_daily_mission_check.py";
+  if (!isToday) {
+    tip = "Đã qua ngày — 161 reset (chờ sync hôm nay)"
+      + (row.daily_161_synced_day ? " · lần cuối: " + row.daily_161_synced_day : "");
+  } else if (row.mission_synced_at) {
+    tip = "Đồng bộ: " + row.mission_synced_at + " · Cược 161: " + bet;
+  }
+  return `<div class="mission-daily${cls}" title="${escAttr(tip)}">${label}</div>`
+    + `<div class="mission-daily-sub">${bet}</div>`;
+}
+
+function vipBoxClass(status) {
+  if (status === null || status === undefined || status === "") return "st-none";
+  return "st-" + String(status);
+}
+
+function formatVipShort(level, progress) {
+  const raw = String(level || "").trim();
+  let num = "";
+  const m = raw.match(/(\d+)/);
+  if (m) num = m[1];
+  else if (raw && raw !== "—") num = raw.replace(/^VIP\s*/i, "").trim();
+  const lvTxt = num ? "V" + num : "—";
+  const pct = Math.max(0, Math.min(100, Math.round(Number(progress) || 0)));
+  return { lvTxt, pctTxt: pct > 0 ? pct + "%" : "" };
+}
+
+function renderVipCell(row) {
+  const fullLv = String(row.vip_level || "—").trim();
+  const pct = Number(row.vip_progress) || 0;
+  const short = formatVipShort(fullLv, pct);
+  const syncTip = row.vip_synced_at
+    ? "Đồng bộ: " + row.vip_synced_at
+    : "Chưa có — chạy xoso66_vip_check.py";
+  const wkSt = row.vip_weekly_status;
+  const moSt = row.vip_monthly_status;
+  const wkLbl = esc(row.vip_weekly_label || "—");
+  const moLbl = esc(row.vip_monthly_label || "—");
+  const wkPrize = fmtVnd(row.vip_weekly_prize || 0);
+  const moPrize = fmtVnd(row.vip_monthly_prize || 0);
+  const aid = escAttr(row.id || "");
+  const user = escAttr(row.username || "");
+  const btnTip = (fullLv && fullLv !== "—" ? fullLv + " · " : "")
+    + (short.pctTxt || (pct ? pct + "%" : ""))
+    + " — " + syncTip + " — Click: check + nhận VIP";
+  const labelHtml = short.pctTxt
+    ? '<span class="vip-lv-txt">' + esc(short.lvTxt) + '</span>'
+      + '<span class="vip-lv-pct">' + esc(short.pctTxt) + "</span>"
+    : '<span class="vip-lv-txt">' + esc(short.lvTxt) + "</span>";
+  return '<div class="vip-cell-wrap">'
+    + '<button type="button" class="vip-box vip-lv" data-vchk="' + aid + '" data-user="' + user + '"'
+    + ' title="' + escAttr(btnTip) + '">'
+    + labelHtml
+    + "</button>"
+    + '<span class="vip-dot ' + vipBoxClass(wkSt) + '" title="Tuần · ' + escAttr(wkLbl) + ' · ' + escAttr(wkPrize) + '"></span>'
+    + '<span class="vip-dot ' + vipBoxClass(moSt) + '" title="Tháng · ' + escAttr(moLbl) + ' · ' + escAttr(moPrize) + '"></span>'
+    + '</div>';
+}
+
+function renderMiniWeekCell(row) {
+  const head = esc(row.mini_current_label || "—");
+  const cur = Number(row.mini_current_day) || 0;
+  const days = Array.isArray(row.mini_week_days) ? row.mini_week_days : [];
+  const badges = days.map((d) => {
+    const day = Number(d.day) || 0;
+    const isCur = cur > 0 && day === cur;
+    const cls = "mini-day " + (d.css || "mini-none") + (isCur ? " current" : "");
+    const tip = "Ngày " + day + ": "
+      + (d.status === 2 ? "Đã nhận" : d.status === 1 ? "Được nhận" : d.status === 0 ? "Chưa đủ" : "—");
+    return `<span class="${cls}" title="${escAttr(tip)}">`
+      + `<span class="mini-day-num">D${day}</span>`
+      + `<span class="mini-day-icon">${esc(d.label || "—")}</span></span>`;
+  }).join("");
+  const syncTip = row.mission_synced_at ? " · " + row.mission_synced_at : "";
+  return `<div class="mini-cell-wrap">`
+    + `<div class="mini-head" title="${escAttr(head + syncTip)}">${head}</div>`
+    + `<div class="mini-days">${badges}<button type="button" class="mini-day mini-check" data-mchk="${esc(row.id || "")}" data-user="${esc(row.username || "")}" title="Check + nhận thưởng (161/MINI) nếu status=1"><span class="mini-day-num">Ck</span><span class="mini-day-icon">↻</span></button></div>`
+    + `</div>`;
+
+}
+
+async function patchAccountField(accountId, field, value, el) {
+  const prev = el.dataset.savedValue ?? "";
+  if (value === prev) return;
+  el.classList.remove("saved", "error");
+  el.classList.add("saving");
+  el.disabled = true;
+  try {
+    const res = await apiFetch("/api/accounts/" + encodeURIComponent(accountId), {
+      method: "PUT",
+      body: JSON.stringify({ [field]: value }),
+    });
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) {
+      el.classList.add("error");
+      if ("value" in el) el.value = prev;
+      log("Lỗi cập nhật " + field + ": " + (data.detail || res.status));
+      return;
+    }
+    el.dataset.savedValue = value;
+    if ("title" in el) el.title = value;
+    el.classList.add("saved");
+    setTimeout(() => el.classList.remove("saved"), 1500);
+    if (field === "status") {
+      const user = data.username || accountId;
+      log("✓ [" + user + "] status → " + value);
+      applyStatusSelectStyle(el);
+      loadList();
+    }
+    (data.sync_steps || []).forEach((st) => {
+      const label = st.step === "fund_password" ? "MK rút" : st.step === "bank_bind" ? "Bank" : st.step;
+      log((st.ok ? "✓ " : "✗ ") + label + (st.msg ? ": " + st.msg : ""));
+    });
+  } catch (e) {
+    el.classList.add("error");
+    if ("value" in el) el.value = prev;
+    log("Lỗi cập nhật " + field + ": " + e.message);
+  } finally {
+    el.disabled = false;
+    el.classList.remove("saving");
+  }
+}
+
+function statusOptionsFor(current) {
+  const cur = String(current || "").trim();
+  const list = ACCOUNT_STATUSES.slice();
+  if (cur && !list.includes(cur)) list.unshift(cur);
+  return list;
+}
+
+function renderStatusSelect(accountId, current) {
+  const cur = String(current || "").trim();
+  const opts = statusOptionsFor(cur)
+    .map((s) => `<option value="${escAttr(s)}"${s === cur ? " selected" : ""}>${esc(s)}</option>`)
+    .join("");
+  return `<select class="${statusSelectClasses(cur)}" data-account-id="${escAttr(accountId)}"`
+    + ` data-saved-value="${escAttr(cur)}" title="Đổi trạng thái CMS">${opts}</select>`;
+}
+
+function bindStatusSelects(root) {
+  root.querySelectorAll("select.status-select[data-account-id]").forEach((sel) => {
+    const accountId = sel.dataset.accountId;
+    if (!accountId) return;
+    sel.dataset.savedValue = sel.value;
+    applyStatusSelectStyle(sel);
+    sel.addEventListener("change", () => {
+      applyStatusSelectStyle(sel);
+      patchAccountField(accountId, "status", sel.value, sel);
+    });
+  });
+}
+
+function bindInlineInputs(root) {
+  root.querySelectorAll("input.inline-input[data-field]").forEach((input) => {
+    const accountId = input.dataset.accountId;
+    const field = input.dataset.field;
+    if (!accountId || !field) return;
+    input.dataset.savedValue = input.value;
+    input.addEventListener("blur", () => {
+      patchAccountField(accountId, field, input.value.trim(), input);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        input.blur();
+      } else if (e.key === "Escape") {
+        input.value = input.dataset.savedValue || "";
+        input.blur();
+      }
+    });
+  });
+}
+
+const BANK_NORM = {
+  VPB: { code: "vp_bank", name: "VPBank" },
+  VPBANK: { code: "vp_bank", name: "VPBank" },
+  MSB: { code: "msb", name: "MSB" },
+  VIB: { code: "vib", name: "VIB" },
+  ACB: { code: "acb", name: "ACB" },
+};
+
+function normalizeBankInput(b) {
+  const raw = (b || "").trim();
+  if (!raw) return { bank: "", bank_code: "", bank_name: "" };
+  const key = raw.toUpperCase().replace(/[\s_]/g, "");
+  const hit = BANK_NORM[key];
+  if (hit) return { bank: hit.name, bank_code: hit.code, bank_name: hit.name };
+  return {
+    bank: raw.toUpperCase(),
+    bank_code: raw.toLowerCase().replace(/ /g, "_"),
+    bank_name: raw.toUpperCase(),
+  };
+}
+
+function bankFromForm() {
+  return normalizeBankInput(val("bank"));
+}
+
+function payloadFromForm() {
+  const bank = bankFromForm();
+  const bankCode = bank.bank_code;
+  return {
+    username: val("username"),
+    password: val("password"),
+    phone: val("phone"),
+    account_holder: val("account_holder"),
+    proxy: val("proxy"),
+    fund_password: val("fund_password"),
+    bank: bank.bank_name || bank.bank || "",
+    bank_code: bank.bank_code,
+    bank_name: bank.bank_name,
+    account_number: val("account_number"),
+    device: val("device"),
+    vip_level: val("vip_level"),
+    status: val("status") || "new",
+  };
+}
+
+function setFormStatusValue(st) {
+  const sel = document.getElementById("status");
+  const v = String(st || "").trim() || "new";
+  if (v && !Array.from(sel.options).some((o) => o.value === v)) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = v;
+    sel.insertBefore(o, sel.firstChild);
+  }
+  sel.value = v;
+}
+
+function fillForm(row) {
+  document.getElementById("username").value = row.username || "";
+  const pw = row.password === "******" ? "" : (row.password || "");
+  document.getElementById("password").value = pw || DEFAULT_LOGIN_PASSWORD;
+  document.getElementById("phone").value = row.phone || "";
+  document.getElementById("account_holder").value = row.account_holder || "";
+  document.getElementById("proxy").value = row.proxy || "";
+  const fp = row.fund_password === "******" ? "" : (row.fund_password || "");
+  document.getElementById("fund_password").value = fp || DEFAULT_FUND_PASSWORD;
+  const bankRaw = row.bank_name || row.bank_code || "";
+  const norm = normalizeBankInput(bankRaw);
+  const sel = document.getElementById("bank");
+  let found = false;
+  const tryVals = [norm.bank_name, norm.bank_code, bankRaw].map((x) => (x || "").toUpperCase());
+  for (const opt of sel.options) {
+    const ov = (opt.value || "").toUpperCase();
+    const ot = (opt.textContent || "").toUpperCase();
+    if (opt.value && (tryVals.includes(ov) || tryVals.includes(ot) || ov === "VPB" && tryVals.some((v) => v.includes("VP")))) {
+      sel.value = opt.value;
+      found = true;
+      break;
+    }
+  }
+  if (!found && norm.bank_name) {
+    const o = document.createElement("option");
+    o.value = norm.bank_name === "VPBank" ? "VPB" : norm.bank_name;
+    o.textContent = norm.bank_name;
+    sel.appendChild(o);
+    sel.value = o.value;
+  }
+  document.getElementById("account_number").value = row.account_number || "";
+  document.getElementById("device").value = row.device || "";
+  document.getElementById("vip_level").value = row.vip_level || "";
+  setFormStatusValue(row.status);
+  editId = row.id;
+  document.getElementById("formTitle").textContent = "Sửa tài khoản: " + (row.username || row.id);
+  document.getElementById("btnProvision").style.display = "none";
+}
+
+function resetForm() {
+  document.getElementById("accForm").reset();
+  setFormStatusValue("new");
+  setFormDefaults();
+  editId = null;
+  document.getElementById("formTitle").textContent = "Thêm / đăng ký tài khoản";
+  document.getElementById("btnProvision").style.display = "";
+}
+
+async function checkConnection() {
+  const el = document.getElementById("connStatus");
+  try {
+    const r = await fetch("/api/health");
+    if (!r.ok) {
+      el.innerHTML = "<b style='color:#c0392b'>API lỗi HTTP " + r.status + "</b>";
+      return false;
+    }
+    const h = await r.json();
+    el.innerHTML = "<span style='color:#27ae60'>API XOSO66 OK</span> — " + (h.status || "ok")
+      + " (gọi trực tiếp, không qua CMS)";
+    return true;
+  } catch (e) {
+    el.innerHTML = "<b style='color:#c0392b'>Không kết nối API. Chạy: <code>python main.py</code> rồi mở <code>http://127.0.0.1:8799/</code></b>";
+    return false;
+  }
+}
+
+
+async function doVipCheck(accountId, username, btnEl) {
+  const label = username || accountId;
+  if (btnEl) btnEl.disabled = true;
+  log("VIP check + nhận " + label + "…");
+  try {
+    const res = await apiFetch("/api/vip/refresh-status", {
+      method: "POST",
+      body: JSON.stringify({
+        account_ids: [accountId],
+        check_only: false,
+        wait: true,
+        parallel: 1,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      log("VIP thất bại: " + (data.detail || data.error || res.status)
+        + (res.status === 409 ? " — đang có lượt refresh khác, thử lại sau" : ""));
+      return;
+    }
+    if (data.fail_count) {
+      const err = (data.results || []).find((r) => !r.ok);
+      log("VIP lỗi: " + (err && err.error ? err.error : data.fail_count + " lỗi"));
+    } else {
+      const r0 = (data.results || [])[0] || {};
+      const claimed = Number(r0.claims_ok) || 0;
+      const claimable = (r0.claimable || []).length;
+      let msg = "✅ VIP " + label;
+      if (claimed > 0) msg += " — đã nhận " + claimed + " thưởng";
+      else if (claimable > 0) msg += " — có " + claimable + " thưởng nhưng chưa nhận được";
+      else msg += " — không có thưởng chờ nhận";
+      msg += " (" + (data.elapsed_sec != null ? data.elapsed_sec : "?") + "s)";
+      log(msg);
+    }
+    await loadList();
+  } catch (e) {
+    log("VIP lỗi: " + e.message);
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
+async function doMissionCheck(accountId, username, btnEl) {
+  const label = username || accountId;
+  if (btnEl) btnEl.disabled = true;
+  log("Check + nhận thưởng " + label + "…");
+  try {
+    const res = await apiFetch("/api/missions/refresh-status", {
+      method: "POST",
+      body: JSON.stringify({
+        account_ids: [accountId],
+        check_only: false,
+        wait: true,
+        parallel: 1,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      log("Check nhiệm vụ thất bại: " + (data.detail || data.error || res.status)
+        + (res.status === 409 ? " — đang có lượt refresh khác, thử lại sau" : ""));
+      return;
+    }
+    if (data.fail_count) {
+      const err = (data.results || []).find((r) => !r.ok);
+      log("Check nhiệm vụ lỗi: " + (err && err.error ? err.error : data.fail_count + " lỗi"));
+    } else {
+      const r0 = (data.results || [])[0] || {};
+      const claimed = Number(r0.claims_ok) || 0;
+      const claimable = (r0.claimable || []).length;
+      let msg = "✅ Check " + label;
+      if (claimed > 0) msg += " — đã nhận " + claimed + " thưởng";
+      else if (claimable > 0) msg += " — có " + claimable + " mức nhưng chưa nhận được";
+      else msg += " — không có thưởng chờ nhận";
+      msg += " (" + (data.elapsed_sec != null ? data.elapsed_sec : "?") + "s)";
+      log(msg);
+    }
+    await loadList();
+  } catch (e) {
+    log("Check nhiệm vụ lỗi: " + e.message);
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
+function currentCmsPage() {
+  const btn = document.querySelector(".cms-nav .nav-btn.active");
+  return btn ? btn.getAttribute("data-page") : "accounts";
+}
+
+function updateRefreshButtonHint() {
+  const btn = document.getElementById("btnRefreshStatus");
+  if (!btn) return;
+  if (currentCmsPage() === "payments") {
+    btn.title = "Tải lại nạp/rút từ DB (không gọi site)";
+  } else {
+    btn.title = "Tải lại danh sách từ DB (không gọi site)";
+  }
+}
+
+async function refreshData() {
+  const scrollY = window.scrollY;
+  const btn = document.getElementById("btnRefreshStatus");
+  if (btn) btn.disabled = true;
+  log("🔄 Tải lại danh sách…");
+  await loadList();
+  log("✅ Đã tải lại danh sách");
+  if (btn) btn.disabled = false;
+  window.scrollTo({ top: scrollY });
+}
+
+async function refreshPaymentsData() {
+  const scrollY = window.scrollY;
+  const btn = document.getElementById("btnRefreshStatus");
+  if (btn) btn.disabled = true;
+  const tab = document.querySelector(".pay-tabs .tab-btn.active");
+  const tabId = tab ? tab.getAttribute("data-pay-tab") : "history";
+  log(tabId === "auto" ? "🔄 Tải lại lệnh auto nạp…" : "🔄 Tải lại lịch sử nạp/rút…");
+  payPage = 1;
+  await loadPaymentStats();
+  if (tabId === "auto") await loadDepositOrders();
+  else await loadPaymentOrders();
+  log("✅ Đã tải lại nạp/rút");
+  if (btn) btn.disabled = false;
+  window.scrollTo({ top: scrollY });
+}
+
+async function refreshCurrentPage() {
+  if (currentCmsPage() === "payments") await refreshPaymentsData();
+  else await refreshData();
+}
+
+async function loadList() {
+  let res;
+  try {
+    res = await apiFetch("/api/accounts");
+  } catch (e) {
+    log("Lỗi tải danh sách: " + e.message);
+    return;
+  }
+  if (!res.ok) {
+    const t = await res.text();
+    log("Lỗi danh sách HTTP " + res.status + (t ? ": " + t.slice(0, 120) : ""));
+    return;
+  }
+  const data = await res.json();
+  const tbody = document.querySelector("#tbl tbody");
+  tbody.innerHTML = "";
+  const rows = sortAccountsForList(Array.isArray(data) ? data : []);
+  let totalDailyBet = 0;
+  let totalBalance = 0;
+  let totalDeposit = 0;
+  let totalWithdraw = 0;
+  let totalProfit = 0;
+  rows.forEach((row, idx) => {
+    totalDailyBet += dailyBetToday(row);
+    totalBalance += Number(row.balance) || 0;
+    totalDeposit += Number(row.total_deposit) || 0;
+    totalWithdraw += Number(row.total_withdraw) || 0;
+    totalProfit += accountProfit(row);
+    const tr = document.createElement("tr");
+    const rowCls = statusRowClass(row.status);
+    if (rowCls) tr.className = rowCls;
+    const id = esc(row.id);
+    const user = esc(row.username);
+    const bank = esc(row.bank_name || (row.bank_code || "").toUpperCase() || "");
+    tr.innerHTML = `
+      <td>${idx + 1}</td>
+      <td>${esc(row.username)}</td>
+      <td>${esc(row.phone)}</td>
+      <td>${esc(row.account_holder)}</td>
+      <td class="td-status">${renderStatusSelect(id, row.status)}</td>
+      <td class="td-balance" data-balance-for="${id}">${fmtVnd(row.balance ?? 0)}</td>
+      <td class="td-dep">${fmtVnd(row.total_deposit ?? 0)}</td>
+      <td class="td-wd">${fmtVnd(row.total_withdraw ?? 0)}</td>
+      <td class="${profitTdClass(accountProfit(row))}" title="Rút + số dư − nạp">${fmtProfit(accountProfit(row))}</td>
+      <td title="${escAttr(row.daily_bet_day || "")}">${fmtVnd(dailyBetToday(row))}</td>
+      <td class="td-mission">${renderDaily161Cell(row)}</td>
+      <td class="td-mini">${renderMiniWeekCell(row)}</td>
+      <td class="td-device"><input type="text" class="inline-input field-device" data-field="device" data-account-id="${id}" value="${escAttr(row.device)}" title="${escAttr(row.device)}" spellcheck="false"></td>
+      <td class="td-proxy"><input type="text" class="inline-input field-proxy" data-field="proxy" data-account-id="${id}" value="${escAttr(row.proxy)}" title="${escAttr(row.proxy)}" spellcheck="false"></td>
+      <td>${bank}</td>
+      <td>${esc(row.account_number)}</td>
+      <td class="td-vip">${renderVipCell(row)}</td>
+      <td><div class="cell-actions">
+        <button type="button" class="btn btn-deposit btn-sm" data-dep="${id}" data-user="${user}">Nạp</button>
+        <button type="button" class="btn btn-withdraw btn-sm" data-wd="${id}" data-user="${user}">Rút</button>
+      </div></td>
+      <td><div class="cell-actions">
+        <button type="button" class="btn btn-balance btn-sm" data-bal="${id}" data-user="${user}" title="Balance → 10s → Nạp → 10s → Rút">Check</button>
+      </div></td>
+      <td><div class="cell-actions">
+        <button type="button" class="btn btn-blue btn-sm" data-edit="${id}">Sửa</button>
+        <button type="button" class="btn btn-danger btn-sm" data-del="${id}">Xóa</button>
+      </div></td>
+    `;
+    tbody.appendChild(tr);
+  });
+  const dayTip = todayIso() + " — " + rows.length + " tài khoản";
+  const balEl = document.getElementById("tblTotalBalance");
+  const depEl = document.getElementById("tblTotalDeposit");
+  const wdEl = document.getElementById("tblTotalWithdraw");
+  const profEl = document.getElementById("tblTotalProfit");
+  const betEl = document.getElementById("tblTotalDailyBet");
+  const topBal = document.getElementById("accTotalBalance");
+  const topDep = document.getElementById("accTotalDeposit");
+  const topWd = document.getElementById("accTotalWithdraw");
+  const topProf = document.getElementById("accTotalProfit");
+  const topBet = document.getElementById("accTotalDailyBet");
+  const topCnt = document.getElementById("accTotalCount");
+  const balFmt = fmtVnd(totalBalance);
+  const depFmt = fmtVnd(totalDeposit);
+  const wdFmt = fmtVnd(totalWithdraw);
+  const profFmt = fmtProfit(totalProfit);
+  const betFmt = fmtVnd(totalDailyBet);
+  const profCls = totalProfit >= 0 ? "profit-pos" : "profit-neg";
+  if (balEl) {
+    balEl.textContent = balFmt;
+    balEl.title = "Tổng số dư — " + dayTip;
+  }
+  if (depEl) {
+    depEl.textContent = depFmt;
+    depEl.title = "Tổng nạp Hoàn tất — " + dayTip;
+  }
+  if (wdEl) {
+    wdEl.textContent = wdFmt;
+    wdEl.title = "Tổng rút Hoàn tất — " + dayTip;
+  }
+  if (profEl) {
+    profEl.textContent = profFmt;
+    profEl.className = "tbl-total-profit " + profCls;
+    profEl.title = "Tổng rút + số dư − tổng nạp — " + dayTip;
+  }
+  if (betEl) {
+    betEl.textContent = betFmt;
+    betEl.title = "Tổng cược ngày (VN) — " + dayTip;
+  }
+  if (topBal) topBal.textContent = balFmt;
+  if (topDep) topDep.textContent = depFmt;
+  if (topWd) topWd.textContent = wdFmt;
+  if (topProf) {
+    topProf.textContent = profFmt;
+    topProf.className = "tot-profit " + profCls;
+  }
+  if (topBet) topBet.textContent = betFmt;
+  if (topCnt) topCnt.textContent = rows.length + " tài khoản · " + todayIso();
+  bindInlineInputs(tbody);
+  bindStatusSelects(tbody);
+  tbody.querySelectorAll("[data-dep]").forEach(btn => {
+    btn.onclick = () => doDeposit(btn.getAttribute("data-dep"), btn.getAttribute("data-user"));
+  });
+  tbody.querySelectorAll("[data-wd]").forEach(btn => {
+    btn.onclick = () => doWithdraw(btn.getAttribute("data-wd"), btn.getAttribute("data-user"));
+  });
+  tbody.querySelectorAll("[data-bal]").forEach(btn => {
+    btn.onclick = () => doRefreshBalance(btn.getAttribute("data-bal"), btn.getAttribute("data-user"), btn);
+  });
+  tbody.querySelectorAll("[data-mchk]").forEach(btn => {
+    btn.onclick = () => doMissionCheck(btn.getAttribute("data-mchk"), btn.getAttribute("data-user"), btn);
+  });
+  tbody.querySelectorAll("[data-vchk]").forEach(btn => {
+    btn.onclick = () => doVipCheck(btn.getAttribute("data-vchk"), btn.getAttribute("data-user"), btn);
+  });
+  tbody.querySelectorAll("[data-edit]").forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.getAttribute("data-edit");
+      const r = await apiFetch("/api/accounts/" + encodeURIComponent(id) + "?secrets=1");
+      const row = await r.json();
+      fillForm(row);
+    };
+  });
+  tbody.querySelectorAll("[data-del]").forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.getAttribute("data-del");
+      if (!confirm("Xóa " + id + "?")) return;
+      const r = await apiFetch("/api/accounts/" + encodeURIComponent(id), { method: "DELETE" });
+      const j = await r.json();
+      log("Xóa: " + JSON.stringify(j));
+      loadList();
+    };
+  });
+}
+
+const PROVISION_STEPS = [
+  { step: "register", pending: "Đang đăng ký tài khoản...", success: "Đăng ký tài khoản thành công", fail: "Đăng ký tài khoản thất bại" },
+  { step: "fund_password", pending: "Đang đặt mật khẩu rút tiền...", success: "Đặt mk rút tiền thành công", fail: "Đặt mk rút tiền thất bại", skipIf: (b) => !b.fund_password },
+  { step: "bank_bind", pending: "Đang liên kết bank...", success: "Liên kết bank thành công", fail: "Liên kết bank thất bại", skipIf: (b) => !b.account_number },
+];
+
+function promptAmount(label, defaultVal) {
+  const raw = prompt(label, defaultVal || "100000");
+  if (raw === null) return null;
+  const n = parseInt(String(raw).replace(/\D/g, ""), 10);
+  if (!n || n <= 0) {
+    alert("Số tiền không hợp lệ");
+    return null;
+  }
+  return n;
+}
+
+function showDepositQRModal(data) {
+  const qrData = data.data || {};
+  let qrImageSrc = data.qr_image_url || qrData.qr_link || qrData.qrLink || "";
+  if (!qrImageSrc) {
+    const b64 = data.qr_base64 || qrData.qr_base64 || qrData.qrBase64;
+    if (b64) qrImageSrc = "data:image/png;base64," + b64;
+  }
+  const prev = document.getElementById("qrModalOverlay");
+  if (prev) prev.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "qrModalOverlay";
+  const box = document.createElement("div");
+  box.className = "qr-modal-box";
+
+  const h2 = document.createElement("h2");
+  h2.textContent = "\u2705 " + (data.message || "T\u1ea1o l\u1ec7nh n\u1ea1p ti\u1ec1n th\u00e0nh c\u00f4ng");
+  box.appendChild(h2);
+
+  const info = document.createElement("div");
+  info.className = "qr-info";
+  info.innerHTML =
+    "<p><strong>\ud83c\udfae User:</strong> " + (qrData.username || "\u2014") + "</p>" +
+    "<p><strong>\ud83d\udc64 T\u00ean TK:</strong> " + (qrData.name || qrData.accountHolder || "\u2014") + "</p>" +
+    "<p><strong>\ud83c\udfe6 S\u1ed1 TK:</strong> " + (qrData.receiver || qrData.accountNumber || "\u2014") + "</p>" +
+    "<p><strong>\ud83d\udcb0 S\u1ed1 ti\u1ec1n:</strong> " + Number(qrData.amount || 0).toLocaleString("vi-VN") + " \u0111</p>" +
+    "<p><strong>\ud83d\udcdd N\u1ed9i dung:</strong> <span style='color:#e74c3c;font-weight:bold'>" +
+    (qrData.msg || qrData.transferContent || "\u2014") + "</span></p>";
+  box.appendChild(info);
+  if (data.pay_url) {
+    const lp = document.createElement("p");
+    lp.innerHTML = "<strong>\ud83d\udd17 Link:</strong> <a href='" + data.pay_url +
+      "' target='_blank' rel='noopener'>M\u1edf trang thanh to\u00e1n</a>";
+    info.appendChild(lp);
+  }
+
+  const imgWrap = document.createElement("div");
+  imgWrap.style.margin = "16px 0";
+  if (qrImageSrc) {
+    const img = document.createElement("img");
+    img.className = "qr-img";
+    img.alt = "QR Code";
+    img.src = qrImageSrc;
+    img.onerror = function () {
+      img.remove();
+      const err = document.createElement("div");
+      err.style.cssText = "padding:24px;background:#f8d7da;color:#721c24;border-radius:8px";
+      err.textContent = "\u274c Kh\u00f4ng t\u1ea3i \u0111\u01b0\u1ee3c \u1ea3nh QR";
+      imgWrap.appendChild(err);
+    };
+    imgWrap.appendChild(img);
+  } else {
+    const err = document.createElement("div");
+    err.style.cssText = "padding:24px;background:#f8d7da;color:#721c24;border-radius:8px";
+    err.textContent = "\u274c Kh\u00f4ng c\u00f3 \u1ea3nh QR";
+    imgWrap.appendChild(err);
+  }
+  box.appendChild(imgWrap);
+
+  const hint1 = document.createElement("p");
+  hint1.style.cssText = "color:#7f8c8d;font-size:13px";
+  hint1.textContent = "Qu\u00e9t m\u00e3 QR ho\u1eb7c chuy\u1ec3n kho\u1ea3n \u0111\u00fang n\u1ed9i dung";
+  box.appendChild(hint1);
+  const hint2 = document.createElement("p");
+  hint2.style.cssText = "color:#e74c3c;font-size:12px";
+  hint2.innerHTML = "\u23f0 H\u1ebft h\u1ea1n sau: <strong>" + (qrData.expired || 300) + "</strong> gi\u00e2y";
+  box.appendChild(hint2);
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn-close-modal";
+  btn.textContent = "\u0110\u00f3ng";
+  btn.onclick = function () { overlay.remove(); };
+  box.appendChild(btn);
+
+  overlay.onclick = function (e) { if (e.target === overlay) overlay.remove(); };
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+}
+
+async function doDeposit(accountId, username) {
+  const amount = promptAmount("N\u1ea1p " + (username || accountId) + " \u2014 s\u1ed1 ti\u1ec1n (VND):", "100000");
+  if (amount === null) return;
+  log("\u0110ang n\u1ea1p " + accountId + " " + amount.toLocaleString("vi-VN") + " VND\u2026");
+  try {
+    const res = await apiFetch("/api/deposit", {
+      method: "POST",
+      body: JSON.stringify({ account_id: accountId, amount, wait: true }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      log("N\u1ea1p th\u1ea5t b\u1ea1i: " + (data.detail || data.error || res.status));
+      return;
+    }
+    if (data.ok) {
+      showDepositQRModal(data);
+      log("N\u1ea1p OK \u2014 trade_no: " + (data.trade_no || "\u2014"));
+    } else {
+      log("N\u1ea1p th\u1ea5t b\u1ea1i: " + (data.error || data.msg || ""));
+    }
+    loadList();
+  } catch (e) {
+    log("N\u1ea1p l\u1ed7i: " + e.message);
+  }
+}
+
+const CHECK_STEP_DELAY_MS = 10000;
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function doRefreshBalance(accountId, username, btnEl) {
+  const label = username || accountId;
+  const days =
+    parseInt(document.getElementById("paySyncDays")?.value, 10) || 7;
+  if (btnEl) btnEl.disabled = true;
+  try {
+    log(`[Check] ${label} (1/3) balance…`);
+    const resBal = await apiFetch(
+      "/api/accounts/" + encodeURIComponent(accountId) + "/refresh-balance",
+      { method: "POST" }
+    );
+    const dataBal = await resBal.json();
+    if (!resBal.ok) {
+      log(
+        "Check balance thất bại: " +
+          (dataBal.detail || dataBal.error || resBal.status)
+      );
+    } else {
+      const bal = dataBal.balance;
+      const cell = document.querySelector(
+        'td[data-balance-for="' + CSS.escape(accountId) + '"]'
+      );
+      if (cell != null && bal != null) {
+        cell.textContent = fmtVnd(bal);
+      }
+      log(
+        "✅ Balance: " +
+          (bal != null ? Number(bal).toLocaleString("vi-VN") + "đ" : "—")
+      );
+    }
+
+    log(`[Check] ${label} — chờ ${CHECK_STEP_DELAY_MS / 1000}s…`);
+    await sleepMs(CHECK_STEP_DELAY_MS);
+
+    log(`[Check] ${label} (2/3) lịch sử nạp (${days} ngày)…`);
+    const resDep = await apiFetch(
+      "/api/accounts/" +
+        encodeURIComponent(accountId) +
+        "/payment-history/sync?days=" +
+        days +
+        "&wait=true&type=1",
+      { method: "POST" }
+    );
+    const dataDep = await resDep.json();
+    if (!resDep.ok) {
+      log(
+        "Check nạp thất bại: " +
+          (dataDep.detail || dataDep.error || resDep.status)
+      );
+    } else {
+      log(`✅ Lịch sử nạp: ${dataDep.deposit ?? 0} dòng đồng bộ`);
+    }
+
+    log(`[Check] ${label} — chờ ${CHECK_STEP_DELAY_MS / 1000}s…`);
+    await sleepMs(CHECK_STEP_DELAY_MS);
+
+    log(`[Check] ${label} (3/3) lịch sử rút (${days} ngày)…`);
+    const resWd = await apiFetch("/api/payment-orders/check-withdraw", {
+      method: "POST",
+      body: JSON.stringify({
+        account_id: accountId,
+        days,
+        poll: false,
+      }),
+    });
+    const dataWd = await resWd.json();
+    if (!resWd.ok) {
+      log(
+        "Check rút thất bại: " +
+          (dataWd.detail || JSON.stringify(dataWd).slice(0, 120))
+      );
+    } else {
+      const n = dataWd.list ? dataWd.list.length : 0;
+      const sync = dataWd.sync || {};
+      log(
+        `✅ Lịch sử rút: ${n} lệnh từ site` +
+          (sync.upserted != null ? `, DB ${sync.upserted} dòng` : "")
+      );
+    }
+
+    log(`[Check] ${label} — xong 3 bước`);
+    loadList();
+    if (document.getElementById("pagePayments")?.classList.contains("active")) {
+      loadPaymentStats();
+      loadPaymentOrders();
+    }
+  } catch (e) {
+    log("Check lỗi: " + e.message);
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
+async function doWithdraw(accountId, username) {
+  const amount = promptAmount("Rút " + (username || accountId) + " — số tiền (VND):", "100000");
+  if (amount === null) return;
+  let fundPwd = "";
+  if (editId === accountId) {
+    fundPwd = val("fund_password");
+  }
+  if (!fundPwd) {
+    fundPwd = prompt("MK rút 6 số (để trống = lấy từ DB):", "") || "";
+  }
+  log("Đang rút " + accountId + " " + amount.toLocaleString("vi-VN") + " VND…");
+  try {
+    const res = await apiFetch("/api/withdraw", {
+      method: "POST",
+      body: JSON.stringify({
+        account_id: accountId,
+        amount,
+        fund_password: fundPwd || null,
+        wait: true,
+        use_browser: false,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      log("Rút thất bại: " + (data.detail || data.error || res.status));
+      return;
+    }
+    if (data.ok) {
+      log("Rút OK — " + (data.msg || "") + (data.order_no ? " order: " + data.order_no : ""));
+    } else {
+      log("Rút thất bại: " + (data.msg || data.fail_reason || data.error || JSON.stringify(data).slice(0, 200)));
+    }
+    loadList();
+  } catch (e) {
+    log("Rút lỗi: " + e.message);
+  }
+}
+
+async function runProvisionStep(body, ui, accountId) {
+  const payload = { ...body, step: ui.step };
+  if (accountId) payload.account_id = accountId;
+  const res = await apiFetch("/api/accounts/provision", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  let data;
+  try { data = await res.json(); } catch { data = { error: "Phản hồi không phải JSON", status: res.status }; }
+  return { res, data };
+}
+
+document.getElementById("btnProvision").onclick = async () => {
+  const body = payloadFromForm();
+  if (!body.proxy) { alert("Proxy bắt buộc"); return; }
+  if (!(await checkConnection())) {
+    log("Dừng: chưa kết nối API.");
+    return;
+  }
+  const btn = document.getElementById("btnProvision");
+  btn.disabled = true;
+  let accountId = null;
+  let allOk = true;
+  try {
+    for (const ui of PROVISION_STEPS) {
+      if (ui.skipIf && ui.skipIf(body)) continue;
+      log(ui.pending);
+      const { res, data } = await runProvisionStep(body, ui, accountId);
+      if (!res.ok) {
+        log(ui.fail + (data.detail ? ": " + data.detail : ": HTTP " + res.status));
+        allOk = false;
+        break;
+      }
+      if (data.skipped) {
+        log("⊘ " + (data.steps?.[0]?.msg || "username đã có trong DB"));
+        if (data.account_id) accountId = data.account_id;
+        loadList();
+        return;
+      }
+      const st = (data.steps || []).find((s) => s.step === ui.step) || data.steps?.[0];
+      if (data.account_id) accountId = data.account_id;
+      if (st && (st.ok || st.skipped)) log(st.skipped ? ("⊘ " + (st.msg || ui.success)) : ui.success);
+      else {
+        log(ui.fail + ((st && st.msg) ? ": " + st.msg : ""));
+        allOk = false;
+        break;
+      }
+    }
+    if (accountId) log("account_id: " + accountId);
+    loadList();
+    if (allOk && accountId) resetForm();
+  } catch (e) {
+    log("Lỗi: " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+document.getElementById("accForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const body = payloadFromForm();
+  let url = "/api/accounts";
+  let method = "POST";
+  if (editId) {
+    url += "/" + encodeURIComponent(editId);
+    method = "PUT";
+  }
+  const q = editId ? "?secrets=1" : "";
+  const res = await apiFetch(url + q, { method, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) {
+    log((editId ? "Sửa" : "Thêm") + " thất bại: " + (data.detail || res.status));
+    return;
+  }
+  const steps = data.sync_steps || [];
+  for (const st of steps) {
+    const label = st.step === "fund_password" ? "MK rút" : st.step === "bank_bind" ? "Liên kết bank" : st.step;
+    log((st.ok ? "✓ " : "✗ ") + label + (st.msg ? ": " + st.msg : ""));
+  }
+  const row = data.account || data;
+  log((editId ? "Sửa" : "Thêm") + " OK — " + (row.username || row.id || ""));
+  loadList();
+  if (editId) {
+    fillForm(row);
+  } else {
+    resetForm();
+  }
+};
+
+document.getElementById("btnReset").onclick = resetForm;
+
+let bulkRows = [];
+let bulkCancel = false;
+
+const BULK_ALIASES = {
+  username: "username", user: "username", tai_khoan: "username", taikhoan: "username",
+  password: "password", pass: "password", mk_dang_nhap: "password",
+  phone: "phone", sdt: "phone", so_dien_thoai: "phone",
+  account_holder: "account_holder", truename: "account_holder", ten: "account_holder",
+  ho_ten: "account_holder", ten_dk: "account_holder",
+  proxy: "proxy",
+  fund_password: "fund_password", mk_rut: "fund_password",
+  bank: "bank", bank_name: "bank", ngan_hang: "bank",
+  account_number: "account_number", stk: "account_number", so_tk: "account_number",
+  device: "device", thiet_bi: "device",
+  vip_level: "vip_level", vip: "vip_level",
+};
+const BULK_POS = ["username","password","phone","account_holder","proxy","fund_password","bank","account_number","device"];
+
+function normBulkHeader(h) {
+  const s = String(h || "").trim().toLowerCase().replace(/[\s\-]+/g, "_").replace(/[^\w]/g, "");
+  return BULK_ALIASES[s] || s;
+}
+
+function detectBulkDelim(line) {
+  if (line.includes("\t") && line.split("\t").length >= line.split(",").length) return "\t";
+  if (line.includes(";") && line.split(";").length > line.split(",").length) return ";";
+  return ",";
+}
+
+function parseCsvLine(line, delim) {
+  const out = [];
+  let cur = "";
+  let q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') { q = !q; continue; }
+    if (!q && c === delim) { out.push(cur.trim()); cur = ""; continue; }
+    cur += c;
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+function looksLikeBulkHeader(cells) {
+  const j = cells.join(" ").toLowerCase();
+  return /username|user|tai_khoan|proxy|phone|sdt/.test(j);
+}
+
+function parseBulkText(text) {
+  const raw = String(text || "").replace(/^\uFEFF/, "").trim();
+  if (!raw) return [];
+  const lines = raw.split(/\r?\n/).filter((ln) => ln.trim() && !ln.trim().startsWith("#"));
+  if (!lines.length) return [];
+  const delim = detectBulkDelim(lines[0]);
+  const parsed = lines.map((ln) => parseCsvLine(ln, delim));
+  let start = 0;
+  let keys = null;
+  if (looksLikeBulkHeader(parsed[0])) {
+    keys = parsed[0].map(normBulkHeader);
+    start = 1;
+  }
+  const rows = [];
+  for (let i = start; i < parsed.length; i++) {
+    const cells = parsed[i];
+    if (!cells.some((c) => c)) continue;
+    const row = {};
+    if (keys) {
+      keys.forEach((k, j) => { if (k && cells[j]) row[k] = cells[j]; });
+    } else {
+      BULK_POS.forEach((k, j) => { if (cells[j]) row[k] = cells[j]; });
+    }
+    if (row.username) rows.push(row);
+  }
+  return rows;
+}
+
+function bulkDefaultsFromForm() {
+  const b = payloadFromForm();
+  return {
+    password: b.password || DEFAULT_LOGIN_PASSWORD,
+    fund_password: b.fund_password || DEFAULT_FUND_PASSWORD,
+    bank: b.bank || b.bank_name || "",
+    bank_name: b.bank_name || "",
+    bank_code: b.bank_code || "",
+    device: b.device || "",
+    vip_level: b.vip_level || "",
+  };
+}
+
+function mergeBulkRow(row) {
+  const d = bulkDefaultsFromForm();
+  const out = { ...d };
+  Object.keys(row).forEach((k) => {
+    if (row[k] != null && String(row[k]).trim() !== "") out[k] = String(row[k]).trim();
+  });
+  const bn = normalizeBankInput(out.bank || out.bank_name || out.bank_code || "");
+  out.bank = bn.bank;
+  out.bank_name = bn.bank_name;
+  out.bank_code = bn.bank_code;
+  return out;
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function readBulkFile() {
+  const f = document.getElementById("bulkFile").files[0];
+  if (!f) throw new Error("Chọn file CSV/TXT");
+  const text = await f.text();
+  bulkRows = parseBulkText(text);
+  document.getElementById("bulkSummary").textContent =
+    bulkRows.length ? `Đã đọc ${bulkRows.length} dòng.` : "Không có dòng hợp lệ.";
+  return bulkRows;
+}
+
+async function provisionAccountAll(body) {
+  const res = await apiFetch("/api/accounts/provision", {
+    method: "POST",
+    body: JSON.stringify({ ...body, step: "all" }),
+  });
+  let data;
+  try { data = await res.json(); } catch { data = {}; }
+  if (!res.ok) {
+    return { ok: false, msg: data.detail || "HTTP " + res.status };
+  }
+  if (data.skipped) {
+    const st = (data.steps || [])[0];
+    return {
+      ok: true,
+      skipped: true,
+      msg: (st && st.msg) || "username đã có trong DB",
+      account_id: data.account_id,
+    };
+  }
+  if (!data.ok) {
+    const failed = (data.steps || []).filter((s) => !s.ok && !s.skipped);
+    const parts = failed.map((s) => (s.step || "?") + (s.msg ? ": " + s.msg : ""));
+    return {
+      ok: false,
+      msg: parts.length ? parts.join(" | ") : "provision thất bại",
+      account_id: data.account_id,
+    };
+  }
+  return { ok: true, account_id: data.account_id, steps: data.steps };
+}
+
+document.getElementById("btnBulkPreview").onclick = async () => {
+  try {
+    await readBulkFile();
+    if (bulkRows[0]) log("Mẫu dòng 1: " + JSON.stringify(mergeBulkRow(bulkRows[0])));
+  } catch (e) {
+    alert(e.message);
+  }
+};
+
+document.getElementById("btnBulkCancel").onclick = () => {
+  bulkCancel = true;
+  log("Đang hủy hàng loạt…");
+};
+
+document.getElementById("btnBulkRun").onclick = async () => {
+  if (!(await checkConnection())) return;
+  try {
+    if (!bulkRows.length) await readBulkFile();
+  } catch (e) {
+    alert(e.message);
+    return;
+  }
+  if (!bulkRows.length) { alert("File trống"); return; }
+  if (!confirm(`Đăng ký ${bulkRows.length} tài khoản lần lượt?`)) return;
+
+  const delaySec = Math.max(0, parseInt(document.getElementById("bulkDelay").value, 10) || 0);
+  const stopOnError = document.getElementById("bulkStopOnError").checked;
+  const btnRun = document.getElementById("btnBulkRun");
+  const btnCancel = document.getElementById("btnBulkCancel");
+  bulkCancel = false;
+  btnRun.disabled = true;
+  btnCancel.style.display = "";
+
+  let okN = 0, failN = 0, skipN = 0;
+  for (let i = 0; i < bulkRows.length; i++) {
+    if (bulkCancel) break;
+    const merged = mergeBulkRow(bulkRows[i]);
+    log(`[${i + 1}/${bulkRows.length}] ${merged.username}…`);
+    if (!merged.proxy) {
+      log("✗ Thiếu proxy");
+      failN++;
+      if (stopOnError) break;
+      continue;
+    }
+    try {
+      const r = await provisionAccountAll(merged);
+      if (r.skipped) {
+        skipN++;
+        log(`⊘ Bỏ qua ${merged.username}: ${r.msg || "đã có trong DB"}`);
+      } else if (r.ok) {
+        okN++;
+        log(`✓ OK ${merged.username}` + (r.account_id ? " → " + r.account_id : ""));
+      } else {
+        failN++;
+        log(`✗ ${merged.username}: ${r.msg || "lỗi"}`);
+        if (stopOnError) break;
+      }
+    } catch (e) {
+      failN++;
+      log(`✗ ${merged.username}: ${e.message}`);
+      if (stopOnError) break;
+    }
+    if (i < bulkRows.length - 1 && delaySec > 0 && !bulkCancel) {
+      await sleep(delaySec * 1000);
+    }
+  }
+  log(`Hàng loạt xong: OK ${okN}, bỏ qua ${skipN}, lỗi ${failN}${bulkCancel ? " (đã hủy)" : ""}`);
+  document.getElementById("bulkSummary").textContent =
+    `Kết quả: OK ${okN} / bỏ qua ${skipN} / lỗi ${failN} / tổng ${bulkRows.length}`;
+  btnRun.disabled = false;
+  btnCancel.style.display = "none";
+  loadList();
+};
+
+let payPage = 1;
+const payLimit = 30;
+let payTotal = 0;
+function showCmsPage(name) {
+  const acc = document.getElementById("pageAccounts");
+  const pay = document.getElementById("pagePayments");
+  document.querySelectorAll(".cms-nav .nav-btn").forEach((b) => {
+    b.classList.toggle("active", b.getAttribute("data-page") === name);
+  });
+  if (acc) acc.classList.toggle("active", name === "accounts");
+  if (pay) pay.classList.toggle("active", name === "payments");
+  document.body.classList.toggle("page-payments", name === "payments");
+  updateRefreshButtonHint();
+  if (name === "payments") {
+    loadPaymentStats();
+    loadPaymentOrders();
+  }
+}
+
+function fmtStatVnd(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  return Math.round(v).toLocaleString("vi-VN") + "đ";
+}
+
+async function loadPaymentStats() {
+  const user = document.getElementById("payFilterUser").value.trim();
+  let q = "";
+  if (user) q = "?username=" + encodeURIComponent(user);
+  try {
+    const res = await apiFetch("/api/payment-orders/stats" + q);
+    if (!res.ok) return;
+    const s = await res.json();
+    if (!s.ok) return;
+    const scopeEl = document.getElementById("payStatScope");
+    if (s.scope === "account" && s.username) {
+      scopeEl.textContent = "@" + s.username;
+    } else {
+      scopeEl.textContent = "Tổng toàn hệ thống";
+    }
+    document.getElementById("payStatDeposit").textContent = fmtStatVnd(s.total_deposit);
+    document.getElementById("payStatWithdraw").textContent = fmtStatVnd(s.total_withdraw);
+    document.getElementById("payStatBalance").textContent = fmtStatVnd(s.balance);
+    const profitEl = document.getElementById("payStatProfit");
+    const p = Number(s.profit) || 0;
+    profitEl.textContent = (p >= 0 ? "+" : "") + fmtStatVnd(p);
+    profitEl.classList.remove("profit-pos", "profit-neg");
+    profitEl.classList.add(p >= 0 ? "profit-pos" : "profit-neg");
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function payStatusClass(row) {
+  const st = parseInt(row.status, 10);
+  const fmt = String(row.status_formatted || "");
+  if (st === 1 || fmt === "Hoàn tất") return "st-ok";
+  if (fmt.toLowerCase().includes("thất") || fmt.toLowerCase().includes("hủ")) return "st-fail";
+  return "st-pending";
+}
+
+function fmtPayAmount(v) {
+  const n = parseInt(String(v || 0).replace(/\D/g, ""), 10);
+  return (n || 0).toLocaleString("vi-VN") + "đ";
+}
+
+async function loadPaymentOrders() {
+  const user = document.getElementById("payFilterUser").value.trim();
+  const typeVal = document.getElementById("payFilterType").value;
+  const stVal = document.getElementById("payFilterStatus").value;
+  let q = `page=${payPage}&limit=${payLimit}`;
+  if (user) q += `&username=${encodeURIComponent(user)}`;
+  if (typeVal) q += `&type=${encodeURIComponent(typeVal)}`;
+  if (stVal !== "") q += `&status=${encodeURIComponent(stVal)}`;
+  const res = await apiFetch("/api/payment-orders?" + q);
+  if (!res.ok) {
+    log("Lỗi tải lịch sử nạp/rút: HTTP " + res.status);
+    return;
+  }
+  const data = await res.json();
+  payTotal = data.total || 0;
+  const tbody = document.querySelector("#payTbl tbody");
+  tbody.innerHTML = "";
+  (data.list || []).forEach((row) => {
+    const tr = document.createElement("tr");
+    const ot = parseInt(row.order_type, 10);
+    const typeLbl = ot === 2 ? "Rút" : "Nạp";
+    const typeCls = ot === 2 ? "type-wd" : "type-dep";
+    const aid = esc(row.account_id);
+    const userLbl = esc(row.username || row.account_id);
+    const serial = esc(row.serial_no || "");
+    const amt = fmtPayAmount(row.true_amount || row.amount);
+    const bank = esc((row.bank_name_formatted || "") + " " + (row.account_formatted || ""));
+    tr.innerHTML = `
+      <td>${esc(row.create_time)}</td>
+      <td>${userLbl}</td>
+      <td class="${typeCls}">${typeLbl}</td>
+      <td>${amt}</td>
+      <td class="${payStatusClass(row)}">${esc(row.status_formatted || row.status)}</td>
+      <td style="font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${serial}">${serial}</td>
+      <td style="font-size:11px">${bank}</td>
+      <td><div class="cell-actions">
+        <button type="button" class="btn btn-blue btn-sm" data-sync="${aid}" data-user="${userLbl}">Sync</button>
+        ${ot === 2 ? `<button type="button" class="btn btn-withdraw btn-sm" data-chk="${aid}" data-user="${userLbl}" data-amt="${parseInt(row.true_amount || row.amount || 0, 10)}" data-serial="${serial}">Check</button>` : ""}
+      </div></td>
+    `;
+    tbody.appendChild(tr);
+  });
+  const pages = Math.max(1, Math.ceil(payTotal / payLimit));
+  document.getElementById("paySummary").textContent =
+    `Tổng ${payTotal} lệnh trong DB` + (user ? ` · lọc «${user}»` : "");
+  document.getElementById("payPageInfo").textContent =
+    `Trang ${payPage} / ${pages}`;
+  tbody.querySelectorAll("[data-sync]").forEach((btn) => {
+    btn.onclick = () => syncPaymentFor(btn.getAttribute("data-sync"), btn.getAttribute("data-user"));
+  });
+  tbody.querySelectorAll("[data-chk]").forEach((btn) => {
+    btn.onclick = () => checkWithdrawRow(
+      btn.getAttribute("data-chk"),
+      btn.getAttribute("data-user"),
+      parseInt(btn.getAttribute("data-amt"), 10) || null,
+      btn.getAttribute("data-serial")
+    );
+  });
+}
+
+async function loadDepositOrders() {
+  const user = document.getElementById("depFilterUser").value.trim();
+  const st = document.getElementById("depFilterStatus").value;
+  let q = `page=1&limit=50`;
+  if (user) q += `&username=${encodeURIComponent(user)}`;
+  if (st) q += `&status=${encodeURIComponent(st)}`;
+  const res = await apiFetch("/api/deposit-orders?" + q);
+  if (!res.ok) {
+    log("Lỗi tải lệnh auto nạp: HTTP " + res.status);
+    return;
+  }
+  const data = await res.json();
+  const tbody = document.querySelector("#depTbl tbody");
+  tbody.innerHTML = "";
+  (data.list || []).forEach((row) => {
+    const tr = document.createElement("tr");
+    const stCls = String(row.status) === "Thành Công" ? "st-ok"
+      : (String(row.status).includes("Thất") ? "st-fail" : "st-pending");
+    tr.innerHTML = `
+      <td>${row.id}</td>
+      <td>${esc(row.username || row.account_id)}</td>
+      <td>${fmtPayAmount(row.amount)}</td>
+      <td class="${stCls}">${esc(row.status)}</td>
+      <td style="font-size:11px">${esc(row.serial_no)}</td>
+      <td style="font-size:11px">${esc(row.trade_no)}</td>
+      <td style="font-size:11px">${esc(row.updated_at)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  document.getElementById("depSummary").textContent = `Tổng ${data.total || 0} lệnh auto nạp`;
+}
+
+async function resolvePayAccountId() {
+  const inp = document.getElementById("payFilterUser").value.trim();
+  if (inp) {
+    const res = await apiFetch("/api/accounts");
+    if (res.ok) {
+      const rows = await res.json();
+      const low = inp.toLowerCase();
+      const hit = rows.find((r) =>
+        String(r.id) === inp || String(r.username || "").toLowerCase() === low
+      );
+      if (hit) return { id: hit.id, username: hit.username };
+    }
+  }
+  const raw = prompt("Username hoặc account_id:", inp || "");
+  if (!raw) return null;
+  const res = await apiFetch("/api/accounts");
+  if (!res.ok) return null;
+  const rows = await res.json();
+  const low = raw.trim().toLowerCase();
+  const hit = rows.find((r) =>
+    String(r.id) === raw.trim() || String(r.username || "").toLowerCase() === low
+  );
+  return hit ? { id: hit.id, username: hit.username } : null;
+}
+
+async function syncPaymentFor(accountId, username) {
+  const days = parseInt(document.getElementById("paySyncDays").value, 10) || 7;
+  log(`Đồng bộ site ${username || accountId} (${days} ngày)…`);
+  const res = await apiFetch("/api/payment-orders/sync", {
+    method: "POST",
+    body: JSON.stringify({ account_id: accountId, days, wait: true }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    log("Sync lỗi: " + (data.detail || res.status));
+    return;
+  }
+  log(`Sync OK — nạp: ${data.deposit ?? 0}, rút: ${data.withdraw ?? 0}`);
+  loadPaymentStats();
+  loadPaymentOrders();
+}
+
+async function checkWithdrawRow(accountId, username, amount, serial) {
+  log(`Check rút ${username || accountId}…`);
+  const body = { account_id: accountId, days: 7, poll: false };
+  if (amount) body.amount = amount;
+  if (serial) body.serial_no = serial;
+  const res = await apiFetch("/api/payment-orders/check-withdraw", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    log("Check rút lỗi: " + (data.detail || JSON.stringify(data).slice(0, 120)));
+    return;
+  }
+  const c = data.confirm || data;
+  if (c.confirmed) {
+    log(`✅ Rút Hoàn tất — serial ${c.serial_no || serial || "—"}`);
+  } else {
+    log("⏳ " + (c.hint || "Chưa Hoàn tất"));
+  }
+  loadPaymentStats();
+  loadPaymentOrders();
+}
+
+document.querySelectorAll(".cms-nav .nav-btn").forEach((btn) => {
+  btn.onclick = () => showCmsPage(btn.getAttribute("data-page"));
+});
+
+document.querySelectorAll(".pay-tabs .tab-btn").forEach((btn) => {
+  btn.onclick = () => {
+    document.querySelectorAll(".pay-tabs .tab-btn").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    const tab = btn.getAttribute("data-pay-tab");
+    document.getElementById("payPanelHistory").style.display = tab === "history" ? "" : "none";
+    document.getElementById("payPanelAuto").style.display = tab === "auto" ? "" : "none";
+    if (tab === "auto") loadDepositOrders();
+    else loadPaymentOrders();
+  };
+});
+
+document.getElementById("btnPayRefresh").onclick = () => refreshPaymentsData();
+document.getElementById("btnPayPrev").onclick = () => {
+  if (payPage > 1) { payPage--; loadPaymentOrders(); }
+};
+document.getElementById("btnPayNext").onclick = () => {
+  const pages = Math.max(1, Math.ceil(payTotal / payLimit));
+  if (payPage < pages) { payPage++; loadPaymentOrders(); }
+};
+document.getElementById("btnPaySync").onclick = async () => {
+  const acc = await resolvePayAccountId();
+  if (!acc) { alert("Chọn user trong ô lọc hoặc nhập account"); return; }
+  await syncPaymentFor(acc.id, acc.username);
+};
+document.getElementById("btnDepRefresh").onclick = () => refreshPaymentsData();
+document.getElementById("btnPayDeposit").onclick = async () => {
+  const acc = await resolvePayAccountId();
+  if (!acc) return;
+  showCmsPage("accounts");
+  await doDeposit(acc.id, acc.username);
+  showCmsPage("payments");
+  loadPaymentOrders();
+};
+document.getElementById("btnPayWithdraw").onclick = async () => {
+  const acc = await resolvePayAccountId();
+  if (!acc) return;
+  showCmsPage("accounts");
+  await doWithdraw(acc.id, acc.username);
+  showCmsPage("payments");
+  loadPaymentOrders();
+};
+
+["payFilterUser", "payFilterType", "payFilterStatus"].forEach((id) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const run = () => {
+    payPage = 1;
+    loadPaymentStats();
+    loadPaymentOrders();
+  };
+  el.onchange = run;
+  if (id === "payFilterUser") el.oninput = () => { clearTimeout(el._payDeb); el._payDeb = setTimeout(run, 400); };
+});
+
+document.getElementById("btnRefreshStatus").onclick = () => refreshCurrentPage();
+updateRefreshButtonHint();
+
+(async () => {
+  await initApi();
+  setFormDefaults();
+  await checkConnection();
+  loadList();
+  if (location.hash === "#payments") showCmsPage("payments");
+})();
+</script>
+</body>
+</html>

@@ -198,6 +198,14 @@ async def handle_event(user, msg):
             online_users = list(active_ws.keys())
             final_bets = run_assigner(online_users)
 
+            try:
+                from constants import load_config
+                from jackpot_night_extend import consume_post_jackpot_round
+
+                consume_post_jackpot_round(session_id, load_config())
+            except Exception as _gr:
+                print(f"⚠️ [{user}] post_jackpot grace: {_gr}", flush=True)
+
             if final_bets:
 
                 # --- Refactor: Mỗi user có 1 assign_task riêng ---

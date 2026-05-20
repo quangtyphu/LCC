@@ -22,9 +22,85 @@ from deposit_api import update_deposit_order_status
 
 
 # ========== CẤU HÌNH ==========
-NODE_SERVER_URL = "http://127.0.0.1:3000"                  # DB server
-THIRD_PARTY_API_URL = "http://localhost:8888/api/deposit"  # API bên thứ 3
-CALLBACK_URL = "http://localhost:5000/callback"            # URL callback của bạn
+NODE_SERVER_URL = os.environ.get("LC79_NODE_SERVER_URL", "http://127.0.0.1:3000").strip()
+
+
+def _load_urls() -> tuple[str, str, int]:
+	"""Banking callback luôn về handler LC79 (:5000), không dùng URL XOSO66."""
+	from constants import load_config
+
+	cfg = load_config()
+	dep = cfg.get("LC79_DEPOSIT") if isinstance(cfg.get("LC79_DEPOSIT"), dict) else {}
+	port = int(
+		dep.get("handler_port")
+		or os.environ.get("LC79_DEPOSIT_HANDLER_PORT")
+		or 5000
+	)
+	callback = str(
+		dep.get("callback_url")
+		or os.environ.get("LC79_DEPOSIT_CALLBACK_URL")
+		or f"http://127.0.0.1:{port}/callback"
+	).strip()
+	third = str(
+		dep.get("third_party_url")
+		or os.environ.get("LC79_THIRD_PARTY_DEPOSIT_URL")
+		or "http://127.0.0.1:8888/api/deposit"
+	).strip()
+	return third, callback, port
+
+
+THIRD_PARTY_API_URL, CALLBACK_URL, HANDLER_PORT = _load_urls()
+
+
+def refresh_urls() -> None:
+	global THIRD_PARTY_API_URL, CALLBACK_URL, HANDLER_PORT
+	THIRD_PARTY_API_URL, CALLBACK_URL, HANDLER_PORT = _load_urls()
+
+
+def _xoso66_callback_forward_url() -> str:
+	"""URL handler XOSO66 — chuyển callback khi đơn không có trên Node LC79."""
+	u = os.environ.get("XOSO66_CALLBACK_FORWARD_URL", "").strip()
+	if u:
+		return u
+	try:
+		from pathlib import Path
+		import json
+
+		p = Path(__file__).resolve().parent / "xoso66_standalone" / "xoso66_config.json"
+		if p.is_file():
+			cfg = json.loads(p.read_text(encoding="utf-8"))
+			ad = cfg.get("auto_deposit") if isinstance(cfg.get("auto_deposit"), dict) else {}
+			port = int(ad.get("handler_port") or 5000)
+			return str(
+				ad.get("callback_url") or f"http://127.0.0.1:{port}/callback"
+			).strip()
+	except Exception:
+		pass
+	return "http://127.0.0.1:5000/callback"
+
+
+def _forward_callback_to_xoso66(data: dict, order_id) -> tuple[dict, int] | None:
+	"""Bên thứ 3 gọi :5000 nhưng lệnh thuộc XOSO66 — proxy sang handler standalone."""
+	url = _xoso66_callback_forward_url()
+	if url.rstrip("/").lower() == CALLBACK_URL.rstrip("/").lower():
+		return None
+	try:
+		fr = requests.post(url, json=data, timeout=30)
+		print(
+			f"↪️ Callback order #{order_id} → XOSO66 {url} HTTP {fr.status_code}",
+			flush=True,
+		)
+		if fr.content:
+			try:
+				body = fr.json()
+			except Exception:
+				body = {"raw": fr.text[:500]}
+		else:
+			body = {}
+		return body, fr.status_code
+	except Exception as e:
+		print(f"⚠️ Chuyển callback XOSO66 thất bại: {e}", flush=True)
+		return None
 
 
 def _parse_amount(val) -> int:
@@ -141,6 +217,7 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict:
 	"""
 	Gửi thông tin nạp tiền cho bên thứ 3 (theo format của họ).
 	"""
+	refresh_urls()
 	order_id = order_data.get("order_id")
 	qr_base64 = order_data.get("qr_base64", "")
 	tc = (order_data.get("transfer_content") or "").strip()
@@ -163,6 +240,12 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict:
 	if tc:
 		payload["transferContent"] = tc
 		payload["msg"] = tc
+	payload["callbackUrl"] = CALLBACK_URL
+	payload["callback_url"] = CALLBACK_URL
+	print(
+		f"🔗 [LC79] Gửi Banking order #{order_id} | callback={CALLBACK_URL}",
+		flush=True,
+	)
 	try:
 		resp = requests.post(THIRD_PARTY_API_URL, json=payload, timeout=15)
 		data = resp.json()
@@ -205,6 +288,22 @@ def receive_callback():
 
 	if not status:
 		return jsonify({"error": "Missing status"}), 400
+
+	refresh_urls()
+	from deposit_callback_routing import resolve_callback_game
+
+	game = resolve_callback_game(order_id, username, transfer_content)
+	if game == "xoso66":
+		fwd = _forward_callback_to_xoso66(data, order_id)
+		if fwd is not None:
+			body, code = fwd
+			return jsonify(body), code
+		return jsonify({"error": "Không chuyển được callback sang XOSO66"}), 502
+	if game == "unknown":
+		print(
+			f"⚠️ [LC79] Callback #{order_id} chưa thấy trên Node — xử lý tại :5000 (không chuyển XOSO66)",
+			flush=True,
+		)
 
 	callback_amount = _parse_amount(data.get("amount"))
 
@@ -363,6 +462,9 @@ def create_deposit():
 	except Exception as e:
 		print(f"⚠️ Không lưu được cache sau khi tạo order: {e}", flush=True)
 
+	refresh_urls()
+	print(f"📍 [LC79] Handler callback URL: {CALLBACK_URL}", flush=True)
+
 	# 2) Gửi thông tin cho bên thứ 3
 	third_party_result = send_to_third_party(username, effective_amount, result)
 	if not third_party_result.get("ok"):
@@ -412,4 +514,5 @@ if __name__ == '__main__':
 	print(f"📍 Third Party API: {THIRD_PARTY_API_URL}")
 	print("="*60 + "\n")
 
-	app.run(host='0.0.0.0', port=5000, debug=False)
+	refresh_urls()
+	app.run(host="0.0.0.0", port=HANDLER_PORT, debug=False)

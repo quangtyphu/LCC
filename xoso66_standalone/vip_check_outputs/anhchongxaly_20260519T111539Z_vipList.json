@@ -1,0 +1,3269 @@
+{
+  "fetched_at_utc": "2026-05-19T11:15:39.923282+00:00",
+  "username": "anhchongxaly",
+  "account_id": "acc9",
+  "vip_level_db_before": "VIP1",
+  "vip_progress_db_before": 59,
+  "vip_db_saved": {
+    "ok": true,
+    "vip_level": "VIP1",
+    "vip_progress": 59
+  },
+  "prize_status_legend": {
+    "0": "chua_dat_dk",
+    "1": "duoc_nhan",
+    "2": "da_nhan",
+    "3": "cho_moc_thoi_gian"
+  },
+  "prize_status_notes": {
+    "0": "Chưa đạt điều kiện (level hoặc loại thưởng chưa mở).",
+    "1": "Được nhận — gọi API claim.",
+    "2": "Đã nhận (suy đoán, chưa thử nhận để xác nhận).",
+    "3": "Đủ ĐK nhưng chờ mốc (thưởng tuần/tháng). Thường weekly reset thứ 2 00:00, monthly ngày 1 00:00 → có thể về status 1."
+  },
+  "claim_when_status": 1,
+  "updated": "2026-05-19",
+  "verified": {
+    "1": "co (mongtuongtu vipList)",
+    "2": "chua",
+    "3": "suy_doan"
+  },
+  "api": {
+    "ok": true,
+    "http_status": 200,
+    "code": 1,
+    "msg": "Hoàn tất"
+  },
+  "summary": {
+    "vip_snapshot": {
+      "current_level": 1,
+      "vip_level": "VIP1",
+      "vip_progress": 59,
+      "next_level": 2,
+      "completed_value": 1784000,
+      "target_value": 3000000,
+      "reward_count": 1
+    },
+    "vip_data": {
+      "current_level": 1,
+      "next_level": 2,
+      "target_value": 3000000,
+      "completed_value": 1784000,
+      "progress": 59,
+      "user_type": 1,
+      "reward_count": 1
+    },
+    "prize_status_counts": {
+      "chua_dat_dk": 147,
+      "duoc_nhan": 1,
+      "da_nhan": 0,
+      "cho_moc_thoi_gian": 2
+    },
+    "claimable_count": 1,
+    "claimable": [
+      {
+        "level": 1,
+        "level_formatted": "VIP1",
+        "reward_type": "upgrade",
+        "title": "vip upgrade",
+        "prize": 5000,
+        "status": 1,
+        "status_label": "duoc_nhan"
+      }
+    ],
+    "waiting_schedule_count": 2,
+    "waiting_schedule": [
+      {
+        "level": 1,
+        "level_formatted": "VIP1",
+        "reward_type": "weekly",
+        "title": "vip weekly",
+        "prize": 2500,
+        "status": 3,
+        "status_label": "cho_moc_thoi_gian"
+      },
+      {
+        "level": 1,
+        "level_formatted": "VIP1",
+        "reward_type": "monthly",
+        "title": "vip monthly",
+        "prize": 5000,
+        "status": 3,
+        "status_label": "cho_moc_thoi_gian"
+      }
+    ],
+    "level_list_count": 50
+  },
+  "data": {
+    "id": 1,
+    "title": "Phần thưởng VIP",
+    "start_time": "13/04/2025 00:00:00",
+    "end_time": "01/01/2030 00:00:00",
+    "content": "1. Chỉ cần đặt cược đạt đủ số tiền cược quy định, bạn sẽ được nâng lên cấp độ VIP phù hợp với điều kiện đã nêu ( Trò chơi xổ số không được tham gia chương trình khuyến mãi này)\n2. Vào 00:00 thứ 2 hàng tuần, bạn sẽ nhận được tiền thưởng tuần theo cấp độ VIP của bạn.\n3. Vào 00:00 ngày 1 hàng tháng, bạn sẽ nhận được tiền thưởng tháng theo cấp độ VIP của bạn.\n4. Trong tháng đó, hội viên cần duy trì tiền cược theo quy định để giữ cấp bậc VIP. Nếu không đáp ứng điều kiện cấp bậc VIP sẽ bị hạ xuống\n5. Tiền thưởng nhận được cần đạt 1 vòng cược.",
+    "desc": "1. Chỉ cần đặt cược đạt đủ số tiền cược quy định, bạn sẽ được nâng lên cấp độ VIP phù hợp với điều kiện đã nêu ( Trò chơi xổ số không được tham gia chương trình khuyến mãi này)\n2. Vào 00:00 thứ 2 hàng tuần, bạn sẽ nhận được tiền thưởng tuần theo cấp độ VIP của bạn.\n3. Vào 00:00 ngày 1 hàng tháng, bạn sẽ nhận được tiền thưởng tháng theo cấp độ VIP của bạn.\n4. Trong tháng đó, hội viên cần duy trì tiền cược theo quy định để giữ cấp bậc VIP. Nếu không đáp ứng điều kiện cấp bậc VIP sẽ bị hạ xuống\n5. Tiền thưởng nhận được cần đạt 1 vòng cược.",
+    "rule": "Quy tắc quy đổi điểm VIP：\n\nViệc quy đổi điểm này chỉ áp dụng cho các chương trình khuyến mãi VIP, không ảnh hưởng đến các khuyến mãi khác và việc rút tiền.<table><tr><td>Luckywin</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 200 điểm</td></tr><tr><td>Casino</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 200 điểm</td></tr><tr><td>Nổ hũ</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 1,000 điểm</td></tr><tr><td>Mini game</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 1,000 điểm</td></tr><tr><td>Bắn cá</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 1,000 điểm</td></tr><tr><td>Thể thao</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 1,000 điểm</td></tr><tr><td>Game bài</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 1,000 điểm</td></tr><tr><td>Đá gà</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 1,000 điểm</td></tr></table>",
+    "cid": [
+      "2",
+      "5",
+      "1",
+      "3",
+      "4",
+      "6",
+      "7",
+      "8"
+    ],
+    "platform_id": [],
+    "vip_data": {
+      "current_level": 1,
+      "next_level": 2,
+      "target_value": 3000000,
+      "completed_value": 1784000,
+      "progress": 59,
+      "user_type": 1,
+      "reward_count": 1
+    },
+    "level_list": [
+      {
+        "id": 1,
+        "level": 1,
+        "next_level": 2,
+        "level_formatted": "VIP1",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 5000,
+            "status": 1
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 2500,
+            "status": 3
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 5000,
+            "status": 3
+          }
+        ],
+        "target_value": 500000,
+        "keep_amount": 50000,
+        "daily_amount": 0,
+        "weekly_amount": 50000,
+        "monthly_amount": 150000
+      },
+      {
+        "id": 2,
+        "level": 2,
+        "next_level": 3,
+        "level_formatted": "VIP2",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 15000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 5000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 10000,
+            "status": 0
+          }
+        ],
+        "target_value": 3000000,
+        "keep_amount": 300000,
+        "daily_amount": 0,
+        "weekly_amount": 140000,
+        "monthly_amount": 420000
+      },
+      {
+        "id": 3,
+        "level": 3,
+        "next_level": 4,
+        "level_formatted": "VIP3",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 50000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 10000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 15000,
+            "status": 0
+          }
+        ],
+        "target_value": 10000000,
+        "keep_amount": 1000000,
+        "daily_amount": 0,
+        "weekly_amount": 400000,
+        "monthly_amount": 1200000
+      },
+      {
+        "id": 4,
+        "level": 4,
+        "next_level": 5,
+        "level_formatted": "VIP4",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 100000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 20000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 40000,
+            "status": 0
+          }
+        ],
+        "target_value": 30000000,
+        "keep_amount": 3000000,
+        "daily_amount": 0,
+        "weekly_amount": 2400000,
+        "monthly_amount": 7200000
+      },
+      {
+        "id": 5,
+        "level": 5,
+        "next_level": 6,
+        "level_formatted": "VIP5",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 200000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 25000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 50000,
+            "status": 0
+          }
+        ],
+        "target_value": 150000000,
+        "keep_amount": 15000000,
+        "daily_amount": 0,
+        "weekly_amount": 3000000,
+        "monthly_amount": 9000000
+      },
+      {
+        "id": 6,
+        "level": 6,
+        "next_level": 7,
+        "level_formatted": "VIP6",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 280000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 40000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 75000,
+            "status": 0
+          }
+        ],
+        "target_value": 300000000,
+        "keep_amount": 30000000,
+        "daily_amount": 0,
+        "weekly_amount": 4000000,
+        "monthly_amount": 12000000
+      },
+      {
+        "id": 7,
+        "level": 7,
+        "next_level": 8,
+        "level_formatted": "VIP7",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 350000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 75000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 150000,
+            "status": 0
+          }
+        ],
+        "target_value": 500000000,
+        "keep_amount": 50000000,
+        "daily_amount": 0,
+        "weekly_amount": 20000000,
+        "monthly_amount": 60000000
+      },
+      {
+        "id": 8,
+        "level": 8,
+        "next_level": 9,
+        "level_formatted": "VIP8",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 800000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 150000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 300000,
+            "status": 0
+          }
+        ],
+        "target_value": 1500000000,
+        "keep_amount": 150000000,
+        "daily_amount": 0,
+        "weekly_amount": 30000000,
+        "monthly_amount": 90000000
+      },
+      {
+        "id": 9,
+        "level": 9,
+        "next_level": 10,
+        "level_formatted": "VIP9",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 1100000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 250000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 500000,
+            "status": 0
+          }
+        ],
+        "target_value": 3000000000,
+        "keep_amount": 300000000,
+        "daily_amount": 0,
+        "weekly_amount": 40000000,
+        "monthly_amount": 120000000
+      },
+      {
+        "id": 10,
+        "level": 10,
+        "next_level": 11,
+        "level_formatted": "VIP10",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 2000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 400000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 750000,
+            "status": 0
+          }
+        ],
+        "target_value": 5000000000,
+        "keep_amount": 500000000,
+        "daily_amount": 0,
+        "weekly_amount": 60000000,
+        "monthly_amount": 180000000
+      },
+      {
+        "id": 11,
+        "level": 11,
+        "next_level": 12,
+        "level_formatted": "VIP11",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 3000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 500000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 1300000,
+            "status": 0
+          }
+        ],
+        "target_value": 10000000000,
+        "keep_amount": 500000000,
+        "daily_amount": 0,
+        "weekly_amount": 80000000,
+        "monthly_amount": 240000000
+      },
+      {
+        "id": 12,
+        "level": 12,
+        "next_level": 13,
+        "level_formatted": "VIP12",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 5000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 800000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 3000000,
+            "status": 0
+          }
+        ],
+        "target_value": 15000000000,
+        "keep_amount": 750000000,
+        "daily_amount": 0,
+        "weekly_amount": 100000000,
+        "monthly_amount": 300000000
+      },
+      {
+        "id": 13,
+        "level": 13,
+        "next_level": 14,
+        "level_formatted": "VIP13",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 5500000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 1000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 3400000,
+            "status": 0
+          }
+        ],
+        "target_value": 18000000000,
+        "keep_amount": 900000000,
+        "daily_amount": 0,
+        "weekly_amount": 150000000,
+        "monthly_amount": 450000000
+      },
+      {
+        "id": 14,
+        "level": 14,
+        "next_level": 15,
+        "level_formatted": "VIP14",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 7000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 1300000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 4500000,
+            "status": 0
+          }
+        ],
+        "target_value": 25000000000,
+        "keep_amount": 1250000000,
+        "daily_amount": 0,
+        "weekly_amount": 170000000,
+        "monthly_amount": 510000000
+      },
+      {
+        "id": 15,
+        "level": 15,
+        "next_level": 16,
+        "level_formatted": "VIP15",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 7500000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 1400000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 4700000,
+            "status": 0
+          }
+        ],
+        "target_value": 30000000000,
+        "keep_amount": 1500000000,
+        "daily_amount": 0,
+        "weekly_amount": 190000000,
+        "monthly_amount": 570000000
+      },
+      {
+        "id": 16,
+        "level": 16,
+        "next_level": 17,
+        "level_formatted": "VIP16",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 8000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 1800000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 5000000,
+            "status": 0
+          }
+        ],
+        "target_value": 35000000000,
+        "keep_amount": 1750000000,
+        "daily_amount": 0,
+        "weekly_amount": 220000000,
+        "monthly_amount": 660000000
+      },
+      {
+        "id": 17,
+        "level": 17,
+        "next_level": 18,
+        "level_formatted": "VIP17",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 9000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 2500000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 6000000,
+            "status": 0
+          }
+        ],
+        "target_value": 50000000000,
+        "keep_amount": 2500000000,
+        "daily_amount": 0,
+        "weekly_amount": 250000000,
+        "monthly_amount": 750000000
+      },
+      {
+        "id": 18,
+        "level": 18,
+        "next_level": 19,
+        "level_formatted": "VIP18",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 10000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 2700000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 6500000,
+            "status": 0
+          }
+        ],
+        "target_value": 55000000000,
+        "keep_amount": 2750000000,
+        "daily_amount": 0,
+        "weekly_amount": 300000000,
+        "monthly_amount": 900000000
+      },
+      {
+        "id": 19,
+        "level": 19,
+        "next_level": 20,
+        "level_formatted": "VIP19",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 11000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 3300000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 7000000,
+            "status": 0
+          }
+        ],
+        "target_value": 65000000000,
+        "keep_amount": 3250000000,
+        "daily_amount": 0,
+        "weekly_amount": 350000000,
+        "monthly_amount": 1050000000
+      },
+      {
+        "id": 20,
+        "level": 20,
+        "next_level": 21,
+        "level_formatted": "VIP20",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 12000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 3600000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 8000000,
+            "status": 0
+          }
+        ],
+        "target_value": 70000000000,
+        "keep_amount": 3500000000,
+        "daily_amount": 0,
+        "weekly_amount": 400000000,
+        "monthly_amount": 1100000000
+      },
+      {
+        "id": 21,
+        "level": 21,
+        "next_level": 22,
+        "level_formatted": "VIP21",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 13000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 4000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 9000000,
+            "status": 0
+          }
+        ],
+        "target_value": 80000000000,
+        "keep_amount": 4000000000,
+        "daily_amount": 0,
+        "weekly_amount": 450000000,
+        "monthly_amount": 1150000000
+      },
+      {
+        "id": 22,
+        "level": 22,
+        "next_level": 23,
+        "level_formatted": "VIP22",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 15500000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 5000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 11000000,
+            "status": 0
+          }
+        ],
+        "target_value": 100000000000,
+        "keep_amount": 5000000000,
+        "daily_amount": 0,
+        "weekly_amount": 500000000,
+        "monthly_amount": 1200000000
+      },
+      {
+        "id": 23,
+        "level": 23,
+        "next_level": 24,
+        "level_formatted": "VIP23",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 17000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 5800000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 13000000,
+            "status": 0
+          }
+        ],
+        "target_value": 120000000000,
+        "keep_amount": 6000000000,
+        "daily_amount": 0,
+        "weekly_amount": 550000000,
+        "monthly_amount": 1250000000
+      },
+      {
+        "id": 24,
+        "level": 24,
+        "next_level": 25,
+        "level_formatted": "VIP24",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 17500000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 6000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 14000000,
+            "status": 0
+          }
+        ],
+        "target_value": 130000000000,
+        "keep_amount": 6500000000,
+        "daily_amount": 0,
+        "weekly_amount": 600000000,
+        "monthly_amount": 1300000000
+      },
+      {
+        "id": 25,
+        "level": 25,
+        "next_level": 26,
+        "level_formatted": "VIP25",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 18500000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 6500000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 15000000,
+            "status": 0
+          }
+        ],
+        "target_value": 150000000000,
+        "keep_amount": 7500000000,
+        "daily_amount": 0,
+        "weekly_amount": 650000000,
+        "monthly_amount": 1350000000
+      },
+      {
+        "id": 26,
+        "level": 26,
+        "next_level": 27,
+        "level_formatted": "VIP26",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 25000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 7800000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 18000000,
+            "status": 0
+          }
+        ],
+        "target_value": 180000000000,
+        "keep_amount": 9000000000,
+        "daily_amount": 0,
+        "weekly_amount": 700000000,
+        "monthly_amount": 1400000000
+      },
+      {
+        "id": 27,
+        "level": 27,
+        "next_level": 28,
+        "level_formatted": "VIP27",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 29000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 8500000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 20000000,
+            "status": 0
+          }
+        ],
+        "target_value": 200000000000,
+        "keep_amount": 10000000000,
+        "daily_amount": 0,
+        "weekly_amount": 750000000,
+        "monthly_amount": 1450000000
+      },
+      {
+        "id": 28,
+        "level": 28,
+        "next_level": 29,
+        "level_formatted": "VIP28",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 31000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 9800000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 23000000,
+            "status": 0
+          }
+        ],
+        "target_value": 230000000000,
+        "keep_amount": 11500000000,
+        "daily_amount": 0,
+        "weekly_amount": 800000000,
+        "monthly_amount": 1500000000
+      },
+      {
+        "id": 29,
+        "level": 29,
+        "next_level": 30,
+        "level_formatted": "VIP29",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 32000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 11000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 25000000,
+            "status": 0
+          }
+        ],
+        "target_value": 250000000000,
+        "keep_amount": 12500000000,
+        "daily_amount": 0,
+        "weekly_amount": 850000000,
+        "monthly_amount": 1550000000
+      },
+      {
+        "id": 30,
+        "level": 30,
+        "next_level": 31,
+        "level_formatted": "VIP30",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 33500000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 12000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 27000000,
+            "status": 0
+          }
+        ],
+        "target_value": 300000000000,
+        "keep_amount": 15000000000,
+        "daily_amount": 0,
+        "weekly_amount": 900000000,
+        "monthly_amount": 1600000000
+      },
+      {
+        "id": 31,
+        "level": 31,
+        "next_level": 32,
+        "level_formatted": "VIP31",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 38500000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 13000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 30000000,
+            "status": 0
+          }
+        ],
+        "target_value": 350000000000,
+        "keep_amount": 17500000000,
+        "daily_amount": 0,
+        "weekly_amount": 950000000,
+        "monthly_amount": 1650000000
+      },
+      {
+        "id": 32,
+        "level": 32,
+        "next_level": 33,
+        "level_formatted": "VIP32",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 60000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 15000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 35000000,
+            "status": 0
+          }
+        ],
+        "target_value": 400000000000,
+        "keep_amount": 20000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1000000000,
+        "monthly_amount": 1700000000
+      },
+      {
+        "id": 33,
+        "level": 33,
+        "next_level": 34,
+        "level_formatted": "VIP33",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 63000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 18000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 40000000,
+            "status": 0
+          }
+        ],
+        "target_value": 450000000000,
+        "keep_amount": 22500000000,
+        "daily_amount": 0,
+        "weekly_amount": 1050000000,
+        "monthly_amount": 1750000000
+      },
+      {
+        "id": 34,
+        "level": 34,
+        "next_level": 35,
+        "level_formatted": "VIP34",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 65000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 20000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 45000000,
+            "status": 0
+          }
+        ],
+        "target_value": 500000000000,
+        "keep_amount": 25000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1100000000,
+        "monthly_amount": 1800000000
+      },
+      {
+        "id": 35,
+        "level": 35,
+        "next_level": 36,
+        "level_formatted": "VIP35",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 68000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 23000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 50000000,
+            "status": 0
+          }
+        ],
+        "target_value": 600000000000,
+        "keep_amount": 30000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1150000000,
+        "monthly_amount": 1850000000
+      },
+      {
+        "id": 36,
+        "level": 36,
+        "next_level": 37,
+        "level_formatted": "VIP36",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 90000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 26000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 60000000,
+            "status": 0
+          }
+        ],
+        "target_value": 700000000000,
+        "keep_amount": 35000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1200000000,
+        "monthly_amount": 1900000000
+      },
+      {
+        "id": 37,
+        "level": 37,
+        "next_level": 38,
+        "level_formatted": "VIP37",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 95000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 30000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 65000000,
+            "status": 0
+          }
+        ],
+        "target_value": 800000000000,
+        "keep_amount": 40000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1250000000,
+        "monthly_amount": 1950000000
+      },
+      {
+        "id": 38,
+        "level": 38,
+        "next_level": 39,
+        "level_formatted": "VIP38",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 100000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 34000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 75000000,
+            "status": 0
+          }
+        ],
+        "target_value": 900000000000,
+        "keep_amount": 45000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1300000000,
+        "monthly_amount": 2000000000
+      },
+      {
+        "id": 39,
+        "level": 39,
+        "next_level": 40,
+        "level_formatted": "VIP39",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 105000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 38000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 80000000,
+            "status": 0
+          }
+        ],
+        "target_value": 1000000000000,
+        "keep_amount": 50000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1350000000,
+        "monthly_amount": 2050000000
+      },
+      {
+        "id": 40,
+        "level": 40,
+        "next_level": 41,
+        "level_formatted": "VIP40",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 115000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 39000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 85000000,
+            "status": 0
+          }
+        ],
+        "target_value": 1100000000000,
+        "keep_amount": 55000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1400000000,
+        "monthly_amount": 2100000000
+      },
+      {
+        "id": 41,
+        "level": 41,
+        "next_level": 42,
+        "level_formatted": "VIP41",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 128000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 40000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 90000000,
+            "status": 0
+          }
+        ],
+        "target_value": 1300000000000,
+        "keep_amount": 65000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1450000000,
+        "monthly_amount": 2150000000
+      },
+      {
+        "id": 42,
+        "level": 42,
+        "next_level": 43,
+        "level_formatted": "VIP42",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 155000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 55000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 120000000,
+            "status": 0
+          }
+        ],
+        "target_value": 1500000000000,
+        "keep_amount": 75000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1500000000,
+        "monthly_amount": 2200000000
+      },
+      {
+        "id": 43,
+        "level": 43,
+        "next_level": 44,
+        "level_formatted": "VIP43",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 170000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 60000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 170000000,
+            "status": 0
+          }
+        ],
+        "target_value": 1800000000000,
+        "keep_amount": 90000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1550000000,
+        "monthly_amount": 2250000000
+      },
+      {
+        "id": 44,
+        "level": 44,
+        "next_level": 45,
+        "level_formatted": "VIP44",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 200000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 70000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 200000000,
+            "status": 0
+          }
+        ],
+        "target_value": 2000000000000,
+        "keep_amount": 100000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1600000000,
+        "monthly_amount": 2300000000
+      },
+      {
+        "id": 45,
+        "level": 45,
+        "next_level": 46,
+        "level_formatted": "VIP45",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 250000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 75000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 250000000,
+            "status": 0
+          }
+        ],
+        "target_value": 2500000000000,
+        "keep_amount": 125000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1650000000,
+        "monthly_amount": 2350000000
+      },
+      {
+        "id": 46,
+        "level": 46,
+        "next_level": 47,
+        "level_formatted": "VIP46",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 300000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 80000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 300000000,
+            "status": 0
+          }
+        ],
+        "target_value": 3000000000000,
+        "keep_amount": 150000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1700000000,
+        "monthly_amount": 2400000000
+      },
+      {
+        "id": 47,
+        "level": 47,
+        "next_level": 48,
+        "level_formatted": "VIP47",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 350000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 100000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 350000000,
+            "status": 0
+          }
+        ],
+        "target_value": 3500000000000,
+        "keep_amount": 175000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1750000000,
+        "monthly_amount": 2450000000
+      },
+      {
+        "id": 48,
+        "level": 48,
+        "next_level": 49,
+        "level_formatted": "VIP48",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 400000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 130000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 400000000,
+            "status": 0
+          }
+        ],
+        "target_value": 4000000000000,
+        "keep_amount": 200000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1800000000,
+        "monthly_amount": 2500000000
+      },
+      {
+        "id": 49,
+        "level": 49,
+        "next_level": 50,
+        "level_formatted": "VIP49",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 450000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 150000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 450000000,
+            "status": 0
+          }
+        ],
+        "target_value": 4500000000000,
+        "keep_amount": 225000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1850000000,
+        "monthly_amount": 2550000000
+      },
+      {
+        "id": 50,
+        "level": 50,
+        "next_level": null,
+        "level_formatted": "VIP50",
+        "prize_list": [
+          {
+            "reward_type": "upgrade",
+            "title": "vip upgrade",
+            "prize": 500000000,
+            "status": 0
+          },
+          {
+            "reward_type": "weekly",
+            "title": "vip weekly",
+            "prize": 200000000,
+            "status": 0
+          },
+          {
+            "reward_type": "monthly",
+            "title": "vip monthly",
+            "prize": 500000000,
+            "status": 0
+          }
+        ],
+        "target_value": 5000000000000,
+        "keep_amount": 250000000000,
+        "daily_amount": 0,
+        "weekly_amount": 1900000000,
+        "monthly_amount": 2600000000
+      }
+    ],
+    "reward_prize": 5000,
+    "reward_count": 1
+  },
+  "raw": {
+    "code": 1,
+    "msg": "Hoàn tất",
+    "time": 1779189340,
+    "v": null,
+    "data": {
+      "id": 1,
+      "title": "Phần thưởng VIP",
+      "start_time": "13/04/2025 00:00:00",
+      "end_time": "01/01/2030 00:00:00",
+      "content": "1. Chỉ cần đặt cược đạt đủ số tiền cược quy định, bạn sẽ được nâng lên cấp độ VIP phù hợp với điều kiện đã nêu ( Trò chơi xổ số không được tham gia chương trình khuyến mãi này)\n2. Vào 00:00 thứ 2 hàng tuần, bạn sẽ nhận được tiền thưởng tuần theo cấp độ VIP của bạn.\n3. Vào 00:00 ngày 1 hàng tháng, bạn sẽ nhận được tiền thưởng tháng theo cấp độ VIP của bạn.\n4. Trong tháng đó, hội viên cần duy trì tiền cược theo quy định để giữ cấp bậc VIP. Nếu không đáp ứng điều kiện cấp bậc VIP sẽ bị hạ xuống\n5. Tiền thưởng nhận được cần đạt 1 vòng cược.",
+      "desc": "1. Chỉ cần đặt cược đạt đủ số tiền cược quy định, bạn sẽ được nâng lên cấp độ VIP phù hợp với điều kiện đã nêu ( Trò chơi xổ số không được tham gia chương trình khuyến mãi này)\n2. Vào 00:00 thứ 2 hàng tuần, bạn sẽ nhận được tiền thưởng tuần theo cấp độ VIP của bạn.\n3. Vào 00:00 ngày 1 hàng tháng, bạn sẽ nhận được tiền thưởng tháng theo cấp độ VIP của bạn.\n4. Trong tháng đó, hội viên cần duy trì tiền cược theo quy định để giữ cấp bậc VIP. Nếu không đáp ứng điều kiện cấp bậc VIP sẽ bị hạ xuống\n5. Tiền thưởng nhận được cần đạt 1 vòng cược.",
+      "rule": "Quy tắc quy đổi điểm VIP：\n\nViệc quy đổi điểm này chỉ áp dụng cho các chương trình khuyến mãi VIP, không ảnh hưởng đến các khuyến mãi khác và việc rút tiền.<table><tr><td>Luckywin</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 200 điểm</td></tr><tr><td>Casino</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 200 điểm</td></tr><tr><td>Nổ hũ</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 1,000 điểm</td></tr><tr><td>Mini game</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 1,000 điểm</td></tr><tr><td>Bắn cá</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 1,000 điểm</td></tr><tr><td>Thể thao</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 1,000 điểm</td></tr><tr><td>Game bài</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 1,000 điểm</td></tr><tr><td>Đá gà</td><td>Mỗi 1,000 VNĐ cược hợp lệ = 1,000 điểm</td></tr></table>",
+      "cid": [
+        "2",
+        "5",
+        "1",
+        "3",
+        "4",
+        "6",
+        "7",
+        "8"
+      ],
+      "platform_id": [],
+      "vip_data": {
+        "current_level": 1,
+        "next_level": 2,
+        "target_value": 3000000,
+        "completed_value": 1784000,
+        "progress": 59,
+        "user_type": 1,
+        "reward_count": 1
+      },
+      "level_list": [
+        {
+          "id": 1,
+          "level": 1,
+          "next_level": 2,
+          "level_formatted": "VIP1",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 5000,
+              "status": 1
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 2500,
+              "status": 3
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 5000,
+              "status": 3
+            }
+          ],
+          "target_value": 500000,
+          "keep_amount": 50000,
+          "daily_amount": 0,
+          "weekly_amount": 50000,
+          "monthly_amount": 150000
+        },
+        {
+          "id": 2,
+          "level": 2,
+          "next_level": 3,
+          "level_formatted": "VIP2",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 15000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 5000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 10000,
+              "status": 0
+            }
+          ],
+          "target_value": 3000000,
+          "keep_amount": 300000,
+          "daily_amount": 0,
+          "weekly_amount": 140000,
+          "monthly_amount": 420000
+        },
+        {
+          "id": 3,
+          "level": 3,
+          "next_level": 4,
+          "level_formatted": "VIP3",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 50000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 10000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 15000,
+              "status": 0
+            }
+          ],
+          "target_value": 10000000,
+          "keep_amount": 1000000,
+          "daily_amount": 0,
+          "weekly_amount": 400000,
+          "monthly_amount": 1200000
+        },
+        {
+          "id": 4,
+          "level": 4,
+          "next_level": 5,
+          "level_formatted": "VIP4",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 100000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 20000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 40000,
+              "status": 0
+            }
+          ],
+          "target_value": 30000000,
+          "keep_amount": 3000000,
+          "daily_amount": 0,
+          "weekly_amount": 2400000,
+          "monthly_amount": 7200000
+        },
+        {
+          "id": 5,
+          "level": 5,
+          "next_level": 6,
+          "level_formatted": "VIP5",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 200000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 25000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 50000,
+              "status": 0
+            }
+          ],
+          "target_value": 150000000,
+          "keep_amount": 15000000,
+          "daily_amount": 0,
+          "weekly_amount": 3000000,
+          "monthly_amount": 9000000
+        },
+        {
+          "id": 6,
+          "level": 6,
+          "next_level": 7,
+          "level_formatted": "VIP6",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 280000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 40000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 75000,
+              "status": 0
+            }
+          ],
+          "target_value": 300000000,
+          "keep_amount": 30000000,
+          "daily_amount": 0,
+          "weekly_amount": 4000000,
+          "monthly_amount": 12000000
+        },
+        {
+          "id": 7,
+          "level": 7,
+          "next_level": 8,
+          "level_formatted": "VIP7",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 350000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 75000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 150000,
+              "status": 0
+            }
+          ],
+          "target_value": 500000000,
+          "keep_amount": 50000000,
+          "daily_amount": 0,
+          "weekly_amount": 20000000,
+          "monthly_amount": 60000000
+        },
+        {
+          "id": 8,
+          "level": 8,
+          "next_level": 9,
+          "level_formatted": "VIP8",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 800000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 150000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 300000,
+              "status": 0
+            }
+          ],
+          "target_value": 1500000000,
+          "keep_amount": 150000000,
+          "daily_amount": 0,
+          "weekly_amount": 30000000,
+          "monthly_amount": 90000000
+        },
+        {
+          "id": 9,
+          "level": 9,
+          "next_level": 10,
+          "level_formatted": "VIP9",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 1100000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 250000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 500000,
+              "status": 0
+            }
+          ],
+          "target_value": 3000000000,
+          "keep_amount": 300000000,
+          "daily_amount": 0,
+          "weekly_amount": 40000000,
+          "monthly_amount": 120000000
+        },
+        {
+          "id": 10,
+          "level": 10,
+          "next_level": 11,
+          "level_formatted": "VIP10",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 2000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 400000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 750000,
+              "status": 0
+            }
+          ],
+          "target_value": 5000000000,
+          "keep_amount": 500000000,
+          "daily_amount": 0,
+          "weekly_amount": 60000000,
+          "monthly_amount": 180000000
+        },
+        {
+          "id": 11,
+          "level": 11,
+          "next_level": 12,
+          "level_formatted": "VIP11",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 3000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 500000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 1300000,
+              "status": 0
+            }
+          ],
+          "target_value": 10000000000,
+          "keep_amount": 500000000,
+          "daily_amount": 0,
+          "weekly_amount": 80000000,
+          "monthly_amount": 240000000
+        },
+        {
+          "id": 12,
+          "level": 12,
+          "next_level": 13,
+          "level_formatted": "VIP12",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 5000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 800000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 3000000,
+              "status": 0
+            }
+          ],
+          "target_value": 15000000000,
+          "keep_amount": 750000000,
+          "daily_amount": 0,
+          "weekly_amount": 100000000,
+          "monthly_amount": 300000000
+        },
+        {
+          "id": 13,
+          "level": 13,
+          "next_level": 14,
+          "level_formatted": "VIP13",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 5500000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 1000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 3400000,
+              "status": 0
+            }
+          ],
+          "target_value": 18000000000,
+          "keep_amount": 900000000,
+          "daily_amount": 0,
+          "weekly_amount": 150000000,
+          "monthly_amount": 450000000
+        },
+        {
+          "id": 14,
+          "level": 14,
+          "next_level": 15,
+          "level_formatted": "VIP14",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 7000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 1300000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 4500000,
+              "status": 0
+            }
+          ],
+          "target_value": 25000000000,
+          "keep_amount": 1250000000,
+          "daily_amount": 0,
+          "weekly_amount": 170000000,
+          "monthly_amount": 510000000
+        },
+        {
+          "id": 15,
+          "level": 15,
+          "next_level": 16,
+          "level_formatted": "VIP15",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 7500000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 1400000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 4700000,
+              "status": 0
+            }
+          ],
+          "target_value": 30000000000,
+          "keep_amount": 1500000000,
+          "daily_amount": 0,
+          "weekly_amount": 190000000,
+          "monthly_amount": 570000000
+        },
+        {
+          "id": 16,
+          "level": 16,
+          "next_level": 17,
+          "level_formatted": "VIP16",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 8000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 1800000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 5000000,
+              "status": 0
+            }
+          ],
+          "target_value": 35000000000,
+          "keep_amount": 1750000000,
+          "daily_amount": 0,
+          "weekly_amount": 220000000,
+          "monthly_amount": 660000000
+        },
+        {
+          "id": 17,
+          "level": 17,
+          "next_level": 18,
+          "level_formatted": "VIP17",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 9000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 2500000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 6000000,
+              "status": 0
+            }
+          ],
+          "target_value": 50000000000,
+          "keep_amount": 2500000000,
+          "daily_amount": 0,
+          "weekly_amount": 250000000,
+          "monthly_amount": 750000000
+        },
+        {
+          "id": 18,
+          "level": 18,
+          "next_level": 19,
+          "level_formatted": "VIP18",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 10000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 2700000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 6500000,
+              "status": 0
+            }
+          ],
+          "target_value": 55000000000,
+          "keep_amount": 2750000000,
+          "daily_amount": 0,
+          "weekly_amount": 300000000,
+          "monthly_amount": 900000000
+        },
+        {
+          "id": 19,
+          "level": 19,
+          "next_level": 20,
+          "level_formatted": "VIP19",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 11000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 3300000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 7000000,
+              "status": 0
+            }
+          ],
+          "target_value": 65000000000,
+          "keep_amount": 3250000000,
+          "daily_amount": 0,
+          "weekly_amount": 350000000,
+          "monthly_amount": 1050000000
+        },
+        {
+          "id": 20,
+          "level": 20,
+          "next_level": 21,
+          "level_formatted": "VIP20",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 12000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 3600000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 8000000,
+              "status": 0
+            }
+          ],
+          "target_value": 70000000000,
+          "keep_amount": 3500000000,
+          "daily_amount": 0,
+          "weekly_amount": 400000000,
+          "monthly_amount": 1100000000
+        },
+        {
+          "id": 21,
+          "level": 21,
+          "next_level": 22,
+          "level_formatted": "VIP21",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 13000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 4000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 9000000,
+              "status": 0
+            }
+          ],
+          "target_value": 80000000000,
+          "keep_amount": 4000000000,
+          "daily_amount": 0,
+          "weekly_amount": 450000000,
+          "monthly_amount": 1150000000
+        },
+        {
+          "id": 22,
+          "level": 22,
+          "next_level": 23,
+          "level_formatted": "VIP22",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 15500000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 5000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 11000000,
+              "status": 0
+            }
+          ],
+          "target_value": 100000000000,
+          "keep_amount": 5000000000,
+          "daily_amount": 0,
+          "weekly_amount": 500000000,
+          "monthly_amount": 1200000000
+        },
+        {
+          "id": 23,
+          "level": 23,
+          "next_level": 24,
+          "level_formatted": "VIP23",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 17000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 5800000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 13000000,
+              "status": 0
+            }
+          ],
+          "target_value": 120000000000,
+          "keep_amount": 6000000000,
+          "daily_amount": 0,
+          "weekly_amount": 550000000,
+          "monthly_amount": 1250000000
+        },
+        {
+          "id": 24,
+          "level": 24,
+          "next_level": 25,
+          "level_formatted": "VIP24",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 17500000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 6000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 14000000,
+              "status": 0
+            }
+          ],
+          "target_value": 130000000000,
+          "keep_amount": 6500000000,
+          "daily_amount": 0,
+          "weekly_amount": 600000000,
+          "monthly_amount": 1300000000
+        },
+        {
+          "id": 25,
+          "level": 25,
+          "next_level": 26,
+          "level_formatted": "VIP25",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 18500000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 6500000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 15000000,
+              "status": 0
+            }
+          ],
+          "target_value": 150000000000,
+          "keep_amount": 7500000000,
+          "daily_amount": 0,
+          "weekly_amount": 650000000,
+          "monthly_amount": 1350000000
+        },
+        {
+          "id": 26,
+          "level": 26,
+          "next_level": 27,
+          "level_formatted": "VIP26",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 25000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 7800000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 18000000,
+              "status": 0
+            }
+          ],
+          "target_value": 180000000000,
+          "keep_amount": 9000000000,
+          "daily_amount": 0,
+          "weekly_amount": 700000000,
+          "monthly_amount": 1400000000
+        },
+        {
+          "id": 27,
+          "level": 27,
+          "next_level": 28,
+          "level_formatted": "VIP27",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 29000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 8500000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 20000000,
+              "status": 0
+            }
+          ],
+          "target_value": 200000000000,
+          "keep_amount": 10000000000,
+          "daily_amount": 0,
+          "weekly_amount": 750000000,
+          "monthly_amount": 1450000000
+        },
+        {
+          "id": 28,
+          "level": 28,
+          "next_level": 29,
+          "level_formatted": "VIP28",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 31000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 9800000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 23000000,
+              "status": 0
+            }
+          ],
+          "target_value": 230000000000,
+          "keep_amount": 11500000000,
+          "daily_amount": 0,
+          "weekly_amount": 800000000,
+          "monthly_amount": 1500000000
+        },
+        {
+          "id": 29,
+          "level": 29,
+          "next_level": 30,
+          "level_formatted": "VIP29",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 32000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 11000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 25000000,
+              "status": 0
+            }
+          ],
+          "target_value": 250000000000,
+          "keep_amount": 12500000000,
+          "daily_amount": 0,
+          "weekly_amount": 850000000,
+          "monthly_amount": 1550000000
+        },
+        {
+          "id": 30,
+          "level": 30,
+          "next_level": 31,
+          "level_formatted": "VIP30",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 33500000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 12000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 27000000,
+              "status": 0
+            }
+          ],
+          "target_value": 300000000000,
+          "keep_amount": 15000000000,
+          "daily_amount": 0,
+          "weekly_amount": 900000000,
+          "monthly_amount": 1600000000
+        },
+        {
+          "id": 31,
+          "level": 31,
+          "next_level": 32,
+          "level_formatted": "VIP31",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 38500000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 13000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 30000000,
+              "status": 0
+            }
+          ],
+          "target_value": 350000000000,
+          "keep_amount": 17500000000,
+          "daily_amount": 0,
+          "weekly_amount": 950000000,
+          "monthly_amount": 1650000000
+        },
+        {
+          "id": 32,
+          "level": 32,
+          "next_level": 33,
+          "level_formatted": "VIP32",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 60000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 15000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 35000000,
+              "status": 0
+            }
+          ],
+          "target_value": 400000000000,
+          "keep_amount": 20000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1000000000,
+          "monthly_amount": 1700000000
+        },
+        {
+          "id": 33,
+          "level": 33,
+          "next_level": 34,
+          "level_formatted": "VIP33",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 63000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 18000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 40000000,
+              "status": 0
+            }
+          ],
+          "target_value": 450000000000,
+          "keep_amount": 22500000000,
+          "daily_amount": 0,
+          "weekly_amount": 1050000000,
+          "monthly_amount": 1750000000
+        },
+        {
+          "id": 34,
+          "level": 34,
+          "next_level": 35,
+          "level_formatted": "VIP34",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 65000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 20000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 45000000,
+              "status": 0
+            }
+          ],
+          "target_value": 500000000000,
+          "keep_amount": 25000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1100000000,
+          "monthly_amount": 1800000000
+        },
+        {
+          "id": 35,
+          "level": 35,
+          "next_level": 36,
+          "level_formatted": "VIP35",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 68000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 23000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 50000000,
+              "status": 0
+            }
+          ],
+          "target_value": 600000000000,
+          "keep_amount": 30000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1150000000,
+          "monthly_amount": 1850000000
+        },
+        {
+          "id": 36,
+          "level": 36,
+          "next_level": 37,
+          "level_formatted": "VIP36",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 90000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 26000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 60000000,
+              "status": 0
+            }
+          ],
+          "target_value": 700000000000,
+          "keep_amount": 35000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1200000000,
+          "monthly_amount": 1900000000
+        },
+        {
+          "id": 37,
+          "level": 37,
+          "next_level": 38,
+          "level_formatted": "VIP37",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 95000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 30000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 65000000,
+              "status": 0
+            }
+          ],
+          "target_value": 800000000000,
+          "keep_amount": 40000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1250000000,
+          "monthly_amount": 1950000000
+        },
+        {
+          "id": 38,
+          "level": 38,
+          "next_level": 39,
+          "level_formatted": "VIP38",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 100000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 34000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 75000000,
+              "status": 0
+            }
+          ],
+          "target_value": 900000000000,
+          "keep_amount": 45000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1300000000,
+          "monthly_amount": 2000000000
+        },
+        {
+          "id": 39,
+          "level": 39,
+          "next_level": 40,
+          "level_formatted": "VIP39",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 105000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 38000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 80000000,
+              "status": 0
+            }
+          ],
+          "target_value": 1000000000000,
+          "keep_amount": 50000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1350000000,
+          "monthly_amount": 2050000000
+        },
+        {
+          "id": 40,
+          "level": 40,
+          "next_level": 41,
+          "level_formatted": "VIP40",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 115000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 39000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 85000000,
+              "status": 0
+            }
+          ],
+          "target_value": 1100000000000,
+          "keep_amount": 55000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1400000000,
+          "monthly_amount": 2100000000
+        },
+        {
+          "id": 41,
+          "level": 41,
+          "next_level": 42,
+          "level_formatted": "VIP41",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 128000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 40000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 90000000,
+              "status": 0
+            }
+          ],
+          "target_value": 1300000000000,
+          "keep_amount": 65000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1450000000,
+          "monthly_amount": 2150000000
+        },
+        {
+          "id": 42,
+          "level": 42,
+          "next_level": 43,
+          "level_formatted": "VIP42",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 155000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 55000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 120000000,
+              "status": 0
+            }
+          ],
+          "target_value": 1500000000000,
+          "keep_amount": 75000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1500000000,
+          "monthly_amount": 2200000000
+        },
+        {
+          "id": 43,
+          "level": 43,
+          "next_level": 44,
+          "level_formatted": "VIP43",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 170000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 60000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 170000000,
+              "status": 0
+            }
+          ],
+          "target_value": 1800000000000,
+          "keep_amount": 90000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1550000000,
+          "monthly_amount": 2250000000
+        },
+        {
+          "id": 44,
+          "level": 44,
+          "next_level": 45,
+          "level_formatted": "VIP44",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 200000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 70000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 200000000,
+              "status": 0
+            }
+          ],
+          "target_value": 2000000000000,
+          "keep_amount": 100000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1600000000,
+          "monthly_amount": 2300000000
+        },
+        {
+          "id": 45,
+          "level": 45,
+          "next_level": 46,
+          "level_formatted": "VIP45",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 250000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 75000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 250000000,
+              "status": 0
+            }
+          ],
+          "target_value": 2500000000000,
+          "keep_amount": 125000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1650000000,
+          "monthly_amount": 2350000000
+        },
+        {
+          "id": 46,
+          "level": 46,
+          "next_level": 47,
+          "level_formatted": "VIP46",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 300000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 80000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 300000000,
+              "status": 0
+            }
+          ],
+          "target_value": 3000000000000,
+          "keep_amount": 150000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1700000000,
+          "monthly_amount": 2400000000
+        },
+        {
+          "id": 47,
+          "level": 47,
+          "next_level": 48,
+          "level_formatted": "VIP47",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 350000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 100000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 350000000,
+              "status": 0
+            }
+          ],
+          "target_value": 3500000000000,
+          "keep_amount": 175000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1750000000,
+          "monthly_amount": 2450000000
+        },
+        {
+          "id": 48,
+          "level": 48,
+          "next_level": 49,
+          "level_formatted": "VIP48",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 400000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 130000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 400000000,
+              "status": 0
+            }
+          ],
+          "target_value": 4000000000000,
+          "keep_amount": 200000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1800000000,
+          "monthly_amount": 2500000000
+        },
+        {
+          "id": 49,
+          "level": 49,
+          "next_level": 50,
+          "level_formatted": "VIP49",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 450000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 150000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 450000000,
+              "status": 0
+            }
+          ],
+          "target_value": 4500000000000,
+          "keep_amount": 225000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1850000000,
+          "monthly_amount": 2550000000
+        },
+        {
+          "id": 50,
+          "level": 50,
+          "next_level": null,
+          "level_formatted": "VIP50",
+          "prize_list": [
+            {
+              "reward_type": "upgrade",
+              "title": "vip upgrade",
+              "prize": 500000000,
+              "status": 0
+            },
+            {
+              "reward_type": "weekly",
+              "title": "vip weekly",
+              "prize": 200000000,
+              "status": 0
+            },
+            {
+              "reward_type": "monthly",
+              "title": "vip monthly",
+              "prize": 500000000,
+              "status": 0
+            }
+          ],
+          "target_value": 5000000000000,
+          "keep_amount": 250000000000,
+          "daily_amount": 0,
+          "weekly_amount": 1900000000,
+          "monthly_amount": 2600000000
+        }
+      ],
+      "reward_prize": 5000,
+      "reward_count": 1
+    }
+  }
+}

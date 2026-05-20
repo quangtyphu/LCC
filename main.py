@@ -347,7 +347,12 @@ def run_third_party_handler():
 	Chạy Flask app từ third_party_deposit_handler.py trong thread riêng.
 	"""
 	import third_party_deposit_handler
-	third_party_deposit_handler.app.run(host='0.0.0.0', port=5000, debug=False)
+
+	third_party_deposit_handler.refresh_urls()
+	port = third_party_deposit_handler.HANDLER_PORT
+	cb = third_party_deposit_handler.CALLBACK_URL
+	print(f"💳 LC79 nạp handler :{port} | Banking callback → {cb}", flush=True)
+	third_party_deposit_handler.app.run(host="0.0.0.0", port=port, debug=False)
 
 
 # 🧵 Chạy API song song

@@ -1,0 +1,35 @@
+{
+  "accounts": [
+    {
+      "id": "acc1",
+      "username": "SĐT_HOAC_TEN_DANG_NHAP",
+      "password": "MAT_KHAU",
+      "proxy": "118.70.171.104:20023:PogCLP:wSMZkU",
+      "cookies": {
+        "PHPSESSID": "TU_DONG_SAU_LOGIN",
+        "cf_clearance": "TU_DONG_SAU_LOGIN",
+        "__cf_bm": ""
+      },
+      "form_token": "TU_DONG_SAU_LOGIN",
+      "headers": {
+        "c-a-i": "",
+        "cf-auth-token": "",
+        "cf-con-s": "",
+        "cf-pass": ""
+      },
+      "minigame": {
+        "merchant": "bet66",
+        "user_token": "TU_DONG_SAU_MO_GAME",
+        "user_token_at": 0,
+        "ws_token": "11_1_USERID_TS_SIGN",
+        "ws_token_issued_at": 0,
+        "ws_url": "wss://wss-minigame-viet.227290.com/?token=...",
+        "cookies": {
+          "cf_clearance": "TU_DONG_SAU_MO_GAME",
+          "__cf_bm": ""
+        },
+        "last_game_id": 9
+      }
+    }
+  ]
+}
