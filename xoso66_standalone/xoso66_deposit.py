@@ -4,6 +4,8 @@
 XOSO66 — tạo đơn nạp QRPay + lấy STK/nội dung CK (độc lập, không dùng LC79).
 
 Chạy thử:
+  python xoso66_deposit.py
+  python xoso66_deposit.py -u tenuser -m 100000
   python xoso66_deposit.py -a acc1 -m 100000
 
 Cần file cùng thư mục:
@@ -853,6 +855,119 @@ def _normalize_transfer_info(js: Any) -> dict:
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
+def _parse_amount_vnd(raw: str) -> int:
+    s = str(raw or "").strip().replace(",", "").replace(".", "").replace(" ", "")
+    if not s:
+        raise ValueError("số tiền trống")
+    return int(s)
+
+
+def resolve_account_id(account_id: str = "", username: str = "") -> str:
+    """account id hoặc username → id trong DB / sessions."""
+    for key in (str(username or "").strip(), str(account_id or "").strip()):
+        if not key:
+            continue
+        try:
+            from xoso66_accounts_db import get_account, get_account_by_username
+
+            row = get_account(key) or get_account_by_username(key)
+            if row:
+                return str(row["id"])
+        except Exception:
+            pass
+        sessions = load_sessions()
+        if key in sessions:
+            return key
+        ku = key.lower()
+        for aid, acc in sessions.items():
+            if str(acc.get("username") or "").strip().lower() == ku:
+                return aid
+    label = str(username or account_id or "").strip() or "?"
+    raise SystemExit(f"Không tìm thấy account: {label}")
+
+
+def _prompt_username(args: argparse.Namespace) -> None:
+    if args.account or args.username:
+        return
+    try:
+        args.username = input("Username: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise SystemExit(1) from None
+    if not args.username:
+        raise SystemExit("Username không được để trống.")
+
+
+def _prompt_amount(args: argparse.Namespace) -> None:
+    if args.amount is not None:
+        return
+    try:
+        raw = input("Số tiền (VND): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise SystemExit(1) from None
+    if not raw:
+        raw = "100000"
+    try:
+        args.amount = _parse_amount_vnd(raw)
+    except ValueError as e:
+        raise SystemExit(f"Số tiền không hợp lệ: {e}") from e
+
+
+def print_deposit_result(result: dict) -> None:
+    """In kết quả lệnh nạp (text + JSON)."""
+    summary = {
+        "ok": result.get("ok"),
+        "account_id": result.get("account_id"),
+        "amount": result.get("amount"),
+        "trade_no": result.get("trade_no"),
+        "order_no": result.get("order_no"),
+        "pay_url": result.get("pay_url"),
+        "method": result.get("method"),
+        "error": result.get("error"),
+        "qr_image_path": result.get("qr_image_path"),
+    }
+    ti = result.get("transfer_info") or {}
+    if ti:
+        summary["transfer"] = {
+            k: ti.get(k)
+            for k in (
+                "amount",
+                "bank_name",
+                "account_no",
+                "account_name",
+                "transfer_content",
+                "qr_url",
+                "expire_seconds",
+                "status",
+            )
+        }
+    print("\n═══ KẾT QUẢ LỆNH NẠP ═══", flush=True)
+    if result.get("ok"):
+        print(f"  Trạng thái : OK", flush=True)
+        print(f"  Số tiền    : {int(result.get('amount') or 0):,} VND", flush=True)
+        if result.get("trade_no"):
+            print(f"  Mã đơn     : {result.get('trade_no')}", flush=True)
+        if result.get("order_no"):
+            print(f"  Order no   : {result.get('order_no')}", flush=True)
+        if ti:
+            print(f"  Ngân hàng  : {ti.get('bank_name') or '-'}", flush=True)
+            print(f"  STK        : {ti.get('account_no') or '-'}", flush=True)
+            print(f"  Chủ TK     : {ti.get('account_name') or '-'}", flush=True)
+            print(f"  Nội dung CK: {ti.get('transfer_content') or '-'}", flush=True)
+            if ti.get("expire_seconds"):
+                print(f"  Hết hạn    : {ti.get('expire_seconds')}s", flush=True)
+        if result.get("pay_url"):
+            print(f"  Pay URL    : {result.get('pay_url')}", flush=True)
+        if result.get("qr_image_path"):
+            print(f"  QR file    : {result.get('qr_image_path')}", flush=True)
+    else:
+        print(f"  Trạng thái : LỖI", flush=True)
+        print(f"  Lý do      : {result.get('error') or 'không rõ'}", flush=True)
+    print("\n--- JSON ---", flush=True)
+    print(json.dumps(summary, indent=2, ensure_ascii=False), flush=True)
+
+
 def print_setup_help() -> None:
     print(
         """
@@ -925,8 +1040,13 @@ module.exports = {
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="XOSO66 deposit standalone")
-    parser.add_argument("--account", "-a", help="account id trong xoso66_sessions.json")
-    parser.add_argument("--amount", "-m", type=int, default=100_000, help="số tiền VND")
+    parser.add_argument(
+        "--account",
+        "-a",
+        help="account id hoặc username (DB / xoso66_sessions.json)",
+    )
+    parser.add_argument("-u", "--username", help="username trong DB / sessions")
+    parser.add_argument("--amount", "-m", type=int, default=None, help="số tiền VND")
     parser.add_argument("--deposit-info", action="store_true", help="goi GET depositinfo")
     parser.add_argument("--trade-no", help="chi lay CK QRPay (getWUInfo), bo qua tao don")
     parser.add_argument("--list-orders", action="store_true", help="goi paymentorderlist (lich su don)")
@@ -964,64 +1084,36 @@ def main() -> int:
         return 0
 
     if args.deposit_info:
-        if not args.account:
-            parser.error("--deposit-info can --account")
+        _prompt_username(args)
+        aid = resolve_account_id(args.account or "", args.username or "")
         sessions = load_sessions()
-        result = get_deposit_info(args.account, sessions[args.account])
+        result = get_deposit_info(aid, sessions[aid])
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0 if result.get("ok") else 1
 
     if args.list_orders:
-        if not args.account:
-            parser.error("--list-orders can --account")
-        result = list_payment_orders(args.account, status=args.status)
+        _prompt_username(args)
+        aid = resolve_account_id(args.account or "", args.username or "")
+        result = list_payment_orders(aid, status=args.status)
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0 if result.get("ok") else 1
 
     if args.login:
-        if not args.account:
-            parser.error("--login cần --account")
+        _prompt_username(args)
+        aid = resolve_account_id(args.account or "", args.username or "")
         from xoso66_session import ensure_session
 
-        ensure_session(args.account, force_login=True)
+        ensure_session(aid, force_login=True)
         print(f"OK: session renewed → {SESSIONS_FILE}")
         return 0
 
-    if not args.account:
-        parser.print_help()
-        print("\nThiếu --account. Chạy --help-setup để biết cần cung cấp gì.")
-        return 1
-
+    _prompt_username(args)
+    _prompt_amount(args)
+    aid = resolve_account_id(args.account or "", args.username or "")
     sessions = load_sessions()
-    acc = sessions.get(args.account, {})
-    result = create_deposit_order(args.account, args.amount, session=acc)
-    summary = {
-        "ok": result.get("ok"),
-        "amount": result.get("amount"),
-        "trade_no": result.get("trade_no"),
-        "pay_url": result.get("pay_url"),
-        "method": result.get("method"),
-        "error": result.get("error"),
-        "qr_image_path": result.get("qr_image_path"),
-    }
-    ti = result.get("transfer_info") or {}
-    if ti:
-        summary["transfer"] = {
-            k: ti.get(k)
-            for k in (
-                "amount",
-                "bank_name",
-                "account_no",
-                "account_name",
-                "transfer_content",
-                "qr_url",
-                "expire_seconds",
-                "status",
-            )
-        }
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
-    if result.get("qr_image_path"):
-        print(f"\nQR đã lưu: {result['qr_image_path']}")
+    acc = sessions.get(aid, {})
+    result = create_deposit_order(aid, args.amount, session=acc)
+    print_deposit_result(result)
     return 0 if result.get("ok") else 1
 
 
