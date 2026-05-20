@@ -11,6 +11,8 @@ Chỉnh trong JSON:
   auto_bet.bet_step_vnd
   auto_bet.daily_bet_cap_vnd
   auto_bet.assign_strategy  (1 hoặc 2 — xoso66_bet_assign.STRATEGY_LABELS)
+  auto_mission_reward.min_withdraw_vnd  (số dư ≥ mức này mới tự rút trước nhận thưởng)
+  auto_mission_reward.claim_between_delay_sec  (giây giữa 2 lần POST reward liên tiếp)
 
 Proxy mặc định (acc không có proxy): sửa DEFAULT_PROXY bên dưới hoặc env XOSO66_DEFAULT_PROXY.
 """
@@ -20,8 +22,20 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
+
+
+def configure_stdio_utf8() -> None:
+    """Tránh UnicodeEncodeError khi in tiếng Việt trên Windows (cp1252)."""
+    if not hasattr(sys.stdout, "reconfigure"):
+        return
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    except Exception:
+        pass
 
 _DIR = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("XOSO66_CONFIG", _DIR / "xoso66_config.json"))
@@ -39,6 +53,8 @@ USER_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("auto_bet", "bet_step_vnd"),
     ("auto_bet", "daily_bet_cap_vnd"),
     ("auto_bet", "assign_strategy"),
+    ("auto_mission_reward", "min_withdraw_vnd"),
+    ("auto_mission_reward", "claim_between_delay_sec"),
 )
 
 HARDCODED_CONFIG: dict[str, Any] = {
@@ -93,7 +109,7 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "poll_interval_sec": 10,
         "poll_max_attempts": 100,
         "deposit_list_limit": 10,
-        "queue_interval_sec": 60,
+        "queue_interval_sec": 0,
         "cache_ttl_sec": 900,
     },
     "game_worker_enabled": True,
@@ -130,6 +146,7 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "poll_interval_sec": 60,
         "poll_max_attempts": 15,
         "min_withdraw_vnd": 300_000,
+        "claim_between_delay_sec": 3,
         "reward_retry_delay_sec": 300,
         "reward_retry_max": 3,
         "withdraw_confirm_poll_interval_sec": 60,
@@ -171,7 +188,7 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "win_payout_rate": 0.98,
         "win_total_return_multiplier": 1.98,
         "result_balance_wait_sec": 12,
-        "token_check_before_bet": False,
+        "token_check_before_bet": True,
         "token_refresh_playwright_on_bet": False,
         "token_validate_timeout_sec": 12,
         "token_check_parallel": 8,

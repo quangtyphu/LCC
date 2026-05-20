@@ -22,7 +22,7 @@ _DIR = Path(__file__).resolve().parent
 DEPOSIT_CACHE_FILE = _DIR / "data" / "deposit_pending_cache.json"
 DEFAULT_AMOUNT_VND = 100_000
 DEPOSIT_CACHE_DELAY_SEC = 15 * 60
-DEPOSIT_QUEUE_INTERVAL_SEC = 60
+DEPOSIT_QUEUE_INTERVAL_SEC = 0
 
 _deposit_queue: Queue = Queue()
 _worker_thread: threading.Thread | None = None
@@ -100,19 +100,22 @@ def log_deposit_order_compact(rep: dict[str, Any]) -> None:
     aid = str(rep.get("account_id") or "")
     user = str(rep.get("username") or "").strip() or username_for_log(aid)
     order_id = rep.get("order_id")
+    oid = order_id if order_id is not None else "?"
 
-    print(f"Đơn #{order_id}", flush=True)
-    print(user, flush=True)
-    print(f"Số tiền: {amount:,}đ", flush=True)
-    has_bank = bank not in ("—", "-", "") and acc_no not in ("—", "-", "")
-    if has_bank:
-        print(f"Ngân hàng: {bank}", flush=True)
-        print(f"STK: {acc_no} | Chủ TK: {holder}", flush=True)
-        print(f"Nội dung CK (remark): {ndck}", flush=True)
-    else:
-        print(f"Ngân hàng: {bank} | STK: {acc_no} | Chủ TK: {holder}", flush=True)
-        if ndck not in ("—", "-", ""):
-            print(f"Nội dung CK (remark): {ndck}", flush=True)
+    def _field(s: str) -> str:
+        s = str(s or "").strip()
+        return s if s and s not in ("—", "-") else "—"
+
+    ndck_disp = ndck if ndck and ndck not in ("—", "-") else "(trống)"
+
+    print(f"📋 Thông tin lệnh nạp #{oid}:", flush=True)
+    print(f"   Username:       {user}", flush=True)
+    print(f"   Amount:         {amount:,}đ", flush=True)
+    print(f"   Ngân hàng:      {_field(bank)}", flush=True)
+    print(f"   STK:            {_field(acc_no)}", flush=True)
+    print(f"   Chủ Tài khoản:  {_field(holder)}", flush=True)
+    print(f"   NDCK:           {ndck_disp}", flush=True)
+    print("-" * 60, flush=True)
 
 
 def log_deposit_transfer_info(rep: dict[str, Any], *, prefix: str = "[NẠP]") -> None:
@@ -172,9 +175,19 @@ def can_create_deposit_order(account_id: str) -> bool:
     return True
 
 
+def _deposit_queue_interval_sec() -> float:
+    raw = _auto_deposit_cfg().get("queue_interval_sec")
+    if raw is None:
+        return float(DEPOSIT_QUEUE_INTERVAL_SEC)
+    return max(0.0, float(raw))
+
+
 def _wait_deposit_slot() -> None:
+    """Chờ giữa hai lệnh nạp (mặc định 0 — không delay như LC79)."""
+    interval = _deposit_queue_interval_sec()
+    if interval <= 0:
+        return
     global _last_deposit_time
-    interval = float(_auto_deposit_cfg().get("queue_interval_sec") or DEPOSIT_QUEUE_INTERVAL_SEC)
     with _last_deposit_lock:
         elapsed = time.time() - _last_deposit_time
         if elapsed < interval:
@@ -210,11 +223,18 @@ def perform_deposit(
         try:
             body = r.json()
         except Exception:
-            body = {"error": r.text[:300]}
+            raw = (r.text or "")[:300]
+            if raw.lstrip().lower().startswith("<!doctype") or "<html" in raw.lower():
+                body = {
+                    "error": (
+                        f"Handler nạp crash HTTP {r.status_code} — "
+                        "dừng main.py cũ và chạy lại (port 5001 có thể là process cũ)"
+                    )
+                }
+            else:
+                body = {"error": raw}
         if r.status_code == 200 and body.get("ok"):
             mark_deposit_cache(account_id)
-            if verbose:
-                log_deposit_order_compact(body)
             return body
         err = body.get("error") or f"HTTP {r.status_code}"
         if verbose:

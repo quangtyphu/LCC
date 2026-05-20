@@ -406,12 +406,6 @@ def _maybe_withdraw_before_claim(
             confirmed = bool(poll_rep.get("confirmed") and poll_rep.get("success"))
             out["withdraw_confirmed"] = confirmed
             if confirmed:
-                att = int(poll_rep.get("attempt") or 0)
-                print(
-                    f"[AUTO-MISSION] {u}: nhận thưởng nhiệm vụ "
-                    f"(sau khi rút OK lần check {att})",
-                    flush=True,
-                )
                 _sync_balance_to_db(account_id, session, label="sau rút Hoàn tất")
                 out["withdraw_ok"] = True
             else:
@@ -524,7 +518,12 @@ def _run_claim_flow(
             )
         if _can_claim_after_withdraw(withdraw_info):
             claims = execute_mission_claims(
-                session, aid, u, claimable, account_proxy=row_proxy
+                session,
+                aid,
+                u,
+                claimable,
+                account_proxy=row_proxy,
+                log_prefix="[AUTO-MISSION]",
             )
             if sum(1 for c in claims if c.get("ok")) > 0:
                 _sync_balance_to_db(aid, session, label="sau nhận thưởng")
@@ -649,21 +648,14 @@ def _try_finish_after_claims(
             pending_claims_json="",
             last_error=f"bỏ qua rate-limit: {levels}",
         )
-        if claims_ok > 0:
-            print(
-                f"[AUTO-MISSION] {u}: nhận thưởng xong ({claims_ok} mức, một phần bỏ qua)",
-                flush=True,
-            )
         return True
 
     if only_retry:
         _queue_update(aid, phase="done", pending_claims_json="", last_error="")
-        print(f"[AUTO-MISSION] {u}: retry nhận thưởng xong ({claims_ok} mức)", flush=True)
         return True
 
     if had_claimable and claims_ok > 0:
         _queue_update(aid, phase="done", pending_claims_json="", last_error="")
-        print(f"[AUTO-MISSION] {u}: nhận thưởng xong ({claims_ok} mức)", flush=True)
         return True
 
     if result.get("claim_blocked_by_withdraw"):

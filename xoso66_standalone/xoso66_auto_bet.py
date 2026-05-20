@@ -27,7 +27,7 @@ from xoso66_jackpot_picker import (
     pick_best_jackpot_game,
     picked_game_from_id,
 )
-from xoso66_minigame_bet import BetRequest, place_bet
+from xoso66_minigame_bet import BetRequest, BetResult, place_bet
 from xoso66_minigame_catalog import GAME_ID_LABELS, game_by_id
 from xoso66_minigame_ws import (
     register_round_result_handler,
@@ -358,6 +358,10 @@ def _sessions_for_slots(slots: list[BetSlot]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _token_check_before_bet_enabled(acfg: dict) -> bool:
+    return bool(acfg.get("token_check_before_bet", True))
+
+
 def _place_bet_timed(
     session: dict,
     req: BetRequest,
@@ -365,6 +369,7 @@ def _place_bet_timed(
     account_id: str,
     http_timeout: int,
     wall_timeout: float,
+    check_token: bool = True,
 ) -> BetResult:
     with ThreadPoolExecutor(max_workers=1) as ex:
         fut = ex.submit(
@@ -372,7 +377,7 @@ def _place_bet_timed(
             session,
             req,
             account_id=account_id,
-            check_token=False,
+            check_token=check_token,
             http_timeout=http_timeout,
         )
         try:
@@ -389,6 +394,86 @@ def _place_bet_timed(
                 code=0,
                 msg=f"placeOrder quá {wall_timeout:.0f}s (proxy/HTTP treo)",
             )
+
+
+def _place_bet_for_slot(
+    session: dict,
+    req: BetRequest,
+    *,
+    account_id: str,
+    username: str,
+    game_key: str,
+    cfg: dict,
+    http_timeout: int,
+    wall_timeout: float,
+) -> BetResult:
+    """Ping/refresh gameurl trước cược; retry 1 lần nếu server báo phiên không hợp lệ."""
+    from xoso66_minigame_refresh import (
+        ensure_user_token_for_bet,
+        is_minigame_session_error,
+    )
+    from xoso66_session import persist_session
+
+    acfg = _auto_bet_cfg(cfg)
+    allow_slow = bool(acfg.get("token_refresh_playwright_on_bet", False))
+    check = _token_check_before_bet_enabled(acfg)
+
+    def _ensure() -> tuple[bool, str]:
+        if not check:
+            return True, ""
+        ok, msg = ensure_user_token_for_bet(
+            session,
+            account_id,
+            game_key=game_key,
+            allow_slow_refresh=allow_slow,
+        )
+        return ok, msg
+
+    ready, tok_msg = _ensure()
+    if not ready:
+        print(f"  !! Token {username}: {tok_msg}", flush=True)
+        return BetResult(
+            ok=False,
+            game_key=req.game_key,
+            game_id=0,
+            side=req.side,
+            play_id=0,
+            amount=int(req.amount),
+            http_status=0,
+            code=0,
+            msg=tok_msg,
+        )
+
+    rep = _place_bet_timed(
+        session,
+        req,
+        account_id=account_id,
+        http_timeout=http_timeout,
+        wall_timeout=wall_timeout,
+        check_token=False,
+    )
+    if rep.ok or not is_minigame_session_error(rep.code, rep.msg):
+        return rep
+
+    ok2, msg2 = ensure_user_token_for_bet(
+        session,
+        account_id,
+        game_key=game_key,
+        allow_slow_refresh=allow_slow,
+    )
+    if account_id:
+        persist_session(account_id, session)
+    if not ok2:
+        return rep
+    print(f"  ↻ {username}: refresh token → thử lại placeOrder", flush=True)
+    return _place_bet_timed(
+        session,
+        req,
+        account_id=account_id,
+        http_timeout=http_timeout,
+        wall_timeout=wall_timeout,
+        check_token=False,
+    )
 
 
 def _validate_slot_tokens_timed(
@@ -477,6 +562,10 @@ class AutoBetController:
     def active_game_id(self) -> int | None:
         with self._lock:
             return self._active_game_id
+
+    def active_game_key(self) -> str:
+        with self._lock:
+            return str(self._active_game_key or "").strip()
 
     def _log_watch_round_start(
         self, game_id: int, issue: str, *, cfg: dict
@@ -693,7 +782,7 @@ class AutoBetController:
         place_orders = bool(acfg.get("place_orders", False))
         sessions: dict[str, dict[str, Any]] = {}
         if place_orders:
-            if bool(acfg.get("token_check_before_bet", False)):
+            if _token_check_before_bet_enabled(acfg):
                 tok_timeout = float(acfg.get("token_validate_timeout_sec") or 12)
                 print(
                     f"  → Kiểm tra token ({len(slots)} acc, ≤{tok_timeout:.0f}s)…",
@@ -785,7 +874,7 @@ class AutoBetController:
                     continue
 
                 price = int(slot.amount_vnd * price_scale)
-                rep = _place_bet_timed(
+                rep = _place_bet_for_slot(
                     session,
                     BetRequest(
                         game_key=gkey,
@@ -794,6 +883,9 @@ class AutoBetController:
                         issue=str(issue),
                     ),
                     account_id=slot.account_id,
+                    username=slot.username,
+                    game_key=gkey,
+                    cfg=cfg,
                     http_timeout=http_timeout,
                     wall_timeout=float(
                         acfg.get("place_order_wall_timeout_sec") or 25

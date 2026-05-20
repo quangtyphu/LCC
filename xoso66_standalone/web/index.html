@@ -258,10 +258,28 @@
     .pay-stats .pay-stat-value.profit-pos { color: #27ae60; }
     .pay-stats .pay-stat-value.profit-neg { color: #e74c3c; }
     .pay-stats .pay-stat-scope { grid-column: 1 / -1; font-size: 11px; color: #8e44ad; margin-bottom: 4px; }
+    body.page-deposit-orders #btnRefreshStatus { background: #16a085; }
+    body.page-deposit-orders #btnRefreshStatus:hover { background: #138d75; }
+    #depOrderTbl th { font-size: 12px; }
+    #depOrderTbl td { font-size: 12px; text-align: left; vertical-align: top; }
+    #depOrderTbl td.td-center { text-align: center; vertical-align: middle; }
+    #depOrderTbl .dep-bank { font-size: 11px; line-height: 1.35; max-width: 200px; }
+    #depOrderTbl .dep-err { font-size: 11px; color: #c0392b; max-width: 160px; word-break: break-word; }
+    #depOrderTbl .dep-ndck { font-weight: 600; color: #1a5276; }
+    select.dep-order-status-select {
+      font-size: 11px; padding: 3px 4px; max-width: 130px; border-radius: 4px;
+      border: 1px solid #bdc3c7; cursor: pointer;
+    }
+    select.dep-order-status-select.st-ok-sel { background: #d5f5e3; color: #1e8449; border-color: #27ae60; }
+    select.dep-order-status-select.st-pending-sel { background: #fdebd0; color: #b7950b; border-color: #e67e22; }
+    select.dep-order-status-select.st-fail-sel { background: #fadbd8; color: #922b21; border-color: #e74c3c; }
+    select.dep-order-status-select.saving { opacity: 0.55; }
+    select.dep-order-status-select.saved { outline: 2px solid #f1c40f; }
+    select.dep-order-status-select.error { border-color: #e74c3c; background: #fdecea !important; }
   </style>
 </head>
 <body>
-  <h1>XOSO66 CMS <span style="font-size:14px;font-weight:normal;color:#8e44ad">· Tài khoản · Nạp/Rút</span></h1>
+  <h1>XOSO66 CMS <span style="font-size:14px;font-weight:normal;color:#8e44ad">· Tài khoản · Nạp/Rút · Lệnh nạp</span></h1>
   <p class="hint">
     Chạy <code>python main.py</code> trong <b>xoso66_standalone</b>.
     Có thể mở trực tiếp <code>http://127.0.0.1:8799/</code> hoặc từ menu <b>CMS → XOSO66</b> (cùng một trang này).
@@ -273,6 +291,7 @@
   <nav class="cms-nav" aria-label="Menu CMS">
     <button type="button" class="nav-btn active" data-page="accounts">Tài khoản</button>
     <button type="button" class="nav-btn" data-page="payments">Nạp / Rút</button>
+    <button type="button" class="nav-btn" data-page="deposit-orders">Quản lý lệnh nạp</button>
   </nav>
 
   <button type="button" id="btnRefreshStatus" class="btn btn-blue" title="Tải lại danh sách từ DB (không gọi site)">
@@ -399,11 +418,6 @@
         </div>
       </div>
     </div>
-    <div class="pay-tabs">
-      <button type="button" class="tab-btn active" data-pay-tab="history">Lịch sử nạp/rút</button>
-      <button type="button" class="tab-btn" data-pay-tab="auto">Lệnh auto nạp</button>
-    </div>
-
     <div id="payPanelHistory">
       <div class="form-grid" style="margin-top:8px;">
         <input type="text" id="payFilterUser" placeholder="Username / account_id">
@@ -439,29 +453,53 @@
         <button type="button" class="btn btn-gray btn-sm" id="btnPayNext">Sau →</button>
       </div>
     </div>
+  </div>
 
-    <div id="payPanelAuto" style="display:none;">
-      <div class="form-grid" style="margin-top:8px;">
-        <input type="text" id="depFilterUser" placeholder="Username / account_id">
-        <select id="depFilterStatus">
-          <option value="">— Trạng thái lệnh —</option>
-          <option value="Chờ Nạp">Chờ Nạp</option>
-          <option value="Thành Công">Thành Công</option>
-          <option value="Thất Bại">Thất Bại</option>
-          <option value="Huỷ">Huỷ</option>
-        </select>
-        <button type="button" class="btn btn-blue btn-sm" id="btnDepRefresh">🔄 Refresh</button>
-      </div>
-      <p id="depSummary">—</p>
-      <table id="depTbl">
+  <div id="pageDepositOrders" class="page-panel">
+    <h2 style="margin-top:0">Quản lý lệnh nạp</h2>
+    <p class="hint">
+      Lệnh yêu cầu nạp tiền (bảng <code>deposit_orders</code>) — auto nạp / WS pool / tạo đơn từ CMS.
+      Khác với lịch sử <code>paymentorderlist</code> ở menu Nạp/Rút.
+    </p>
+    <div class="form-grid" style="margin-top:8px;">
+      <input type="text" id="depOrderFilterUser" placeholder="Username / account_id">
+      <select id="depOrderFilterStatus">
+        <option value="">— Trạng thái —</option>
+        <option value="Chờ Nạp">Chờ Nạp</option>
+        <option value="Đã tạo đơn">Đã tạo đơn</option>
+        <option value="Chờ bên thứ 3">Chờ bên thứ 3</option>
+        <option value="Đã Nạp">Đã Nạp</option>
+        <option value="Thành Công">Thành Công</option>
+        <option value="Thất Bại">Thất Bại</option>
+        <option value="Huỷ">Huỷ</option>
+      </select>
+      <button type="button" class="btn btn-blue btn-sm" id="btnDepOrderRefresh">🔄 Refresh</button>
+    </div>
+    <p id="depOrderSummary">—</p>
+    <div style="overflow-x:auto;">
+      <table id="depOrderTbl">
         <thead>
           <tr>
-            <th>#</th><th>User</th><th>Số tiền</th><th>Trạng thái</th>
-            <th>Serial</th><th>Trade no</th><th>Cập nhật</th>
+            <th class="td-center">#</th>
+            <th>Tạo lúc</th>
+            <th class="td-center">User</th>
+            <th class="td-center">Số tiền</th>
+            <th class="td-center">Trạng thái</th>
+            <th class="td-center">Site</th>
+            <th>CK / Ngân hàng</th>
+            <th>Serial</th>
+            <th>Trade no</th>
+            <th>Cập nhật</th>
+            <th class="td-center">QR</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
+    </div>
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+      <button type="button" class="btn btn-gray btn-sm" id="btnDepOrderPrev">← Trước</button>
+      <span id="depOrderPageInfo" style="font-size:13px;">Trang 1</span>
+      <button type="button" class="btn btn-gray btn-sm" id="btnDepOrderNext">Sau →</button>
     </div>
   </div>
 
@@ -1013,10 +1051,13 @@ function currentCmsPage() {
 function updateRefreshButtonHint() {
   const btn = document.getElementById("btnRefreshStatus");
   if (!btn) return;
-  if (currentCmsPage() === "payments") {
-    btn.title = "Tải lại nạp/rút từ DB (không gọi site)";
+  const page = currentCmsPage();
+  if (page === "payments") {
+    btn.title = "Tải lại lịch sử nạp/rút từ DB (không gọi site)";
+  } else if (page === "deposit-orders") {
+    btn.title = "Tải lại lệnh nạp từ DB (deposit_orders)";
   } else {
-    btn.title = "Tải lại danh sách từ DB (không gọi site)";
+    btn.title = "Tải lại danh sách tài khoản từ DB (không gọi site)";
   }
 }
 
@@ -1035,20 +1076,31 @@ async function refreshPaymentsData() {
   const scrollY = window.scrollY;
   const btn = document.getElementById("btnRefreshStatus");
   if (btn) btn.disabled = true;
-  const tab = document.querySelector(".pay-tabs .tab-btn.active");
-  const tabId = tab ? tab.getAttribute("data-pay-tab") : "history";
-  log(tabId === "auto" ? "🔄 Tải lại lệnh auto nạp…" : "🔄 Tải lại lịch sử nạp/rút…");
+  log("🔄 Tải lại lịch sử nạp/rút…");
   payPage = 1;
   await loadPaymentStats();
-  if (tabId === "auto") await loadDepositOrders();
-  else await loadPaymentOrders();
+  await loadPaymentOrders();
   log("✅ Đã tải lại nạp/rút");
   if (btn) btn.disabled = false;
   window.scrollTo({ top: scrollY });
 }
 
+async function refreshDepositOrdersData() {
+  const scrollY = window.scrollY;
+  const btn = document.getElementById("btnRefreshStatus");
+  if (btn) btn.disabled = true;
+  log("🔄 Tải lại lệnh nạp…");
+  depOrderPage = 1;
+  await loadDepositOrdersPage();
+  log("✅ Đã tải lại lệnh nạp");
+  if (btn) btn.disabled = false;
+  window.scrollTo({ top: scrollY });
+}
+
 async function refreshCurrentPage() {
-  if (currentCmsPage() === "payments") await refreshPaymentsData();
+  const page = currentCmsPage();
+  if (page === "payments") await refreshPaymentsData();
+  else if (page === "deposit-orders") await refreshDepositOrdersData();
   else await refreshData();
 }
 
@@ -1778,19 +1830,28 @@ document.getElementById("btnBulkRun").onclick = async () => {
 let payPage = 1;
 const payLimit = 30;
 let payTotal = 0;
+let depOrderPage = 1;
+const depOrderLimit = 30;
+let depOrderTotal = 0;
+
 function showCmsPage(name) {
   const acc = document.getElementById("pageAccounts");
   const pay = document.getElementById("pagePayments");
+  const dep = document.getElementById("pageDepositOrders");
   document.querySelectorAll(".cms-nav .nav-btn").forEach((b) => {
     b.classList.toggle("active", b.getAttribute("data-page") === name);
   });
   if (acc) acc.classList.toggle("active", name === "accounts");
   if (pay) pay.classList.toggle("active", name === "payments");
+  if (dep) dep.classList.toggle("active", name === "deposit-orders");
   document.body.classList.toggle("page-payments", name === "payments");
+  document.body.classList.toggle("page-deposit-orders", name === "deposit-orders");
   updateRefreshButtonHint();
   if (name === "payments") {
     loadPaymentStats();
     loadPaymentOrders();
+  } else if (name === "deposit-orders") {
+    loadDepositOrdersPage();
   }
 }
 
@@ -1901,36 +1962,191 @@ async function loadPaymentOrders() {
   });
 }
 
-async function loadDepositOrders() {
-  const user = document.getElementById("depFilterUser").value.trim();
-  const st = document.getElementById("depFilterStatus").value;
-  let q = `page=1&limit=50`;
+const DEPOSIT_ORDER_STATUSES = [
+  "Chờ Nạp",
+  "Đã tạo đơn",
+  "Chờ bên thứ 3",
+  "Đã Nạp",
+  "Thành Công",
+  "Thất Bại",
+  "Huỷ",
+];
+
+function depositOrderStatusClass(status) {
+  const s = String(status || "").trim();
+  if (s === "Thành Công" || s === "Đã Nạp") return "st-ok";
+  if (s.includes("Thất") || s === "Huỷ" || s === "Hủy") return "st-fail";
+  return "st-pending";
+}
+
+function depositOrderStatusSelectClass(status) {
+  const c = depositOrderStatusClass(status);
+  if (c === "st-ok") return "st-ok-sel";
+  if (c === "st-fail") return "st-fail-sel";
+  return "st-pending-sel";
+}
+
+function depositOrderStatusOptions(current) {
+  const cur = String(current || "").trim();
+  const list = DEPOSIT_ORDER_STATUSES.slice();
+  if (cur && !list.includes(cur)) list.unshift(cur);
+  return list;
+}
+
+function renderDepositOrderStatusSelect(orderId, current) {
+  const cur = String(current || "").trim();
+  const cls = "dep-order-status-select " + depositOrderStatusSelectClass(cur);
+  const opts = depositOrderStatusOptions(cur)
+    .map((s) => `<option value="${escAttr(s)}"${s === cur ? " selected" : ""}>${esc(s)}</option>`)
+    .join("");
+  return `<select class="${cls}" data-order-id="${escAttr(String(orderId))}"`
+    + ` data-saved-value="${escAttr(cur)}" title="Đổi trạng thái lệnh nạp">${opts}</select>`;
+}
+
+function applyDepositOrderStatusSelectStyle(sel) {
+  sel.classList.remove("st-ok-sel", "st-pending-sel", "st-fail-sel");
+  sel.classList.add(depositOrderStatusSelectClass(sel.value));
+}
+
+async function patchDepositOrderStatus(orderId, status, el) {
+  const prev = el.dataset.savedValue ?? "";
+  if (status === prev) return;
+  el.classList.remove("saved", "error");
+  el.classList.add("saving");
+  el.disabled = true;
+  try {
+    const res = await apiFetch("/api/deposit-orders/" + encodeURIComponent(orderId), {
+      method: "PUT",
+      body: JSON.stringify({ status }),
+    });
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) {
+      el.classList.add("error");
+      el.value = prev;
+      applyDepositOrderStatusSelectStyle(el);
+      log("Lỗi cập nhật lệnh #" + orderId + ": " + (data.detail || res.status));
+      return;
+    }
+    el.dataset.savedValue = status;
+    el.classList.add("saved");
+    setTimeout(() => el.classList.remove("saved"), 1500);
+    applyDepositOrderStatusSelectStyle(el);
+    const user = data.username || data.account_id || "";
+    log("✓ Lệnh nạp #" + orderId + (user ? " [" + user + "]" : "") + " → " + status);
+  } catch (e) {
+    el.classList.add("error");
+    el.value = prev;
+    applyDepositOrderStatusSelectStyle(el);
+    log("Lỗi cập nhật lệnh #" + orderId + ": " + e);
+  } finally {
+    el.classList.remove("saving");
+    el.disabled = false;
+  }
+}
+
+function bindDepositOrderStatusSelects(root) {
+  root.querySelectorAll("select.dep-order-status-select[data-order-id]").forEach((sel) => {
+    const oid = sel.dataset.orderId;
+    if (!oid) return;
+    sel.dataset.savedValue = sel.value;
+    applyDepositOrderStatusSelectStyle(sel);
+    sel.addEventListener("change", () => {
+      applyDepositOrderStatusSelectStyle(sel);
+      patchDepositOrderStatus(oid, sel.value, sel);
+    });
+  });
+}
+
+function fmtDepositOrderTime(iso, ms) {
+  if (iso) {
+    const d = new Date(iso);
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleString("vi-VN", { hour12: false });
+    }
+    return String(iso).replace("T", " ").slice(0, 19);
+  }
+  const n = parseInt(ms, 10);
+  if (n > 0) {
+    return new Date(n).toLocaleString("vi-VN", { hour12: false });
+  }
+  return "—";
+}
+
+function fmtDepositTransferCell(ti) {
+  if (!ti || typeof ti !== "object") return "—";
+  const bank = String(ti.bank_name || ti.bank || ti.bankName || "").trim();
+  const acc = String(ti.account_number || ti.account_no || ti.accountNo || "").trim();
+  const holder = String(ti.account_holder || ti.holder || ti.accountHolder || "").trim();
+  const nd = String(
+    ti.transfer_content || ti.remark || ti.addInfo || ti.content || ""
+  ).trim();
+  const parts = [];
+  if (bank) parts.push(`<div><b>NH:</b> ${esc(bank)}</div>`);
+  if (acc) parts.push(`<div><b>STK:</b> ${esc(acc)}</div>`);
+  if (holder) parts.push(`<div><b>Chủ:</b> ${esc(holder)}</div>`);
+  if (nd) parts.push(`<div class="dep-ndck"><b>NDCK:</b> ${esc(nd)}</div>`);
+  return parts.length ? `<div class="dep-bank">${parts.join("")}</div>` : "—";
+}
+
+function depositOrderQrLink(row) {
+  const p = String(row.qr_image_path || "").trim().replace(/\\/g, "/");
+  if (!p) return "";
+  const name = p.split("/").pop();
+  return name ? `/qr_outputs/${encodeURIComponent(name)}` : "";
+}
+
+async function loadDepositOrdersPage() {
+  const user = document.getElementById("depOrderFilterUser").value.trim();
+  const st = document.getElementById("depOrderFilterStatus").value;
+  let q = `page=${depOrderPage}&limit=${depOrderLimit}`;
   if (user) q += `&username=${encodeURIComponent(user)}`;
   if (st) q += `&status=${encodeURIComponent(st)}`;
   const res = await apiFetch("/api/deposit-orders?" + q);
   if (!res.ok) {
-    log("Lỗi tải lệnh auto nạp: HTTP " + res.status);
+    log("Lỗi tải lệnh nạp: HTTP " + res.status);
     return;
   }
   const data = await res.json();
-  const tbody = document.querySelector("#depTbl tbody");
+  depOrderTotal = data.total || 0;
+  const tbody = document.querySelector("#depOrderTbl tbody");
   tbody.innerHTML = "";
   (data.list || []).forEach((row) => {
     const tr = document.createElement("tr");
-    const stCls = String(row.status) === "Thành Công" ? "st-ok"
-      : (String(row.status).includes("Thất") ? "st-fail" : "st-pending");
+    const siteFmt = String(row.site_status_formatted || "").trim();
+    const siteSt = row.site_status;
+    const siteLbl = siteFmt || (siteSt != null && siteSt !== "" ? String(siteSt) : "—");
+    const err = String(row.error_message || "").trim();
+    const qrUrl = depositOrderQrLink(row);
+    const qrCell = qrUrl
+      ? `<a href="${escAttr(qrUrl)}" target="_blank" rel="noopener" class="btn btn-deposit btn-sm">QR</a>`
+      : "—";
     tr.innerHTML = `
-      <td>${row.id}</td>
-      <td>${esc(row.username || row.account_id)}</td>
-      <td>${fmtPayAmount(row.amount)}</td>
-      <td class="${stCls}">${esc(row.status)}</td>
-      <td style="font-size:11px">${esc(row.serial_no)}</td>
-      <td style="font-size:11px">${esc(row.trade_no)}</td>
-      <td style="font-size:11px">${esc(row.updated_at)}</td>
+      <td class="td-center">${row.id}</td>
+      <td>${esc(fmtDepositOrderTime(row.created_at, row.order_placed_at_ms))}</td>
+      <td class="td-center">${esc(row.username || row.account_id)}</td>
+      <td class="td-center">${fmtPayAmount(row.amount)}</td>
+      <td class="td-center">${renderDepositOrderStatusSelect(row.id, row.status)}</td>
+      <td class="td-center">${esc(siteLbl)}</td>
+      <td>${fmtDepositTransferCell(row.transfer_info)}</td>
+      <td style="font-size:11px;max-width:120px;word-break:break-all">${esc(row.serial_no || "—")}</td>
+      <td style="font-size:11px;max-width:100px;word-break:break-all">${esc(row.trade_no || "—")}</td>
+      <td style="font-size:11px">${esc(fmtDepositOrderTime(row.updated_at, null))}
+        ${err ? `<div class="dep-err" title="${escAttr(err)}">${esc(err)}</div>` : ""}</td>
+      <td class="td-center">${qrCell}</td>
     `;
     tbody.appendChild(tr);
   });
-  document.getElementById("depSummary").textContent = `Tổng ${data.total || 0} lệnh auto nạp`;
+  bindDepositOrderStatusSelects(tbody);
+  const pages = Math.max(1, Math.ceil(depOrderTotal / depOrderLimit));
+  document.getElementById("depOrderSummary").textContent =
+    `Tổng ${depOrderTotal} lệnh trong deposit_orders` +
+    (user ? ` · lọc «${user}»` : "") +
+    (st ? ` · ${st}` : "");
+  document.getElementById("depOrderPageInfo").textContent =
+    `Trang ${depOrderPage} / ${pages}`;
+  document.getElementById("btnDepOrderPrev").disabled = depOrderPage <= 1;
+  document.getElementById("btnDepOrderNext").disabled = depOrderPage >= pages;
 }
 
 async function resolvePayAccountId() {
@@ -2003,18 +2219,6 @@ document.querySelectorAll(".cms-nav .nav-btn").forEach((btn) => {
   btn.onclick = () => showCmsPage(btn.getAttribute("data-page"));
 });
 
-document.querySelectorAll(".pay-tabs .tab-btn").forEach((btn) => {
-  btn.onclick = () => {
-    document.querySelectorAll(".pay-tabs .tab-btn").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    const tab = btn.getAttribute("data-pay-tab");
-    document.getElementById("payPanelHistory").style.display = tab === "history" ? "" : "none";
-    document.getElementById("payPanelAuto").style.display = tab === "auto" ? "" : "none";
-    if (tab === "auto") loadDepositOrders();
-    else loadPaymentOrders();
-  };
-});
-
 document.getElementById("btnPayRefresh").onclick = () => refreshPaymentsData();
 document.getElementById("btnPayPrev").onclick = () => {
   if (payPage > 1) { payPage--; loadPaymentOrders(); }
@@ -2028,7 +2232,28 @@ document.getElementById("btnPaySync").onclick = async () => {
   if (!acc) { alert("Chọn user trong ô lọc hoặc nhập account"); return; }
   await syncPaymentFor(acc.id, acc.username);
 };
-document.getElementById("btnDepRefresh").onclick = () => refreshPaymentsData();
+document.getElementById("btnDepOrderRefresh").onclick = () => refreshDepositOrdersData();
+document.getElementById("btnDepOrderPrev").onclick = () => {
+  if (depOrderPage > 1) { depOrderPage--; loadDepositOrdersPage(); }
+};
+document.getElementById("btnDepOrderNext").onclick = () => {
+  const pages = Math.max(1, Math.ceil(depOrderTotal / depOrderLimit));
+  if (depOrderPage < pages) { depOrderPage++; loadDepositOrdersPage(); }
+};
+
+["depOrderFilterUser", "depOrderFilterStatus"].forEach((id) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const run = () => {
+    depOrderPage = 1;
+    loadDepositOrdersPage();
+  };
+  el.onchange = run;
+  if (id === "depOrderFilterUser") {
+    el.oninput = () => { clearTimeout(el._depDeb); el._depDeb = setTimeout(run, 400); };
+  }
+});
+
 document.getElementById("btnPayDeposit").onclick = async () => {
   const acc = await resolvePayAccountId();
   if (!acc) return;
@@ -2067,6 +2292,7 @@ updateRefreshButtonHint();
   await checkConnection();
   loadList();
   if (location.hash === "#payments") showCmsPage("payments");
+  else if (location.hash === "#deposit-orders") showCmsPage("deposit-orders");
 })();
 </script>
 </body>

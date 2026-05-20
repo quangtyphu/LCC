@@ -38,6 +38,11 @@ def end_deposit_poll(order_id: int) -> None:
         _poll_order_ids.discard(int(order_id))
 
 
+def deposit_poll_in_progress(order_id: int) -> bool:
+    with _poll_order_lock:
+        return int(order_id) in _poll_order_ids
+
+
 def deposit_order_confirmed(order_id: int) -> bool:
     from xoso66_deposit_orders_db import get_deposit_order
 

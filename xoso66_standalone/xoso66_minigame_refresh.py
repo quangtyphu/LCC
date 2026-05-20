@@ -40,11 +40,21 @@ from xoso66_deposit import DEFAULT_UA
 USER_TOKEN_MAX_AGE_SEC = int(os.environ.get("XOSO66_MINIGAME_USER_TOKEN_MAX_AGE", "21600"))  # 6h
 WS_TOKEN_MAX_AGE_SEC = int(os.environ.get("XOSO66_MINIGAME_WS_TOKEN_MAX_AGE", "600"))  # 10 phút
 
-AUTH_FAIL_CODES = frozenset({0, 401, 403, 1001, 1002, 1020, 1021})
+AUTH_FAIL_CODES = frozenset({0, 401, 403, 1001, 1002, 1004, 1020, 1021})
 AUTH_FAIL_MSG = re.compile(
     r"token|phiên|phien|login|đăng nhập|dang nhap|hết hạn|het han|unauthorized",
     re.I,
 )
+
+
+def is_minigame_session_error(code: Any = None, msg: str = "") -> bool:
+    """placeOrder / batchRequest — phiên mini-game hết hạn (vd. code 1004)."""
+    try:
+        if int(code) in AUTH_FAIL_CODES and int(code) != 1:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return bool(AUTH_FAIL_MSG.search(str(msg or "")))
 
 MINIGAME_HOST = urlparse(MINIGAME_BASE).netloc
 USER_TOKEN_RE = re.compile(r"^[a-f0-9]{32}\.\d{10,}$", re.I)
@@ -180,7 +190,13 @@ def ping_user_token(
     }
 
 
-def user_token_status(session: dict, *, do_ping: bool = True) -> dict[str, Any]:
+def user_token_status(
+    session: dict,
+    *,
+    do_ping: bool = True,
+    game_id: int | None = None,
+    gamename: str | None = None,
+) -> dict[str, Any]:
     """Trạng thái token để log / quyết định refresh nền (không chặn cược)."""
     mg = get_minigame(session)
     tok = str(mg.get("user_token") or "")
@@ -194,10 +210,12 @@ def user_token_status(session: dict, *, do_ping: bool = True) -> dict[str, Any]:
             age_db = None
     issued = _parse_user_token_issued_at(tok)
     age_tok = (now - issued) if issued else None
+    gid = int(game_id if game_id is not None else mg.get("last_game_id") or 9)
+    gname = str(gamename or mg.get("gamename") or "lobby")
     if not tok:
         ping: dict[str, Any] = {"ok": False, "reason": "thiếu token"}
     elif do_ping:
-        ping = ping_user_token(session)
+        ping = ping_user_token(session, game_id=gid, gamename=gname)
     else:
         ping = {"ok": None, "skipped": "do_ping=False — chỉ xem tuổi, chưa hỏi server"}
     proactive = float(
@@ -262,6 +280,21 @@ def ensure_user_token_for_bet(
         if account_id:
             persist_session(account_id, session)
         return True, "OK sau refresh CF cookie"
+
+    # HTTP gameurl (~3–8s) — không Playwright; xử lý token chết giữa startup và cửa cược.
+    nav_id = int(g.get("nav_id") or 45)
+    sub_code = str(g.get("sub_game_code") or "dice2")
+    gu = refresh_user_token_via_gameurl(
+        session,
+        nav_id=nav_id,
+        sub_game_code=sub_code,
+        islobby=0,
+        game_id=gid,
+    )
+    if gu.get("ok") and _ping_ok():
+        if account_id:
+            persist_session(account_id, session)
+        return True, "OK sau refresh gameurl"
 
     if allow_slow_refresh:
         rep = refresh_minigame_tokens(

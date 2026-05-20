@@ -408,6 +408,51 @@ def parse_sign_daily_bets(
     return {int(r["sign_id"]): int(r["done_bet_money"]) for r in rows}
 
 
+def _claim_between_delay_sec() -> float:
+    from xoso66_config_util import load_config
+
+    raw = load_config().get("auto_mission_reward") or {}
+    return max(0.0, float(raw.get("claim_between_delay_sec", 3)))
+
+
+def mission_claim_display_name(lv: dict[str, Any]) -> str:
+    """Tên đọc được cho log nhận thưởng (không dùng level_id 161)."""
+    lid = int(lv.get("level_id") or lv.get("id") or 0)
+    mid = int(lv.get("mission_id") or LEVEL_MISSION_MAP.get(lid, 0))
+    if lid == DAILY_LEVEL_ID or mid == SIGN_ID_DAILY_MISSION:
+        return "Điểm Danh Ngày"
+    if lid in LEVEL_IDS_WEEK or mid == SIGN_ID_MINI_WEEK:
+        day = int(lv.get("level") or 0)
+        if day < 1:
+            try:
+                day = LEVEL_IDS_WEEK.index(lid) + 1
+            except ValueError:
+                day = max(1, lid - 113)
+        return f"MiniGame Điểm Danh Ngày {day}"
+    return f"Nhiệm vụ (level {lid})"
+
+
+def _print_mission_claim_result(
+    *,
+    log_prefix: str,
+    username: str,
+    display_name: str,
+    ok: bool,
+    msg: str,
+) -> None:
+    p = str(log_prefix or "").strip()
+    u = str(username or "").strip()
+    if p:
+        if ok:
+            print(f"{p} {u} Nhận {display_name} Thành Công", flush=True)
+        else:
+            err = str(msg or "lỗi").strip()
+            print(f"{p} {u} Nhận {display_name} : {err}", flush=True)
+        return
+    tag = "OK" if ok else "FAIL"
+    print(f"      {tag}: {msg}", flush=True)
+
+
 def execute_mission_claims(
     session: dict,
     account_id: str,
@@ -415,6 +460,7 @@ def execute_mission_claims(
     claimable: list[dict[str, Any]],
     *,
     account_proxy: str = "",
+    log_prefix: str = "",
 ) -> list[dict[str, Any]]:
     """POST reward cho mọi level status=1; persist session sau mỗi lần."""
     from xoso66_proxy import proxy_source_label
@@ -424,29 +470,40 @@ def execute_mission_claims(
     claims: list[dict[str, Any]] = []
     if not claimable:
         return claims
-    print(f"  [{u}] nhận thưởng {len(claimable)} mức (status=1) ...", flush=True)
-    for lv in claimable:
+    between_delay = _claim_between_delay_sec()
+    auto_log = bool(str(log_prefix or "").strip())
+    if not auto_log:
+        print(f"  [{u}] nhận thưởng {len(claimable)} mức (status=1) ...", flush=True)
+    for i, lv in enumerate(claimable):
         mid = int(lv["mission_id"])
         lid = int(lv["level_id"])
-        print(
-            f"      POST reward mission_id={mid} level_id={lid} "
-            f"({proxy_source_label(session, account_proxy=account_proxy)}) ...",
-            flush=True,
-        )
+        display = mission_claim_display_name(lv)
+        if not auto_log:
+            print(
+                f"      POST reward mission_id={mid} level_id={lid} "
+                f"({proxy_source_label(session, account_proxy=account_proxy)}) ...",
+                flush=True,
+            )
         cr = fetch_mission_reward(session, mid, lid)
         claims.append(cr)
-        tag = "OK" if cr.get("ok") else "FAIL"
-        print(f"      {tag}: {cr.get('msg')}", flush=True)
         msg = str(cr.get("msg") or "")
-        if not cr.get("ok") and "IP" in msg and "nhận" in msg.lower():
+        _print_mission_claim_result(
+            log_prefix=log_prefix,
+            username=u,
+            display_name=display,
+            ok=bool(cr.get("ok")),
+            msg=msg,
+        )
+        if not auto_log and not cr.get("ok") and "IP" in msg and "nhận" in msg.lower():
             print(
                 "      → Site giới hạn theo IP outbound (proxy), không theo username. "
-                "Proxy này có thể đã nhận 161 hôm nay (acc khác / tay trên IP khác). "
+                "Proxy này có thể đã nhận Điểm Danh Ngày hôm nay (acc khác / tay trên IP khác). "
                 "Gán proxy IP riêng cho từng acc hoặc nhận trên browser đúng IP acc.",
                 flush=True,
             )
         persist_session(aid, session)
-        time.sleep(0.35)
+        if i < len(claimable) - 1 and between_delay > 0:
+            time.sleep(between_delay)
     return claims
 
 

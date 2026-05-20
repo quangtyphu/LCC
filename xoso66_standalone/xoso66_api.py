@@ -798,6 +798,48 @@ def api_deposit_orders_list(
     )
 
 
+_DEPOSIT_ORDER_STATUSES = frozenset(
+    {
+        "Chờ Nạp",
+        "Đã tạo đơn",
+        "Chờ bên thứ 3",
+        "Đã Nạp",
+        "Thành Công",
+        "Thất Bại",
+        "Huỷ",
+        "Hủy",
+    }
+)
+
+
+class DepositOrderStatusBody(BaseModel):
+    status: str = Field(..., min_length=1)
+
+
+@app.put("/api/deposit-orders/{order_id}", dependencies=[Depends(require_api_key)])
+def api_update_deposit_order_status(
+    order_id: int, body: DepositOrderStatusBody
+) -> dict[str, Any]:
+    """CMS — đổi trạng thái lệnh trong deposit_orders."""
+    from xoso66_auto_deposit import remove_from_deposit_cache
+    from xoso66_deposit_orders_db import get_deposit_order, update_deposit_order
+
+    row = get_deposit_order(int(order_id))
+    if not row:
+        raise HTTPException(404, "Không tìm thấy lệnh nạp")
+    st = str(body.status or "").strip()
+    if st not in _DEPOSIT_ORDER_STATUSES:
+        raise HTTPException(
+            400,
+            f"status không hợp lệ: {st!r} (cho phép: {', '.join(sorted(_DEPOSIT_ORDER_STATUSES))})",
+        )
+    update_deposit_order(int(order_id), status=st)
+    if st in ("Thành Công", "Thất Bại", "Huỷ", "Hủy"):
+        remove_from_deposit_cache(str(row.get("account_id") or ""))
+    out = get_deposit_order(int(order_id))
+    return out if out else {"id": order_id, "status": st}
+
+
 @app.post("/api/payment-orders/sync", dependencies=[Depends(require_api_key)])
 def api_payment_orders_sync(
     body: SyncPaymentsBody,

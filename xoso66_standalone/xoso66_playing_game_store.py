@@ -37,6 +37,34 @@ def load_playing_game(*, max_age_sec: float = 1800) -> dict[str, Any] | None:
         return None
 
 
+def runtime_token_game_key(cfg: dict | None = None) -> str:
+    """Game key dùng ping/refresh token — khớp auto_bet đang chơi."""
+    try:
+        from xoso66_auto_bet import get_auto_bet_controller
+
+        k = str(get_auto_bet_controller().active_game_key() or "").strip()
+        if k:
+            return k
+    except Exception:
+        pass
+    try:
+        from xoso66_config_util import load_config
+
+        cfg = cfg or load_config()
+        ab = cfg.get("auto_bet") if isinstance(cfg.get("auto_bet"), dict) else {}
+        max_age = float(ab.get("playing_game_max_age_sec") or 1800)
+        saved = load_playing_game(max_age_sec=max_age)
+        if saved and saved.get("game_key"):
+            return str(saved["game_key"])
+        sc = cfg.get("startup_checks") if isinstance(cfg.get("startup_checks"), dict) else {}
+        tk = str(sc.get("token_game_key") or "").strip()
+        if tk:
+            return tk
+    except Exception:
+        pass
+    return "taixiu_dai_loc"
+
+
 def save_playing_game(
     *,
     game_id: int,

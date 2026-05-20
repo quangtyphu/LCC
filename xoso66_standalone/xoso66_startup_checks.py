@@ -407,8 +407,11 @@ def check_balances(cfg: dict) -> CheckResult:
 
 def _minigame_game_params(cfg: dict) -> dict[str, Any]:
     from xoso66_minigame_catalog import game_by_key
+    from xoso66_playing_game_store import runtime_token_game_key
 
-    game_key = str(_checks_cfg(cfg).get("token_game_key") or "taixiu_dai_loc")
+    game_key = str(_checks_cfg(cfg).get("token_game_key") or "").strip()
+    if not game_key:
+        game_key = runtime_token_game_key(cfg)
     g = game_by_key(game_key)
     return {
         "game_key": game_key,

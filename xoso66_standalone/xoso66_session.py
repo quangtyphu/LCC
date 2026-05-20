@@ -10,8 +10,7 @@ Luồng:
 Dùng:
   from xoso66_session import ensure_session, get_user_balance
 
-  Mọi GET getBalance in log một dòng: "Username - Balance 1.234.567đ"
-  (tắt: XOSO66_LOG_GETBALANCE=0).
+  Mọi GET getBalance — mặc định không in log (bật: XOSO66_LOG_GETBALANCE=1).
 
   session = ensure_session("acc1")
   # ... gọi deposit, v.v.
@@ -35,12 +34,12 @@ ENCRYPT_KEY_PATH = "/server/index/encryptKey"
 LOGIN_CODE_2FA = 80080
 
 def _getbalance_log_enabled() -> bool:
-    """Tắt spam: XOSO66_LOG_GETBALANCE=0."""
-    return os.environ.get("XOSO66_LOG_GETBALANCE", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
+    """Mặc định tắt — bật: XOSO66_LOG_GETBALANCE=1."""
+    return os.environ.get("XOSO66_LOG_GETBALANCE", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
     )
 
 
@@ -397,6 +396,27 @@ def refresh_account_balance_to_db(
 
 def session_is_valid(session: dict) -> bool:
     return bool(get_user_balance(session).get("ok"))
+
+
+def prep_site_session_before_ws(account_id: str) -> None:
+    """
+    Trước mở WS: refresh getBalance; login lại nếu «Thông tin phiên không hợp lệ».
+    Tránh mở WS khi site session (form_token) đã cũ sau «Đủ ngày».
+    """
+    aid = str(account_id or "").strip()
+    if not aid:
+        return
+    try:
+        session = ensure_session(aid, force_login=False)
+        rep = refresh_account_balance_to_db(aid, session, refresh=True)
+        if rep.get("ok"):
+            return
+        err = str(rep.get("error") or "").strip().lower()
+        if "phiên" in err or "phien" in err or "session" in err or "login" in err:
+            session = ensure_session(aid, force_login=True)
+            refresh_account_balance_to_db(aid, session, refresh=True)
+    except Exception:
+        pass
 
 
 def session_health(session: dict) -> dict[str, Any]:

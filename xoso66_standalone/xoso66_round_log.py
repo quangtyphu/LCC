@@ -80,9 +80,23 @@ def log_round_bet_footer(
     return
 
 
-def log_round_result_header(*, issue: str) -> None:
+def log_round_result_header(
+    *,
+    issue: str,
+    winning_side: str | None = None,
+    dices: list[int] | None = None,
+) -> None:
     with _round_console_lock:
-        print(f"  [{issue}] Kết quả:", flush=True)
+        if winning_side:
+            w = winning_side_label(winning_side)
+            d = dices if dices else [0, 0, 0]
+            dice_s = ", ".join(str(x) for x in d)
+            print(
+                f"  [{issue}] Kết quả : {w} | Dices=[{dice_s}] |",
+                flush=True,
+            )
+        else:
+            print(f"  [{issue}] Kết quả:", flush=True)
 
 
 def _fmt_vnd(n: int | float) -> str:

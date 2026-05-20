@@ -5,7 +5,8 @@ Gán acc + số tiền Tài/Xỉu theo chiến lược + trần cược ngày.
 Chiến lược 1: acc tổng cược ngày cao nhất (trong số acc còn chỗ cap) → mức cao nhất
   vừa cap; còn lại random. Acc đầu bảng hết room vẫn đánh phiên bằng acc khác.
   daily >= cap-step → ngắt WS, thay nick.
-Chiến lược 2: mức bet lớn → thấp → acc tổng cược ngày thấp nhất (≤ cap).
+Chiến lược 2: duyệt mức cược lớn → nhỏ; mức thứ i ghép acc tổng cược ngày thứ i
+  (thấp → cao). Số dư ≥ mức cược; tổng cược ngày + mức < cap.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ def _daily_cap_vnd(acfg: dict) -> int:
 
 STRATEGY_LABELS: dict[int, str] = {
     1: "cược ngày cao (còn chỗ cap) → mức lớn nhất vừa cap; còn lại random; đủ cap đổi WS",
-    2: "bet lớn → tổng cược ngày thấp (≤ cap)",
+    2: "mức lớn→nhỏ ghép cược ngày thấp→cao (số dư & cap)",
 }
 
 
@@ -222,14 +223,6 @@ def _pick_candidate(
     strategy: int,
     daily: dict[str, float],
 ) -> dict[str, Any]:
-    if strategy == 2:
-        return min(
-            candidates,
-            key=lambda r: (
-                _daily_for_cap(r, daily),
-                str(r.get("username") or r["id"]),
-            ),
-        )
     return max(
         candidates,
         key=lambda r: (
@@ -238,6 +231,110 @@ def _pick_candidate(
             str(r.get("username") or r["id"]),
         ),
     )
+
+
+def _unused_sorted_by_daily(
+    pool: list[dict[str, Any]],
+    used: set[str],
+    daily: dict[str, float],
+) -> list[dict[str, Any]]:
+    return sorted(
+        (r for r in pool if str(r["id"]) not in used),
+        key=lambda r: (
+            _daily_for_cap(r, daily),
+            str(r.get("username") or r["id"]),
+        ),
+    )
+
+
+def _row_fits_order(
+    row: dict[str, Any],
+    daily: dict[str, float],
+    amount_vnd: int,
+    *,
+    cap_vnd: int,
+    check_balance: bool,
+    min_remainder_vnd: int,
+) -> bool:
+    if not _bet_fits_daily_cap(
+        _daily_for_cap(row, daily), amount_vnd, cap_vnd
+    ):
+        return False
+    if check_balance and not _balance_fits_bet(
+        _balance_vnd(row), amount_vnd, min_remainder_vnd
+    ):
+        return False
+    return True
+
+
+def _assign_strategy_2(
+    pool: list[dict[str, Any]],
+    daily: dict[str, float],
+    amounts_tai: list[int],
+    amounts_xiu: list[int],
+    *,
+    cap_vnd: int,
+    check_balance: bool,
+    min_remainder_vnd: int = 0,
+) -> tuple[list[BetSlot], str]:
+    """
+    Mức cược lớn → nhỏ; mức thứ i ghép acc có tổng cược ngày thứ i (thấp → cao).
+    Cả Tài + Xỉu trong một lượt — mỗi acc tối đa một lệnh/phiên.
+    """
+    used: set[str] = set()
+    slots: list[BetSlot] = []
+    orders: list[tuple[int, str]] = [
+        *((int(a), "tai") for a in amounts_tai),
+        *((int(a), "xiu") for a in amounts_xiu),
+    ]
+    orders.sort(key=lambda x: (-x[0], x[1]))
+
+    for i, (amount_vnd, side) in enumerate(orders):
+        unused = _unused_sorted_by_daily(pool, used, daily)
+        chosen: dict[str, Any] | None = None
+        for j in range(i, len(unused)):
+            row = unused[j]
+            if _row_fits_order(
+                row,
+                daily,
+                amount_vnd,
+                cap_vnd=cap_vnd,
+                check_balance=check_balance,
+                min_remainder_vnd=min_remainder_vnd,
+            ):
+                chosen = row
+                break
+        if chosen is None:
+            for j in range(0, min(i, len(unused))):
+                row = unused[j]
+                if _row_fits_order(
+                    row,
+                    daily,
+                    amount_vnd,
+                    cap_vnd=cap_vnd,
+                    check_balance=check_balance,
+                    min_remainder_vnd=min_remainder_vnd,
+                ):
+                    chosen = row
+                    break
+        if chosen is None:
+            return (
+                [],
+                f"không gán được {side} {amount_vnd:,} VND "
+                f"(pool {len(pool)} acc, đã dùng {len(used)}/{len(pool)}; "
+                f"cap ngày {cap_vnd:,})",
+            )
+        aid = str(chosen["id"])
+        used.add(aid)
+        slots.append(
+            BetSlot(
+                account_id=aid,
+                username=str(chosen.get("username") or aid),
+                side=side,
+                amount_vnd=int(amount_vnd),
+            )
+        )
+    return slots, ""
 
 
 def _candidates_for_order(
@@ -356,6 +453,17 @@ def _assign_by_strategy(
     """
     Gán từng bên Tài / Xỉu riêng — mỗi bên tổng đúng side_total; mỗi acc tối đa 1 lệnh/phiên.
     """
+    if strategy == 2:
+        return _assign_strategy_2(
+            pool,
+            daily,
+            [int(a) for a in amounts_tai],
+            [int(a) for a in amounts_xiu],
+            cap_vnd=cap_vnd,
+            check_balance=check_balance,
+            min_remainder_vnd=min_remainder_vnd,
+        )
+
     used: set[str] = set()
     slots_out: list[BetSlot] = []
     tai_amts = [int(a) for a in amounts_tai]

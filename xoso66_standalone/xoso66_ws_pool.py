@@ -7,10 +7,10 @@ Chọn account mở WS mini-game + nạp khi thiếu acc đủ điều kiện.
   - balance < bet_step_vnd: sắp tổng cược ngày cao → thấp (bỏ qua balance).
 
 Đầu phiên / resync (giống LC79 — không roster RAM):
-  1) Ngay lập tức: ngắt WS nếu gần đủ cap. Nick DB < min: giữ WS; sau delay refresh site
-     → đủ tiền thì giữ; vẫn thiếu thì ngắt WS + Hết Tiền (bù/nạp slot).
+  1) Ngay lập tức: ngắt WS nếu gần đủ cap; ngắt WS nếu DB không còn «Đang Chơi».
+     Nick DB < min: giữ WS; sau delay refresh site → đủ tiền thì giữ; vẫn thiếu thì ngắt + Hết Tiền.
   2) Bù slot: tối đa (ws_account_count − slot đang dùng); đếm task + connect + cache nạp + pending.
-  3) Không mở hết «Đang Chơi» — chỉ bù đúng need nick.
+  3) Không mở hết «Đang Chơi» — chỉ bù đúng need nick (STT → Đang Chơi thì mở WS qua nạp/resync).
   Sau KQ: chỉ ngắt WS ngay nếu đủ cap ngày; balance thấp (DB) → recheck sau delay + refresh site.
 
 Ngưỡng tiền WS = bet_step_vnd; cap cược ngày WS = daily_bet_cap_vnd (897k…).
@@ -52,6 +52,10 @@ _pending_slot_ids: set[str] = set()
 _pending_slot_lock = threading.Lock()
 _ws_listener_id: str | None = None
 _ws_listener_lock = threading.Lock()
+_round_balance_recheck_pending: dict[str, float] = {}
+_round_balance_recheck_lock = threading.Lock()
+_ws_slot_log_last: dict[str, tuple[int, int, int, int, int, int]] = {}
+_ws_slot_log_lock = threading.Lock()
 
 
 def mark_pending_ws_slots(account_ids: list[str]) -> None:
@@ -150,6 +154,25 @@ def ws_slots_need_fill(
     return max(0, target - int(info["in_use_n"]))
 
 
+def ws_pool_focus_game_id(cfg: dict[str, Any] | None = None) -> int | None:
+    """game_id đang chơi / focus — dùng lọc resync đầu phiên (cùng logic log BẮT ĐẦU PHIÊN)."""
+    from xoso66_jackpot_picker import focus_game_id
+
+    return focus_game_id(cfg)
+
+
+def round_start_triggers_ws_pool_resync(game_id: int, cfg: dict[str, Any] | None = None) -> bool:
+    """Chỉ resync pool khi phiên mới thuộc game đang chơi (tránh 5 game hũ × mỗi phiên)."""
+    if cfg is None:
+        from xoso66_config_util import load_config
+
+        cfg = load_config()
+    focus = ws_pool_focus_game_id(cfg)
+    if focus is None:
+        return False
+    return int(game_id) == int(focus)
+
+
 def _log_ws_slot_need(
     cfg: dict[str, Any],
     *,
@@ -161,6 +184,18 @@ def _log_ws_slot_need(
         return
     info = count_ws_slots_in_use(cfg, task_ids=task_ids)
     target = ws_account_count(cfg)
+    snapshot = (
+        int(info["task_n"]),
+        int(info["connected_n"]),
+        int(info["deposit_cache_n"]),
+        int(info["pending_n"]),
+        int(need),
+        int(target),
+    )
+    with _ws_slot_log_lock:
+        if _ws_slot_log_last.get(log_context) == snapshot:
+            return
+        _ws_slot_log_last[log_context] = snapshot
     print(
         f"[WS-POOL] {log_context}: task={info['task_n']} connect={info['connected_n']} "
         f"cache={info['deposit_cache_n']} pending={info['pending_n']} "
@@ -833,16 +868,28 @@ def build_ws_sync_plan(
     current = [str(x).strip() for x in current_ids if str(x).strip()]
 
     if round_start:
+        status_check_ids = _ws_ids_for_round_status_check(current)
         prune_removed = filter_ws_evict_ids(
             accounts_to_disconnect_cap_at_round_start(cfg, current), cfg
+        )
+        status_removed = filter_ws_evict_ids(
+            accounts_to_disconnect_wrong_status_at_round_start(
+                cfg, status_check_ids
+            ),
+            cfg,
+        )
+        prune_removed = list(
+            dict.fromkeys([*prune_removed, *status_removed])
         )
         for aid in prune_removed:
             clear_pending_ws_slot(aid)
         kept = [a for a in current if a not in prune_removed]
         recheck_low = _accounts_db_low_for_ws_recheck(cfg, kept)
-        if recheck_low:
+        delay = round_start_balance_check_delay_sec(cfg)
+        recheck_new = _new_round_balance_recheck_ids(recheck_low, delay)
+        if recheck_new:
             _log_ws_underfunded_to_deposit(
-                cfg, recheck_low, tag="Phiên mới (recheck sau delay)"
+                cfg, recheck_new, tag="Phiên mới (recheck sau delay)"
             )
         schedule_round_start_balance_prune(cfg, recheck_low)
         kept_target = _kept_for_ws_target(
@@ -852,7 +899,7 @@ def build_ws_sync_plan(
             str(x).strip() for x in (ws_task_ids or []) if str(x).strip()
         ]
         task_set = set(task_keys)
-        need = max(0, min_target - len(task_set))
+        need = ws_slots_need_fill(cfg, task_ids=task_keys)
         _log_ws_slot_need(cfg, task_ids=task_keys, need=need, log_context="Phiên mới")
         exclude_fill = task_set | set(prune_removed)
         fill_connect, fill_deposit = plan_ws_slot_fill(
@@ -1398,11 +1445,27 @@ def should_disconnect_ws_cap_at_round_start(
     return exceeds_ws_daily_cap(row, cfg)
 
 
+def is_ws_pool_active_status(row: dict[str, Any], cfg: dict[str, Any]) -> bool:
+    """Nick được giữ WS pool — mặc định «Đang Chơi» (game_worker.account_status)."""
+    expected = ws_account_status(cfg)
+    return str(row.get("status") or "").strip() == expected
+
+
+def should_disconnect_ws_wrong_status_at_round_start(
+    row: dict[str, Any], cfg: dict[str, Any]
+) -> bool:
+    """Đầu phiên: WS đang mở nhưng DB đã đổi status (Hết Tiền, Đủ ngày, …)."""
+    return not is_ws_pool_active_status(row, cfg)
+
+
 def _disconnect_reason_label(row: dict[str, Any], cfg: dict[str, Any]) -> str:
     min_bal = min_balance_for_ws(cfg)
     daily = daily_bet_today_vnd(row)
     cap = daily_bet_cap_vnd(cfg)
     step = bet_step_vnd(cfg)
+    if not is_ws_pool_active_status(row, cfg):
+        st = str(row.get("status") or "").strip() or "?"
+        return f"status={st} (cần {ws_account_status(cfg)})"
     if is_balance_too_low_for_ws(row, cfg):
         return f"balance<{min_bal:,}"
     if exceeds_ws_daily_cap(row, cfg):
@@ -1456,6 +1519,27 @@ def accounts_to_disconnect_cap_at_round_start(
         should_disconnect_ws_cap_at_round_start,
         log_prefix="[WS-POOL] Phiên mới — ngắt WS (cap)",
     )
+
+
+def accounts_to_disconnect_wrong_status_at_round_start(
+    cfg: dict[str, Any], open_account_ids: list[str]
+) -> list[str]:
+    """Đầu phiên: ngắt WS nick không còn «Đang Chơi» trong DB."""
+    return _accounts_to_disconnect_filtered(
+        cfg,
+        open_account_ids,
+        should_disconnect_ws_wrong_status_at_round_start,
+        log_prefix="[WS-POOL] Phiên mới — ngắt WS (không còn Đang Chơi)",
+    )
+
+
+def _ws_ids_for_round_status_check(
+    open_account_ids: list[str],
+) -> list[str]:
+    """Task WS + nick đã connect (tránh sót khi task chưa sync)."""
+    ids = {str(x).strip() for x in open_account_ids if str(x).strip()}
+    ids |= {str(x).strip() for x in get_connected_ws_accounts() if str(x).strip()}
+    return sorted(ids)
 
 
 def accounts_to_disconnect_at_round_start(
@@ -1541,42 +1625,131 @@ def _accounts_db_low_for_ws_recheck(
     return out
 
 
+def _new_round_balance_recheck_ids(
+    account_ids: list[str], delay: float
+) -> list[str]:
+    """Nick chưa có timer recheck đang chạy (chỉ để log, không đặt pending)."""
+    now = time.time()
+    out: list[str] = []
+    with _round_balance_recheck_lock:
+        for aid in account_ids:
+            aid = str(aid).strip()
+            if not aid:
+                continue
+            last = _round_balance_recheck_pending.get(aid, 0.0)
+            if last and (now - last) < max(1.0, delay):
+                continue
+            out.append(aid)
+    return out
+
+
+def _reserve_round_balance_recheck(
+    account_ids: list[str], delay: float
+) -> list[str]:
+    """Mỗi nick chỉ một timer recheck — tránh spam log / race nhiều thread."""
+    now = time.time()
+    out: list[str] = []
+    with _round_balance_recheck_lock:
+        for aid in account_ids:
+            aid = str(aid).strip()
+            if not aid:
+                continue
+            last = _round_balance_recheck_pending.get(aid, 0.0)
+            if last and (now - last) < max(1.0, delay):
+                continue
+            _round_balance_recheck_pending[aid] = now
+            out.append(aid)
+    return out
+
+
+def _release_round_balance_recheck(account_ids: list[str]) -> None:
+    with _round_balance_recheck_lock:
+        for aid in account_ids:
+            _round_balance_recheck_pending.pop(str(aid).strip(), None)
+
+
+def _apply_balance_recheck_after_delay(
+    cfg: dict[str, Any], account_ids: list[str], *, delay: float
+) -> None:
+    """
+    Sau delay: refresh getBalance → vẫn thiếu tiền (DB) hoặc đủ cap → Hết Tiền + ngắt WS.
+    Chỉ giữ WS khi DB sau refresh đã >= min_balance (thưởng WS về kịp).
+    """
+    from xoso66_shutdown import stopping
+
+    ids = [str(x).strip() for x in account_ids if str(x).strip()]
+    if not ids or stopping():
+        _release_round_balance_recheck(ids)
+        return
+
+    min_bal = min_balance_for_ws(cfg)
+    skip_pending = _pending_bet_skip_ids()
+    removed: list[str] = []
+    try:
+        for aid in ids:
+            if stopping():
+                break
+            if aid in skip_pending:
+                continue
+            if is_ws_listener(aid, cfg):
+                continue
+            if aid in get_pending_ws_slot_ids() or account_deposit_in_flight(aid, cfg):
+                continue
+            row_before = get_account(aid) or {}
+            db_low_before = is_balance_too_low_for_ws(row_before, cfg)
+            db_before = account_balance_vnd(row_before)
+            _balance_vnd_after_site_refresh(aid)
+            if not stopping():
+                _, _, err = sync_live_balance_vnd(aid)
+                if err and db_low_before:
+                    print(
+                        f"[WS-POOL] {username_for_log(aid)} refresh balance "
+                        f"(sau {delay:.0f}s): {err}",
+                        flush=True,
+                    )
+            row_after = get_account(aid) or {}
+            db_after = account_balance_vnd(row_after)
+            if not should_disconnect_ws_at_round_start(row_after, cfg):
+                if db_low_before and db_after >= min_bal:
+                    print(
+                        f"[WS-POOL] {username_for_log(aid)} sau {delay:.0f}s "
+                        f"đủ tiền (DB {db_after:,.0f} >= {min_bal:,}"
+                        f"{f'; trước {db_before:,.0f}' if db_before < min_bal else ''}"
+                        f") — giữ WS",
+                        flush=True,
+                    )
+                continue
+            removed.append(aid)
+    finally:
+        _release_round_balance_recheck(ids)
+
+    if not removed or stopping():
+        return
+    details = ", ".join(
+        f"{username_for_log(a)} ({_disconnect_reason_label(get_account(a) or {}, cfg)})"
+        for a in removed
+    )
+    print(
+        f"[WS-POOL] Sau {delay:.0f}s recheck balance — ngắt WS: {details}",
+        flush=True,
+    )
+    sync_status_for_ws_pool_change(cfg, leaving=removed, joining=[])
+    request_ws_evict_and_resync(removed)
+
+
 def schedule_round_start_balance_prune(
     cfg: dict[str, Any], recheck_account_ids: list[str]
 ) -> None:
-    """Sau delay: chỉ refresh/recheck nick DB đã báo thiếu tiền đầu phiên."""
-    ids = [str(x).strip() for x in recheck_account_ids if str(x).strip()]
+    """Sau delay: refresh/recheck nick DB đã báo thiếu tiền đầu phiên (một timer / nick)."""
+    delay = round_start_balance_check_delay_sec(cfg)
+    ids = _reserve_round_balance_recheck(recheck_account_ids, delay)
     if not ids:
         return
-    delay = round_start_balance_check_delay_sec(cfg)
+
     if delay <= 0:
 
         def _run_now() -> None:
-            min_bal = min_balance_for_ws(cfg)
-            removed: list[str] = []
-            for aid in ids:
-                if is_ws_listener(aid, cfg):
-                    continue
-                live, db_before, _ok = _balance_vnd_after_site_refresh(aid)
-                bal = (
-                    live
-                    if live is not None
-                    else account_balance_vnd(get_account(aid) or {})
-                )
-                if bal >= min_bal:
-                    if db_before < min_bal:
-                        print(
-                            f"[WS-POOL] {username_for_log(aid)} đủ tiền "
-                            f"({bal:,.0f} >= {min_bal:,}) — giữ WS",
-                            flush=True,
-                        )
-                    continue
-                row = get_account(aid) or {}
-                if should_disconnect_ws_at_round_start(row, cfg):
-                    removed.append(aid)
-            if removed:
-                sync_status_for_ws_pool_change(cfg, leaving=removed, joining=[])
-                request_ws_evict_and_resync(removed)
+            _apply_balance_recheck_after_delay(cfg, ids, delay=0.0)
 
         threading.Thread(
             target=_run_now, name="ws-round-bal-prune", daemon=True
@@ -1587,61 +1760,9 @@ def schedule_round_start_balance_prune(
         from xoso66_shutdown import sleep_interruptible, stopping
 
         if not sleep_interruptible(delay) or stopping():
+            _release_round_balance_recheck(ids)
             return
-        min_bal = min_balance_for_ws(cfg)
-        skip_pending = _pending_bet_skip_ids()
-        removed: list[str] = []
-        for aid in ids:
-            if stopping() or aid in skip_pending:
-                continue
-            if is_ws_listener(aid, cfg):
-                continue
-            if aid in get_pending_ws_slot_ids() or account_deposit_in_flight(aid, cfg):
-                continue
-            row_before = get_account(aid) or {}
-            db_low_before = is_balance_too_low_for_ws(row_before, cfg)
-            live_bal, db_before, refresh_ok = _balance_vnd_after_site_refresh(aid)
-            if not refresh_ok:
-                live2, _, err = sync_live_balance_vnd(aid)
-                if live2 is not None:
-                    live_bal = live2
-                    refresh_ok = True
-                elif err:
-                    print(
-                        f"[WS-POOL] {username_for_log(aid)} refresh balance "
-                        f"(sau {delay:.0f}s): {err}",
-                        flush=True,
-                    )
-            if live_bal is not None:
-                bal_use = live_bal
-            else:
-                bal_use = account_balance_vnd(get_account(aid) or {})
-            if bal_use >= min_bal:
-                if db_low_before or (db_before < min_bal and refresh_ok):
-                    print(
-                        f"[WS-POOL] {username_for_log(aid)} sau {delay:.0f}s "
-                        f"đủ tiền ({bal_use:,.0f} >= {min_bal:,}"
-                        f"{f'; DB trước {db_before:,.0f}' if db_before < min_bal else ''}"
-                        f") — giữ WS",
-                        flush=True,
-                    )
-                continue
-            row = get_account(aid) or {}
-            if not should_disconnect_ws_at_round_start(row, cfg):
-                continue
-            removed.append(aid)
-        if not removed:
-            return
-        details = ", ".join(
-            f"{username_for_log(a)} ({_disconnect_reason_label(get_account(a) or {}, cfg)})"
-            for a in removed
-        )
-        print(
-            f"[WS-POOL] Sau {delay:.0f}s recheck balance — ngắt WS: {details}",
-            flush=True,
-        )
-        sync_status_for_ws_pool_change(cfg, leaving=removed, joining=[])
-        request_ws_evict_and_resync(removed)
+        _apply_balance_recheck_after_delay(cfg, ids, delay=delay)
 
     threading.Thread(
         target=_worker,
@@ -1684,9 +1805,12 @@ def prune_ws_after_settlement(
         sync_status_for_ws_pool_change(cfg, leaving=cap_remove, joining=[])
         request_ws_evict_and_resync(cap_remove)
     if balance_recheck:
-        _log_ws_underfunded_to_deposit(
-            cfg, balance_recheck, tag="Sau KQ (recheck sau delay)"
-        )
+        delay = round_start_balance_check_delay_sec(cfg)
+        recheck_new = _new_round_balance_recheck_ids(balance_recheck, delay)
+        if recheck_new:
+            _log_ws_underfunded_to_deposit(
+                cfg, recheck_new, tag="Sau KQ (recheck sau delay)"
+            )
         schedule_round_start_balance_prune(cfg, balance_recheck)
 
 
@@ -1836,11 +1960,6 @@ def _wait_deposit_confirmed(cfg: dict[str, Any], aid: str, rep: dict[str, Any]) 
     max_attempts = int(ad.get("poll_max_attempts") or 100)
     list_limit = int(ad.get("deposit_list_limit") or 10)
 
-    print(
-        f"[WS-POOL] Poll nạp #{order_id} {username_for_log(aid)} — {interval:.0f}s × {max_attempts} "
-        f"(cần bên thứ 3 chuyển + lệnh Hoàn tất trên site)",
-        flush=True,
-    )
     try:
         session = ensure_session(aid, force_login=False)
     except Exception as e:
@@ -2172,12 +2291,15 @@ def on_round_start_ws_pool(
     reporter: str = "",
 ) -> None:
     """Đầu phiên: resync pool (sau khi worker đã apply pool lần đầu)."""
+    _ = issue, next_info, reporter
     from xoso66_config_util import load_config
 
     cfg = load_config()
     if not cfg.get("game_worker_enabled"):
         return
     if not ws_round_sync_enabled():
+        return
+    if not round_start_triggers_ws_pool_resync(game_id, cfg):
         return
     try:
         from xoso66_minigame_ws_worker import schedule_ws_pool_round_check

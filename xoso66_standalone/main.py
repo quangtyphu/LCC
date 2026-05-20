@@ -36,12 +36,9 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(line_buffering=True)
-        sys.stderr.reconfigure(line_buffering=True)
-    except Exception:
-        pass
+from xoso66_config_util import configure_stdio_utf8
+
+configure_stdio_utf8()
 
 from xoso66_accounts_db import init_db, list_accounts
 from xoso66_config_util import load_config, main_progress, startup_quiet
@@ -182,13 +179,10 @@ def worker_minigame_ws() -> threading.Thread | None:
             )
             from xoso66_minigame_ws_worker import run_ws_worker_blocking
 
-            from xoso66_ws_pool import ws_bulk_refresh_threshold
-
-            bulk = len(account_ids) > ws_bulk_refresh_threshold(cfg)
             run_ws_worker_blocking(
                 account_ids,
                 ws_count=len(account_ids),
-                refresh_before_connect=not bulk,
+                refresh_before_connect=True,
             )
         except KeyboardInterrupt:
             pass

@@ -114,8 +114,18 @@ def _maintain_user_tokens_loop() -> None:
             try:
                 from xoso66_ws_pool import get_connected_ws_accounts
 
+                from xoso66_config_util import load_config
+                from xoso66_minigame_catalog import game_by_key
+                from xoso66_playing_game_store import runtime_token_game_key
+
+                cfg = load_config()
+                game_key = runtime_token_game_key(cfg)
+                g = game_by_key(game_key)
+                gid = int(g["game_id"])
+                gname = str(g.get("gamename") or "lobby")
+
                 session = ensure_session(aid, force_login=False)
-                st = user_token_status(session)
+                st = user_token_status(session, game_id=gid, gamename=gname)
                 if aid in get_connected_ws_accounts() and st.get("ping_ok") and not st.get(
                     "needs_refresh"
                 ):
@@ -124,14 +134,14 @@ def _maintain_user_tokens_loop() -> None:
                     continue
                 user = username_for_log(aid, session)
                 print(
-                    f"[TOKEN] {user} maintain "
+                    f"[TOKEN] {user} maintain ({game_key}) "
                     f"ping_ok={st.get('ping_ok')} needs_refresh={st.get('needs_refresh')}",
                     flush=True,
                 )
                 rep = refresh_minigame_tokens(
                     session,
                     account_id=aid,
-                    game_key="taixiu_dai_loc",
+                    game_key=game_key,
                     force=not st.get("ping_ok"),
                     ws_only=bool(st.get("ping_ok")),
                 )
@@ -181,7 +191,6 @@ async def run_ws_for_account(
                 if stopping():
                     return
                 await asyncio.sleep(1)
-            refresh_before_connect = False
         else:
             if stopping():
                 break
@@ -193,7 +202,6 @@ async def run_ws_for_account(
                 if stopping():
                     return
                 await asyncio.sleep(1)
-            refresh_before_connect = False
 
 
 class WsPoolSupervisor:
@@ -393,7 +401,7 @@ class WsPoolSupervisor:
                 flush=True,
             )
         for aid in added:
-            self._spawn_task(aid, lead=lead or aid, refresh=refresh_new)
+            self._spawn_task(aid, lead=lead or aid, refresh=True)
 
     async def _stop_account(self, aid: str) -> None:
         if aid == self.listener_id:
@@ -474,7 +482,7 @@ class WsPoolSupervisor:
 
             mark_pending_ws_slots(added)
             for aid in added:
-                self._spawn_task(aid, lead=lead or aid, refresh=refresh_new)
+                self._spawn_task(aid, lead=lead or aid, refresh=True)
             self._sync_token_maintain_ids()
             t = asyncio.create_task(
                 self._sync_joining_accounts(added, cfg=cfg),
@@ -490,6 +498,10 @@ class WsPoolSupervisor:
             return
         self._connect_batch_n += 1
         try:
+            from xoso66_session import prep_site_session_before_ws
+
+            for aid in added:
+                await asyncio.to_thread(prep_site_session_before_ws, aid)
             await asyncio.to_thread(
                 _sync_ws_status_blocking,
                 cfg,
@@ -511,7 +523,7 @@ class WsPoolSupervisor:
         if not added:
             return
         for aid in added:
-            self._spawn_task(aid, lead=lead or aid, refresh=refresh_new)
+            self._spawn_task(aid, lead=lead or aid, refresh=True)
         await self._sync_joining_accounts(added, cfg=cfg)
 
     async def _apply_pending_evictions(self, cfg: dict[str, Any]) -> list[str]:
@@ -697,7 +709,7 @@ class WsPoolSupervisor:
 
                 print(f"[WS-WORKER] {username_for_log(aid)} rớt WS: {exc}", flush=True)
             self._last_respawn_at[aid] = now
-            self._spawn_task(aid, lead=lead or aid, refresh=False)
+            self._spawn_task(aid, lead=lead or aid, refresh=True)
 
     async def shutdown(self) -> None:
         for aid in list(self.tasks.keys()):
@@ -869,6 +881,8 @@ async def run_managed_ws_workers(
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 done |= finished
+                if _ws_pool_round_check.is_set() or _ws_after_deposit_check.is_set():
+                    break
             if stopping():
                 for t in pending:
                     t.cancel()
