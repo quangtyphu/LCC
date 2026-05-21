@@ -1,0 +1,12 @@
+Captcha:0,split:1},pinTypeMap:{BRL:[{pinNumberRule:"",pinNumberType:0,pinNumberTypeName:"CPF"}],PEN:[{pinNumberRule:"^[A-Za-z0-
+CaptchaRegister:0,quickPasswordRegister:0},phoneRegister:{account:0,confirmDialog:0,cpf:0,currency:0,email:0,inviteCode:0,invit
+SiteCode:"2865",limitStatus:0,languageInfos:[{defaultLanguageTag:!1,languageFlagIcon:"icon_flag_en.png",languageCode:"en",langua
+brandLogo/fonts/fontFamily/.ttf",iconPngImage:"",dyColorType:2,dyColor_2:"#409EFF",type:1,loadingType:"1",dyColor_1:"#866638"
+brandLogoUse:{iosBootInstallation:{shortcutsLogoType:1,shortcutsLogo:"https://eXB0eTFpLTI4NjUtcHBw@2feffffb-16ac-41a1-a96e-54
+brandName:"C168",brandNameText:"",type:1,officialWebsite:"",agreeTitle:"<p>TÃ´i trÃªn {{age}} tuá»i, ÄÃ£ Äá»c vÃ  Äá»ng
+captcha_id:{feedback:"62c528ead784206de7e6db17765b9ac0",force_geetest:"62c528ead784206de7e6db17765b9ac0",login:"62c528ead784206
+geetestDeviceAndroidAppId:"ew2as8ojhn1vyjy8xtxd0myhkxscgqay",geetestDeviceAppId:"9ia4hndgblg9xihxcwgdjt9ztg8sjwaf",geetestDevic
+geetest_captcha_id:{feedback:"62c528ead784206de7e6db17765b9ac0",force_geetest:"62c528ead784206de7e6db17765b9ac0",login:"62c528e
+siteCode:"2865",siteName:"C1",siteAppIcon:"https://eXB0eTFpLTI4NjUtcHBw@2feffffb-16ac-41a1-a96e-5403e6af9659.b3NzLWFjY2VsZXJhdGU
+siteCode:"2865",status:0,currencyId:5,"dec2NyaXB0@2feffffb-16ac-41a1-a96e-5403e6af9659ion":"",currencySign:"â«",currencyIds:"5"
+sms:1,facebook:{app_id:"C168.COM",status:0},fingerprintJS:{publicKey:"cIMrDd2qJKZFByajXD7O"},forgetPwdVerify:{securityEmail

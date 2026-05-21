@@ -1,0 +1,2 @@
+# Mỗi dòng: host:port:user:pass  hoặc  host:port
+# 1.2.3.4:1080:myuser:mypass

@@ -21,14 +21,14 @@ from pathlib import Path
 import importlib.util
 
 _STANDALONE = Path(__file__).resolve().parent
-_REPO_ROOT = _STANDALONE.parent
+_LC79_DIR = _STANDALONE.parent / "lc79"
 if str(_STANDALONE) not in sys.path:
     sys.path.insert(0, str(_STANDALONE))
 
 
 def _load_lc79_proxy_unused():
     """Import LC79/proxy_unused.py (tránh trùng tên file trong xoso66_standalone)."""
-    path = _REPO_ROOT / "proxy_unused.py"
+    path = _LC79_DIR / "proxy_unused.py"
     if not path.is_file():
         raise FileNotFoundError(f"Không thấy {path}")
     spec = importlib.util.spec_from_file_location("lc79_proxy_unused", path)
@@ -46,7 +46,7 @@ login_http = _pu.login_http
 normalize_proxy = _pu.normalize_proxy
 
 # File cookie/list cùng LC79 (thư mục gốc repo)
-os.chdir(_REPO_ROOT)
+os.chdir(_LC79_DIR)
 
 
 def get_proxies_from_xoso66_db() -> list[tuple[str, str, str]]:

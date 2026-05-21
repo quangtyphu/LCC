@@ -1,6 +1,6 @@
 {
   "_note": "Chỉ các key dưới đây đọc từ file. Còn lại: xoso66_config_util.py → HARDCODED_CONFIG. Proxy: DEFAULT_PROXY trong file đó hoặc env XOSO66_DEFAULT_PROXY.",
-  "_assign_strategy": "1 = cược ngày cao (còn cap) → slot lớn nhất; 2 = mức lớn→nhỏ ghép cược ngày thấp→cao (số dư & < cap)",
+  "_assign_strategy": "1 = cược ngày cao (còn cap) → slot lớn nhất; 2 = acc cược ngày thấp→cao, mỗi acc 1 mức còn lại (to→nhỏ)",
   "auto_deposit": {
     "amount_vnd": 100000
   },

@@ -1,0 +1,31 @@
+# Bỏ qua file biên dịch Python và thư mục cache
+__pycache__/
+*.pyc
+
+# (Git ignore chính ở thư mục gốc repo — file này chỉ tham khảo khi làm việc trong lc79/)
+config.json
+deposit_pending_cache.json
+deposit_pending_cache.json.lock
+deposit_pending_cache.json.tmp
+queue_state.json
+
+# Bỏ qua database files
+*.db
+
+# Bỏ qua thư mục output và cache
+qr_outputs/
+processed/
+queue/
+jackpot_notified/
+jackpot_night_extend_state.json
+jackpot_night_extend_state.json.tmp
+tai_xiu_skew_stats.json
+tai_xiu_skew_stats.json.tmp
+
+# Khóa 1 user / 1 tiến trình ws_slot_client
+slot_client_locks/
+
+# XOSO66 session (cookie/token — không commit)
+xoso66_standalone/xoso66_sessions.json
+xoso66_standalone/xoso66_config.json
+xoso66_standalone/data/

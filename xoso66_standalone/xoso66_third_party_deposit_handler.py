@@ -30,6 +30,10 @@ configure_stdio_utf8()
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 _DIR = Path(__file__).resolve().parent
+if str(_DIR) not in sys.path:
+    sys.path.insert(0, str(_DIR))
+
+from deposit_callback_routing import resolve_callback_game
 
 
 def _load_urls() -> tuple[str, str, int]:
@@ -508,14 +512,6 @@ def receive_callback() -> Any:
     ).strip()
 
     try:
-        import sys
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parent.parent
-        if str(root) not in sys.path:
-            sys.path.insert(0, str(root))
-        from deposit_callback_routing import resolve_callback_game
-
         game = resolve_callback_game(order_id, username, transfer_content)
         if game == "lc79":
             print(
@@ -545,16 +541,19 @@ def receive_callback() -> Any:
         if str(row.get("status") or "") == "Thành Công":
             return jsonify({"success": True, "skipped": "already_thanh_cong"}), 200
 
+        prev_st = str(row.get("status") or "").strip()
+        if prev_st != "Đã Nạp":
+            update_deposit_order(oid, status="Đã Nạp")
+
         from xoso66_deposit_tracking import deposit_poll_in_progress
 
         if deposit_poll_in_progress(oid):
             print(
-                f"[CALLBACK] #{oid} [{username}] Đã Nạp — bỏ (WS-POOL/handler đang poll)",
+                f"[CALLBACK] #{oid} [{username}] Đã Nạp — "
+                f"DB {prev_st!r}→'Đã Nạp' (WS-POOL/handler đang poll, không mở poll mới)",
                 flush=True,
             )
             return jsonify({"success": True, "skipped": "poll_in_progress"}), 200
-
-        update_deposit_order(oid, status="Đã Nạp")
         with _tracking_lock:
             if oid in _tracking:
                 return jsonify({"success": True, "skipped": "already_tracking"}), 200

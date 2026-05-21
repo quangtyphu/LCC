@@ -1,0 +1,51 @@
+﻿python : ─É─âng k├╜: user=qc5c5stwms phone=933823409 name=TRAN VAN A
+At C:\Users\Quang\AppData\Local\Temp\ps-script-43745f92-26f7-41ae-a014-73139cc337c1.ps1:77 char:84
++ ... THONIOENCODING='utf-8'; python c168_register.py --random 2>&1 | Out-F ...
++                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (─É─âng k├╜: use...name=TRAN VAN A:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+{
+  "ok": false,
+  "username": "qc5c5stwms",
+  "password": "Abc940796",
+  "phone": "933823409",
+  "realname": "TRAN VAN A",
+  "api_base": "https://af861c.c168f.com",
+  "register_response": "{\"errorCode\":41001134,\"code\":1134,\"msg\":\"0x4AAAAAABhSPiw6QLnmnJMb\",\"time\":1779304285}\n",
+  "filled_fields": {
+    "username": true,
+    "password": true,
+    "phone": true,
+    "realname": true
+  },
+  "captcha": {
+    "ok": true,
+    "kind": "turnstile",
+    "token": "0.xi2Z5U8Pr5XcJu5JU8-1YGd3I2DHT9FiMTLCx6ikAK4jt-5Qxt0vcOpIzKTVW7RYytfBBnHwx2GrRA3zh2TT4Oke_q5v-1fRv5UUZS5ZD44oDDfp2guRtst-CxAJx80b1VCP2Zhs6pVZAI97oMkAE35rajeOicKBknkis34ELgNhbBewsITGVKxavgC7mLK6Hro06U2TiwJFIQHg0gezqeQGkeDY0Dne7v39QFIeCebP655FYsaeVvJEZCRqfQkROY5iPDMyZ7SdPFUaV7zEEtJAqeGrQHJT7VBHnkVizycia8vvgdjlpPZL0KG--FdNSdkjIij0GzKmkgJNMqH6vuWApckc2-zISqZxTNuRJt9OaOf3D1tzue2JcP7KONyJ0yn8thTGyO035ffWl4kyOcpl2cpBXxiCirSX5O6Z5FORlPrHHLvX2QsVuXi8p7i0veHcw0ZNjNs_TyKvlTCi89ZQxypbh9Byk0sez7vElmGrRizcMeIE3YjoZbAHTnRGk-_e5MJeaL0OuaIQplriJmNqNtYZ-Iv0IBb5K7QwJwHCYnh1QxrYSvYWAQ9KsT7JvxSokr5Ui8tAH8350BDCcL6dZwL-aoPt8T3jLy4oxMqOF5kVicajBxV4NS5TPX4i3pARFgjSpI6UiGaSFJJP71IpWtjcVFRGHYzauYgVtvY34KRGBaIJ4BNA0C7iUIG_VY9jnnMDv829QgdBX0lo-kqspbcf6IMMurSSnMQ67IrSu1j55COzerEfXomYX7qbJp25iH9fFmlm_PuDfsNS0g10bK47TgyviXqIYaTwq8ADJJWQW_NBfNOt94_E6y9e_FT77xWd7T5QcFL0xvWUW03bo85i7_1usWmtQz5pHO0PJXxis915-3jN7y3gZ0lzQrGkqSqdTvfWTuIj9fbTM2TQGVLPwGQ0vy85KlRhhBKkDLvPVOQw9WnSmP3LJw_M.A5FBraRQ9FKXEBKQFFpKMA.3df2c084bc24e7c4a96eaf417dc4238062b57e2e2193bf8608329bd6c75ad2b3",
+    "provider": "capsolver"
+  },
+  "turnstile_injected": true,
+  "turnstile_inject_detail": {
+    "ok": true,
+    "methods": [
+      "created_hidden_input",
+      "window_global"
+    ]
+  },
+  "captcha_retry": {
+    "ok": true,
+    "kind": "turnstile",
+    "token": "0.zWEbqccprx6N0Ijno6lrHVPX5lexkG9QbrnS2o4tgFxLVt7WZ0_aV_E3eCzAwaw7n1xdGmCiXs3Np_7PbUervnYP9asj4b5Q7S56PdSZdyephQFqauMOTAIbm4jjKugr4foC-GfIh-Bks6ddzFhKQVazJCrrL9asS8a5mVn16Gx8zSFfX8KQ4nh9I2IPdkqCsR2zIuIUtiKJztHD4cHRX2X-tJnFMMN9lY2u9_6xHv4wUYP6E8VYY3tuE2J3ZpGidqfnXZWaZFBxktVWFuM1We05w0kY1WW4YN7byZFwoBP62r-SNFclkZcoiOIdwbz8jaVVgGowEsoCDIyLVFmhZVknuUw_zFshZnlel_Ca4OskzSngGA3BXclGlFh2xXiE-wX2xFR-2FiWkw6aoi4feulsrine1fRcw0hA6hHhT8e9IGVUT6LRvNk4EwaUOwD2lcwJQO_qLtam36ajRzJYwKDFu8dCNxJA1CMagWkSZ0JgCO8XB1vlhSPho8A71_HxbKP3vNL7EOogEzppt0-cSypcNd3TGHf3aqJcz1bQ1T8XVlIF96_5yUDJjHYUSun37cRHeRpS9jakDllXGLY92tXEVwkUtiqnzIi05v9cWqH6qddtxeYS9gsrutQB5Pa-yx4wANiGbKJl0fSRplxwWl3QCltBLetQC6moYLFMAg82nlj0wrQHM6JeTWoQ5eJ7sjulDnLDSFKN6weWdk-WBOtOOIrprdE-kh2J-MLMZDyvdo-DEuCxH3b_N5tJ7fS5_TdXYDgen2PwLWPlZJwKcqmvy2i4pYWUFButgby0fexAh-IrWV4iFdqA74KVwxjHSyhDnc_VVMHnQmvhzA-aK7_lzUnAIdRid9N9tbvgxWBg758qJPR_ALl5rKSYJ2ofY5WJjSF9sXi5zZBFOcLOMps03h9R65vbBysmpiJZ5uDpt8JwnkWu-rIgq-fpjQHp.nxJnJXIU43q2EoD1U0JLYA.665557805fb91250322ee1a12d96ad51452fe9c7d4934e01f410e78814e73b0f",
+    "provider": "capsolver"
+  },
+  "turnstile_inject_retry": {
+    "ok": true,
+    "methods": [
+      "dom:textarea[name=\"cf-turnstile-response\"]",
+      "dom:[name=\"cf-turnstile-response\"]",
+      "window_global"
+    ]
+  },
+  "error": "API vß║½n b├ío thiß║┐u captcha (1134) ΓÇö token Turnstile ch╞░a v├áo payload ─æ─âng k├╜. Thß╗¡: python c168_register.py --random --headed"
+}

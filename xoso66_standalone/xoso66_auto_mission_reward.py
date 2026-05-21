@@ -471,7 +471,7 @@ def _run_claim_flow(
         execute_mission_claims,
         fetch_mission_list,
     )
-    from xoso66_mission_db import format_db_save_line, persist_mission_state
+    from xoso66_mission_db import persist_mission_state
     from xoso66_session import ensure_session, persist_session
 
     aid = str(account_id).strip()
@@ -532,13 +532,7 @@ def _run_claim_flow(
             if rep2.get("ok"):
                 data = rep2.get("data") or {}
                 levels = collect_tracked_levels(data)
-                mission_snap = persist_mission_state(
-                    u, aid, levels, phase="after_claim"
-                )
-                print(
-                    f"[AUTO-MISSION] {u}: {format_db_save_line(mission_snap)}",
-                    flush=True,
-                )
+                persist_mission_state(u, aid, levels, phase="after_claim")
         else:
             claim_blocked_by_withdraw = True
             detail = (

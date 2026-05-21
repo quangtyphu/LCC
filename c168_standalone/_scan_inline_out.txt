@@ -1,0 +1,6 @@
+https?://[a-z0-9.-]+\.[a-z]{2,}(?:/[a-zA-Z0-9._/-]*)?: https://www.googletagmanager.com/gtag/js
+https?://[a-z0-9.-]+\.[a-z]{2,}(?:/[a-zA-Z0-9._/-]*)?: https://c16801.com/daily
+https?://[a-z0-9.-]+\.[a-z]{2,}(?:/[a-zA-Z0-9._/-]*)?: https://c16801.com/telegramsukien
+https?://[a-z0-9.-]+\.[a-z]{2,}(?:/[a-zA-Z0-9._/-]*)?: https://c16801.com/huongdan
+https?://[a-z0-9.-]+\.[a-z]{2,}(?:/[a-zA-Z0-9._/-]*)?: https://www.pagcor.ph/index.php
+https?://[a-z0-9.-]+\.[a-z]{2,}(?:/[a-zA-Z0-9._/-]*)?: https://okvipworldcup.com/

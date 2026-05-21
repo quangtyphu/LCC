@@ -1,0 +1,50 @@
+BROWSER ISOLATE — Chrome + proxy tách session (đơn giản kiểu GoLogin)
+======================================================================
+
+MỤC TIÊU
+  - Mỗi lần mở = profile Chrome riêng (cookie, localStorage, đăng nhập tách)
+  - Mỗi session gắn 1 proxy SOCKS5
+  - Tùy chọn --ephemeral: đóng xong xóa hết profile → lần sau như máy mới
+
+GIỚI HẠN (quan trọng)
+  Chrome KHÔNG hỗ trợ proxy khác nhau cho từng TAB trong cùng một cửa sổ.
+  Cách làm đúng giống GoLogin: mỗi "profile" = một cửa sổ Chrome + một proxy.
+  Muốn 3 proxy → chạy 3 lần lệnh "new" (3 cửa sổ).
+
+CÀI ĐẶT (một lần)
+  cd browser_isolate
+  pip install -r requirements.txt
+  playwright install chrome
+
+DÙNG NHANH
+  # Cửa sổ mới, không proxy
+  python main.py new --url https://www.google.com
+
+  # Cửa sổ mới + proxy (format giống LC79/C168)
+  python main.py new --proxy 1.2.3.4:1080:user:pass --url https://example.com
+
+  # Proxy ngẫu nhiên từ file
+  copy proxies.example.txt proxies.txt
+  python main.py new --proxy-file proxies.txt --url https://example.com
+
+  # Mỗi lần mở xong xóa sạch — như user mới 100%
+  python main.py new --ephemeral --proxy 1.2.3.4:1080:user:pass
+
+  # Mở lại session cũ (giữ đăng nhập)
+  python main.py list
+  python main.py open <session_id>
+
+  # Xóa profile
+  python main.py delete <session_id>
+
+CHROME THUẦN (không Playwright)
+  python main.py new --engine chrome --proxy ...
+
+SO VỚI C168 STANDALONE
+  C168: 1 profile %TEMP%\c168-chrome-profile + CDP port 9222
+  browser_isolate: nhiều profile trong data\profiles\<id>, mỗi cái một proxy
+
+NÂNG CẤP SAU (nếu cần)
+  - GUI danh sách profile
+  - Spoof canvas/WebGL (phức tạp hơn, gần GoLogin thật)
+  - Extension Chrome đổi proxy theo tab (khó bảo trì)

@@ -10,7 +10,7 @@ Chỉnh trong JSON:
   auto_bet.side_total_vnd
   auto_bet.bet_step_vnd
   auto_bet.daily_bet_cap_vnd
-  auto_bet.assign_strategy  (1 hoặc 2 — xoso66_bet_assign.STRATEGY_LABELS)
+  auto_bet.assign_strategy  (1 hoặc 2 — xoso66_bet_assign.STRATEGY_LABELS; 2 = cược ngày thấp trước)
   auto_mission_reward.min_withdraw_vnd  (số dư ≥ mức này mới tự rút trước nhận thưởng)
   auto_mission_reward.claim_between_delay_sec  (giây giữa 2 lần POST reward liên tiếp)
 
@@ -236,6 +236,26 @@ def _read_user_config_file() -> dict[str, Any]:
     except Exception:
         return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def save_user_config_value(path: tuple[str, ...], value: Any) -> bool:
+    """Ghi một key user vào xoso66_config.json (chỉ path trong USER_CONFIG_PATHS)."""
+    if path not in USER_CONFIG_PATHS:
+        return False
+    try:
+        raw = _read_user_config_file()
+        if not isinstance(raw, dict):
+            raw = {}
+        _nested_set(raw, path, value)
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(raw, indent=2, ensure_ascii=False)
+        if not text.endswith("\n"):
+            text += "\n"
+        CONFIG_PATH.write_text(text, encoding="utf-8")
+        return True
+    except Exception as e:
+        print(f"[CONFIG] Không ghi {CONFIG_PATH.name}: {e}", flush=True)
+        return False
 
 
 def load_config() -> dict[str, Any]:

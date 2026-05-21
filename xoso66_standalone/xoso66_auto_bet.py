@@ -24,6 +24,7 @@ from xoso66_jackpot_picker import (
     jackpot_money_for_game,
     last_watch_game_id,
     log_jackpot_below_min,
+    min_jackpot_vnd,
     pick_best_jackpot_game,
     picked_game_from_id,
 )
@@ -586,14 +587,16 @@ class AutoBetController:
         )
         from xoso66_round_log import log_round_start_line, round_console_lock
 
+        min_jp = min_jackpot_vnd(cfg)
+
         def _emit() -> None:
             with round_console_lock():
                 log_round_start_line(
                     game_label=game_label,
                     jackpot_vnd=jp,
                     issue=issue,
+                    min_jackpot_vnd=min_jp if min_jp > 0 else None,
                 )
-                log_jackpot_below_min(cfg, issue=issue)
 
         if plan_after > 0:
             threading.Timer(plan_after, _emit).start()
@@ -627,8 +630,6 @@ class AutoBetController:
                     return False, "below_min_jackpot"
                 if gate_key:
                     self._last_gate_log_key = gate_key
-            if not assign_bets_enabled(cfg):
-                log_jackpot_below_min(cfg, issue=issue_s)
             return False, "below_min_jackpot"
 
         if playing is None:
@@ -784,10 +785,6 @@ class AutoBetController:
         if place_orders:
             if _token_check_before_bet_enabled(acfg):
                 tok_timeout = float(acfg.get("token_validate_timeout_sec") or 12)
-                print(
-                    f"  → Kiểm tra token ({len(slots)} acc, ≤{tok_timeout:.0f}s)…",
-                    flush=True,
-                )
                 sessions, invalid = _validate_slot_tokens_timed(
                     slots,
                     game_key=gkey,

@@ -1,0 +1,30 @@
+{
+  "base_url": "https://c168b2.cc",
+  "register_path": "/home/register",
+  "sitecode": "2865",
+  "captcha": {
+    "mode": "browser",
+    "kind": "turnstile",
+    "provider": "capsolver",
+    "api_key": "CAP-XXXXXXXX",
+    "sitekey": "0x4AAAAAABhSPiw6QLnmnJMb",
+    "pageurl": "https://c168b2.cc/home/register",
+    "timeout_sec": 120,
+    "pause_after_click_ms": 10000,
+    "captcha_id": "62c528ead784206de7e6db17765b9ac0",
+    "gt": "",
+    "challenge": ""
+  },
+  "playwright": {
+    "headless": true,
+    "timeout_ms": 120000,
+    "human_delay_ms": 120,
+    "pause_between_fields_ms": 500,
+    "pause_before_submit_ms": 2000
+  },
+  "proxy": {
+    "enabled": true,
+    "from_db": true,
+    "db_path": "C:\\Users\\Quang\\Documents\\CMS\\game_data.db"
+  }
+}

@@ -344,10 +344,34 @@ def _emit_round_start_log(
             return
     except Exception:
         pass
+    from xoso66_round_log import log_round_start_line
+
     name = _game_display_name(gid, state)
-    jp = _jackpot_display_for_game(state, gid)
-    iss = f" | issue={issue}" if issue else ""
-    print(f"[{_ts()}] BẮT ĐẦU PHIÊN - {name}{iss} - Jackpot : {jp}", flush=True)
+    jp_money = 0.0
+    store = state.jackpot_store
+    if store is not None:
+        try:
+            row = (store.load().get("by_game") or {}).get(str(int(gid))) or {}
+            jp_money = float(str(row.get("money") or "0").replace(",", ""))
+        except (TypeError, ValueError):
+            jp_money = 0.0
+    min_jp = 0.0
+    try:
+        from xoso66_config_util import load_config
+        from xoso66_jackpot_picker import min_jackpot_vnd
+
+        cfg = load_config()
+        ab = cfg.get("auto_bet")
+        if isinstance(ab, dict) and ab.get("enabled"):
+            min_jp = min_jackpot_vnd(cfg)
+    except Exception:
+        pass
+    log_round_start_line(
+        game_label=name,
+        jackpot_vnd=jp_money,
+        issue=issue,
+        min_jackpot_vnd=min_jp if min_jp > 0 else None,
+    )
 
 
 def _schedule_round_start_log(

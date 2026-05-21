@@ -715,6 +715,76 @@ def _merge_unique_account_ids(*groups: list[str]) -> list[str]:
     return out
 
 
+def _ws_fill_blocked_all_daily_cap(
+    cfg: dict[str, Any],
+    *,
+    exclude: set[str] | None = None,
+) -> bool:
+    """
+    True khi còn acc có proxy trong pool WS nhưng không nick nào còn chỗ cap
+    (không tính nick đang nạp — chờ Hoàn tất).
+    """
+    ex = set(ws_slots_exclude_ids(cfg))
+    if exclude:
+        ex |= {str(x).strip() for x in exclude if str(x).strip()}
+    daily_limit = float(daily_bet_ws_limit_vnd(cfg))
+    seen: set[str] = set()
+    has_account = False
+    has_cap_room = False
+    has_other_blocker = False
+
+    def _scan(row: dict[str, Any]) -> None:
+        nonlocal has_account, has_cap_room, has_other_blocker
+        aid = str(row.get("id") or "").strip()
+        if not aid or aid in ex or aid in seen:
+            return
+        if not str(row.get("proxy") or "").strip():
+            return
+        seen.add(aid)
+        has_account = True
+        if account_deposit_in_flight(aid, cfg):
+            has_other_blocker = True
+            return
+        if is_row_exhausted_daily_cap(row, daily_limit=daily_limit):
+            return
+        has_cap_room = True
+
+    for row in _pool_rows(cfg):
+        _scan(row)
+    for row in _pool_rows_ws_open_list(cfg):
+        _scan(row)
+
+    return bool(has_account and not has_cap_room and not has_other_blocker)
+
+
+def _maybe_auto_switch_assign_strategy_on_daily_cap_exhausted(
+    cfg: dict[str, Any],
+    *,
+    exclude: set[str] | None = None,
+) -> bool:
+    """Hết acc còn cap → ghi assign_strategy=2 vào JSON (chỉ khi đang là 1)."""
+    ab = cfg.get("auto_bet")
+    if not isinstance(ab, dict):
+        return False
+    if int(ab.get("assign_strategy") or 1) == 2:
+        return False
+    if not _ws_fill_blocked_all_daily_cap(cfg, exclude=exclude):
+        return False
+    from xoso66_bet_assign import STRATEGY_LABELS
+    from xoso66_config_util import save_user_config_value
+
+    if not save_user_config_value(("auto_bet", "assign_strategy"), 2):
+        return False
+    ab["assign_strategy"] = 2
+    lbl = STRATEGY_LABELS.get(2, "2")
+    print(
+        f"[WS-POOL] Hết acc còn chỗ cap cược ngày — "
+        f"tự chuyển assign_strategy → 2 ({lbl})",
+        flush=True,
+    )
+    return True
+
+
 def _log_ws_underfunded_to_deposit(cfg: dict[str, Any], aids: list[str], *, tag: str) -> None:
     if not aids:
         return
@@ -790,6 +860,8 @@ def plan_ws_slot_fill(
             f"{f' ({names_d}{extra_d})' if deposit_ids else ''}",
             flush=True,
         )
+    if picked < need:
+        _maybe_auto_switch_assign_strategy_on_daily_cap_exhausted(cfg, exclude=ex)
     return connect_ids, deposit_ids
 
 
@@ -937,15 +1009,21 @@ def build_ws_sync_plan(
             fill_connect_ids=connect_new,
         )
 
-    # Resync định kỳ: giữ task đủ tiền; nick thiếu tiền → ngắt WS + nạp, không mở WS.
+    # Resync định kỳ: ngắt cap + thiếu tiền; bù nick mới nếu thiếu slot.
     task_keys = [
         str(x).strip() for x in (ws_task_ids or get_ws_task_accounts()) if str(x).strip()
     ]
+    cap_removed = filter_ws_evict_ids(
+        accounts_to_disconnect_cap_at_round_start(cfg, task_keys), cfg
+    )
     funded, underfunded = _split_ids_connect_deposit(task_keys, cfg)
     if underfunded:
         _log_ws_underfunded_to_deposit(cfg, underfunded, tag="Resync")
     prune_under = [a for a in underfunded if not is_ws_listener(a, cfg)]
-    ex = set(prune_under) | ws_slots_exclude_ids(cfg)
+    prune_removed = list(dict.fromkeys([*cap_removed, *prune_under]))
+    for aid in prune_removed:
+        clear_pending_ws_slot(aid)
+    ex = set(prune_removed) | ws_slots_exclude_ids(cfg)
     need = ws_slots_need_fill(cfg, task_ids=task_keys)
     if need > 0:
         _log_ws_slot_need(cfg, task_ids=task_keys, need=need, log_context="Resync định kỳ")
@@ -966,7 +1044,7 @@ def build_ws_sync_plan(
     if (
         set(task_keys) == set(target)
         and not deposit_ids
-        and not prune_under
+        and not prune_removed
         and need <= 0
         and not connect_new
     ):
@@ -976,7 +1054,7 @@ def build_ws_sync_plan(
         connect_all=connect_new,
         target=target,
         deposit_ids=deposit_ids,
-        prune_removed=prune_under,
+        prune_removed=prune_removed,
         fill_connect_ids=connect_new,
     )
 
@@ -1560,7 +1638,7 @@ def filter_ws_target_connectable(
     *,
     ws_task_ids: list[str] | None = None,
 ) -> list[str]:
-    """Mục tiêu WS: đủ tiền / không đang nạp; nick đang có task WS vẫn giữ (grace recheck)."""
+    """Mục tiêu WS: đủ tiền, chưa đủ cap; task đang mở vẫn giữ trừ khi hết cap ngày."""
     tasks = {str(x).strip() for x in (ws_task_ids or []) if str(x).strip()}
     pending = get_pending_ws_slot_ids()
     min_bal = min_balance_for_ws(cfg)
@@ -1569,12 +1647,14 @@ def filter_ws_target_connectable(
         aid = str(aid).strip()
         if not aid:
             continue
+        row = get_account(aid) or {}
+        if exceeds_ws_daily_cap(row, cfg) and not is_ws_listener(aid, cfg):
+            continue
         if aid in tasks:
             out.append(aid)
             continue
         if aid in pending or account_deposit_in_flight(aid, cfg):
             continue
-        row = get_account(aid) or {}
         if account_balance_vnd(row) < min_bal:
             continue
         out.append(aid)

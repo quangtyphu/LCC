@@ -24,6 +24,11 @@ def _auto_bet_cfg(cfg: dict) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def min_jackpot_vnd(cfg: dict) -> float:
+    """Ngưỡng auto_bet.min_jackpot_vnd (0 = không lọc)."""
+    return float(_auto_bet_cfg(cfg).get("min_jackpot_vnd") or 0)
+
+
 def jackpot_money_for_game(cfg: dict, game_id: int) -> float:
     """Hũ hiện tại của một game_id trong minigame_jackpots.json."""
     store = get_jackpot_store()
@@ -121,9 +126,10 @@ def log_jackpot_below_min(
         return True
     if top.money_vnd >= min_jp:
         return False
-    iss = f" | issue={issue}" if issue else ""
+    if str(issue or "").strip():
+        return True
     print(
-        f"{prefix} Chưa chơi{iss} — hũ cao nhất {top.game_name}: "
+        f"{prefix} Chưa chơi — hũ cao nhất {top.game_name}: "
         f"{top.money_vnd:,.0f} ({_fmt_ty_vnd(top.money_vnd)}) "
         f"< ngưỡng {min_jp:,.0f} ({_fmt_ty_vnd(min_jp)})",
         flush=True,
@@ -199,7 +205,8 @@ def sync_auto_bet_jackpot_gate(
                 )
         _gate_last_game_id = None
 
-    log_jackpot_below_min(cfg, issue=issue, prefix=prefix)
+    # «Chưa chơi» chỉ in khi BẮT ĐẦU PHIÊN game đang theo dõi (có issue),
+    # không lặp mỗi lần file hũ đổi từ bất kỳ game nào trong watch list.
 
 
 def focus_game_id(cfg: dict | None = None) -> int | None:

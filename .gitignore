@@ -2,24 +2,25 @@
 __pycache__/
 *.pyc
 
-# Bỏ qua file cấu hình và cache
-config.json
-deposit_pending_cache.json
-deposit_pending_cache.json.lock
-deposit_pending_cache.json.tmp
+# Bỏ qua file cấu hình và cache (lc79/)
+lc79/config.json
+lc79/deposit_pending_cache.json
+lc79/deposit_pending_cache.json.lock
+lc79/deposit_pending_cache.json.tmp
+lc79/queue_state.json
 
 # Bỏ qua database files
 *.db
 
-# Bỏ qua thư mục output và cache
+# Bỏ qua thư mục output và cache (ở gốc repo)
 qr_outputs/
 processed/
 queue/
 jackpot_notified/
-jackpot_night_extend_state.json
-jackpot_night_extend_state.json.tmp
-tai_xiu_skew_stats.json
-tai_xiu_skew_stats.json.tmp
+lc79/jackpot_night_extend_state.json
+lc79/jackpot_night_extend_state.json.tmp
+lc79/tai_xiu_skew_stats.json
+lc79/tai_xiu_skew_stats.json.tmp
 
 # Khóa 1 user / 1 tiến trình ws_slot_client
 slot_client_locks/

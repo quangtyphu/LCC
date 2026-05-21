@@ -58,13 +58,21 @@ def log_round_start_line(
     game_label: str,
     jackpot_vnd: float = 0,
     issue: str = "",
+    min_jackpot_vnd: float | None = None,
 ) -> None:
     """Cùng dòng WS: BẮT ĐẦU PHIÊN — gọi sau round_start_log_delay_sec."""
     jp = _fmt_vnd(jackpot_vnd) if jackpot_vnd else "—"
     iss = f" | issue={issue}" if issue else ""
+    below = ""
+    if min_jackpot_vnd and float(min_jackpot_vnd) > 0:
+        try:
+            if float(jackpot_vnd or 0) < float(min_jackpot_vnd):
+                below = f" < ngưỡng {_fmt_vnd(min_jackpot_vnd)}"
+        except (TypeError, ValueError):
+            pass
     with _round_console_lock:
         print(
-            f"\n[{_ts_hms()}] BẮT ĐẦU PHIÊN - {game_label}{iss} - Jackpot : {jp}",
+            f"\n[{_ts_hms()}] BẮT ĐẦU PHIÊN - {game_label}{iss} - Jackpot : {jp}{below}",
             flush=True,
         )
 

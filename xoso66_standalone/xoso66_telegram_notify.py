@@ -11,7 +11,7 @@ from typing import Any
 import requests
 
 _DIR = Path(__file__).resolve().parent
-_LC79_ROOT = _DIR.parent
+_LC79_PKG = _DIR.parent / "lc79"
 
 
 def _load_cfg(cfg: dict | None) -> dict:
@@ -79,8 +79,8 @@ def _notify_telegram(
     text = f"[{prefix}]\n{msg}".strip()
     if token and chat:
         return _send_via_api(token, chat, text)
-    if str(_LC79_ROOT) not in sys.path:
-        sys.path.insert(0, str(_LC79_ROOT))
+    if str(_LC79_PKG) not in sys.path:
+        sys.path.insert(0, str(_LC79_PKG))
     try:
         from telegram_notifier import send_telegram
 
