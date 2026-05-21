@@ -59,11 +59,29 @@ def _find_chrome_exe() -> str:
     return ""
 
 
+def _normalize_urls(urls: list[str] | None, fallback: str = "") -> list[str]:
+    out: list[str] = []
+    for raw in urls or []:
+        u = (raw or "").strip()
+        if not u or u.startswith("#"):
+            continue
+        if not u.startswith(("http://", "https://")):
+            u = "https://" + u
+        out.append(u)
+    if not out and fallback.strip():
+        fb = fallback.strip()
+        if not fb.startswith(("http://", "https://")) and fb != "about:blank":
+            fb = "https://" + fb
+        out.append(fb)
+    return out
+
+
 def _launch_chrome_native(
     *,
     profile_path: Path,
     proxy: str,
-    url: str,
+    url: str = "",
+    urls: list[str] | None = None,
 ) -> subprocess.Popen[Any]:
     chrome = _find_chrome_exe()
     if not chrome:
@@ -75,13 +93,19 @@ def _launch_chrome_native(
         f"--user-data-dir={profile_path}",
         "--no-first-run",
         "--no-default-browser-check",
-        "--disable-blink-features=AutomationControlled",
     ]
-    px = chrome_proxy_flag(proxy)
-    if px:
-        cmd.append(f"--proxy-server={px}")
-    if url:
-        cmd.append(url)
+    prep = None
+    if proxy.strip():
+        from proxy_util import prepare_chrome_proxy
+
+        prep = prepare_chrome_proxy(proxy)
+        server = prep.get("server") or ""
+        if server:
+            cmd.append(f"--proxy-server={server}")
+    open_urls = _normalize_urls(urls, url or "about:blank")
+    if not open_urls:
+        open_urls = ["about:blank"]
+    cmd.extend(open_urls)
 
     return subprocess.Popen(
         cmd,
@@ -123,7 +147,6 @@ def run_playwright_session(
         "viewport": fp["viewport"],
         "user_agent": fp["user_agent"],
         "args": [
-            "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
         ],

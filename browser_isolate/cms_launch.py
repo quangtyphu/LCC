@@ -14,7 +14,7 @@ if sys.platform == "win32":
         except Exception:
             pass
 
-from launcher import _launch_chrome_native  # noqa: E402
+from launcher import _launch_chrome_native, _normalize_urls  # noqa: E402
 from proxy_util import prepare_chrome_proxy  # noqa: E402
 
 
@@ -22,9 +22,23 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile-dir", required=True)
     ap.add_argument("--proxy", default="")
-    ap.add_argument("--url", default="about:blank")
+    ap.add_argument("--url", default="about:blank", help="Một URL (cũ, tương thích CMS)")
+    ap.add_argument(
+        "--urls-json",
+        default="",
+        help='JSON array URL, VD: ["https://a.com","https://b.com"]',
+    )
     args = ap.parse_args()
     proxy_raw = args.proxy.strip()
+    url_list: list[str] = []
+    if args.urls_json.strip():
+        try:
+            parsed = json.loads(args.urls_json)
+            if isinstance(parsed, list):
+                url_list = [str(x) for x in parsed]
+        except json.JSONDecodeError as e:
+            print(json.dumps({"ok": False, "error": f"urls-json không hợp lệ: {e}"}))
+            return 1
     try:
         prep = prepare_chrome_proxy(proxy_raw) if proxy_raw else {
             "mode": "none",
@@ -35,7 +49,9 @@ def main() -> int:
             profile_path=Path(args.profile_dir),
             proxy=proxy_raw,
             url=args.url.strip() or "about:blank",
+            urls=url_list or None,
         )
+        opened = _normalize_urls(url_list, args.url.strip() or "about:blank")
         print(
             json.dumps(
                 {
@@ -43,6 +59,8 @@ def main() -> int:
                     "pid": proc.pid,
                     "proxy_mode": prep.get("mode"),
                     "proxy_label": prep.get("label"),
+                    "tabs": len(opened),
+                    "urls": opened,
                 },
                 ensure_ascii=False,
             )

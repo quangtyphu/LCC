@@ -2,7 +2,6 @@
 """SOCKS5 host:port:user:pass → relay HTTP local cho Chromium/Playwright."""
 from __future__ import annotations
 
-import atexit
 import random
 import socket
 import subprocess
@@ -58,11 +57,11 @@ def _free_port() -> int:
 
 
 def _socks_remote_url(proxy_str: str) -> str:
-    """Upstream SOCKS5 cho pproxy (socks5h = DNS qua proxy)."""
+    """Upstream SOCKS5 cho pproxy (-r). Dùng socks5:// (pproxy không nhận socks5h://)."""
     host, port, user, pwd = parse_proxy(proxy_str)
     if user:
-        return f"socks5h://{host}:{port}#{user}:{pwd}"
-    return f"socks5h://{host}:{port}"
+        return f"socks5://{host}:{port}#{user}:{pwd}"
+    return f"socks5://{host}:{port}"
 
 
 def _wait_port(host: str, port: int, timeout: float = 8.0) -> bool:
@@ -98,8 +97,8 @@ def ensure_local_http_relay(proxy_str: str) -> str:
         ) from e
 
     local_port = _free_port()
-    proc = subprocess.Popen(
-        [
+    popen_kw: dict[str, Any] = {
+        "args": [
             sys.executable,
             "-m",
             "pproxy",
@@ -108,10 +107,19 @@ def ensure_local_http_relay(proxy_str: str) -> str:
             "-r",
             _socks_remote_url(key),
         ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "stdin": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        # Relay phải sống sau khi cms_launch.py thoát — không gắn vào process cha.
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        popen_kw["creationflags"] = flags
+    else:
+        popen_kw["start_new_session"] = True
+    proc = subprocess.Popen(**popen_kw)
     if not _wait_port("127.0.0.1", local_port, timeout=8.0):
         err = ""
         if proc.poll() is not None and proc.stderr:
@@ -172,7 +180,8 @@ def stop_all_relays() -> None:
     _ports.clear()
 
 
-atexit.register(stop_all_relays)
+# Không atexit.stop_all_relays: cms_launch thoát ngay sau khi mở Chrome,
+# atexit sẽ giết relay → Chrome mất mạng. Relay tái dùng theo proxy string.
 
 
 def playwright_proxy(proxy_str: str) -> dict[str, str] | None:
