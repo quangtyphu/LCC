@@ -1,0 +1,22 @@
+{"t": 1779390065.934628, "event": "start", "account_id": "acc11", "username": "bettaixiubnb"}
+{"t": 1779390074.4417129, "event": "vue_initial", "state": {"app": {"showRedEnvelope": false}}}
+{"t": 1779390074.5507362, "event": "mouse_click_burst", "x": 120, "y": 100, "elapsed": 0.11}
+{"t": 1779390074.9353185, "event": "button_click", "selector": "text=Nhận"}
+{"t": 1779390075.1336865, "event": "button_click", "selector": "text=NHẬN"}
+{"t": 1779390075.3666127, "event": "button_click", "selector": "text=Mở"}
+{"t": 1779390075.7753193, "event": "request", "method": "GET", "path": "/server/user/getredpacketinfo", "post_len": 0, "post": ""}
+{"t": 1779390075.9191785, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "body_preview": "\"i+dMRb9cW+BKLmuDBDfrzIUskei9l+LOH1OxXrYl50s9SYloUKWSO5rLkkbvKdAQSwWvnuSBDxSOKNAEwyDKzGJvqCqcx8v12S3KJUXyszRckOAFogy8A9BlHXVFHcQQFy7Eok+zBEa9rIiqfXsWEOuIEyf8DEj4ktkti5OBI\\/InZWuRRMQAZREBPKzyMYlgFuMQhm9366rqtlkbFGEw0\\/cqfnjAhV0ehK8bcPlbcLZhQjuSr80X7qGNd\\/9R7Q1CMb\\/NzQxgKb2CBLkz2Pg\\/zGbFHaqfECtCjYROiv", "decrypted": {"_decrypt_error": "Padding is incorrect."}}
+{"t": 1779390076.2328038, "event": "mouse_click_burst", "x": 257, "y": 189, "elapsed": 1.79}
+{"t": 1779390077.383441, "event": "mouse_click_burst", "x": 394, "y": 278, "elapsed": 2.94}
+{"t": 1779390078.2938166, "event": "mouse_click_burst", "x": 531, "y": 367, "elapsed": 3.85}
+{"t": 1779390079.2582765, "event": "mouse_click_burst", "x": 668, "y": 456, "elapsed": 4.82}
+{"t": 1779390079.4790766, "event": "request", "method": "GET", "path": "/server/user/getredpacketinfo", "post_len": 0, "post": ""}
+{"t": 1779390079.6194198, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "body_preview": "\"i+dMRb9cW+BKLmuDBDfrzIUskei9l+LOH1OxXrYl50vFkF2DvGfkzD+9CKKxt1gOSwWvnuSBDxSOKNAEwyDKzGJvqCqcx8v12S3KJUXyszRckOAFogy8A9BlHXVFHcQQFy7Eok+zBEa9rIiqfXsWEOuIEyf8DEj4ktkti5OBI\\/InZWuRRMQAZREBPKzyMYlgFuMQhm9366rqtlkbFGEw0\\/cqfnjAhV0ehK8bcPlbcLbZHkJHAnKL3TENOYfZIKW0Mb\\/NzQxgKb2CBLkz2Pg\\/zGbFHaqfECtCjYROivP", "decrypted": {"_decrypt_error": "Padding is incorrect."}}
+{"t": 1779390080.208099, "event": "mouse_click_burst", "x": 805, "y": 545, "elapsed": 5.77}
+{"t": 1779390081.1301632, "event": "mouse_click_burst", "x": 942, "y": 634, "elapsed": 6.69}
+{"t": 1779390082.0361009, "event": "mouse_click_burst", "x": 1079, "y": 723, "elapsed": 7.59}
+{"t": 1779390082.9426546, "event": "mouse_click_burst", "x": 1216, "y": 112, "elapsed": 8.5}
+{"t": 1779390083.9080787, "event": "mouse_click_burst", "x": 253, "y": 201, "elapsed": 9.47}
+{"t": 1779390084.7402663, "event": "burst_done", "clicks": 10, "burst_sec": 10}
+{"t": 1779390099.7656178, "event": "vue_final", "state": {"app": {"showRedEnvelope": false}}}
+{"t": 1779390100.4983768, "event": "screenshot", "path": "C:\\Users\\Quang\\Documents\\LC79\\xoso66_standalone\\red_packet_logs\\acc11_20260521T190139Z.png"}

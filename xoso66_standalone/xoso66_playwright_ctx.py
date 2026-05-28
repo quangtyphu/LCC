@@ -2,39 +2,50 @@
 """
 Playwright + SOCKS5 — dùng chung cho register / CF / bind / deposit.
 
-Trên Windows: sync Playwright cần SelectorEventLoop (subprocess).
-Không bọc thêm thread khi đã gọi từ asyncio.to_thread / ThreadPoolExecutor
-(tránh NotImplementedError lồng thread).
+Quy tắc:
+  - Sync Playwright (greenlet) chỉ gọi trên MỘT thread — không yield browser/context sang thread khác.
+  - Windows + main.py (Selector policy): _playwright_thread_setup() đặt Proactor trước new_event_loop().
+  - Trong asyncio loop đang chạy: dùng run_playwright_browser(..., fn=...) (pool 1 worker).
 """
 
 from __future__ import annotations
 
-import queue
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import Any, Callable, Generator, TypeVar
 
 from xoso66_proxy import ensure_proxy, playwright_proxy, site_host
 
-if sys.platform.startswith("win"):
-    import asyncio
+T = TypeVar("T")
 
-    try:
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    except Exception:
-        pass
+_PW_THREAD_PREFIX = "xoso66-playwright"
 
 _pw_pool: ThreadPoolExecutor | None = None
 _pw_pool_lock = threading.Lock()
+
+
+def _on_playwright_worker_thread() -> bool:
+    return threading.current_thread().name.startswith(_PW_THREAD_PREFIX)
+
+
+def _in_running_asyncio() -> bool:
+    try:
+        import asyncio
+
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
 
 
 def _playwright_thread_setup() -> None:
     import asyncio
 
     if sys.platform.startswith("win"):
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        # Playwright sync API: self._loop = asyncio.new_event_loop() — theo policy hiện tại.
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     try:
         old = asyncio.get_event_loop()
         if not old.is_closed():
@@ -45,18 +56,8 @@ def _playwright_thread_setup() -> None:
     asyncio.set_event_loop(loop)
 
 
-def _use_playwright_thread() -> bool:
-    """
-    Chỉ offload sang thread Playwright khi đang trong asyncio event loop.
-    Đã ở worker thread (to_thread / executor) → chạy trực tiếp sau _playwright_thread_setup.
-    """
-    try:
-        import asyncio
-
-        asyncio.get_running_loop()
-        return True
-    except RuntimeError:
-        return False
+def _pw_pool_initializer() -> None:
+    _playwright_thread_setup()
 
 
 def _get_pw_pool() -> ThreadPoolExecutor:
@@ -64,19 +65,58 @@ def _get_pw_pool() -> ThreadPoolExecutor:
     with _pw_pool_lock:
         if _pw_pool is None:
             _pw_pool = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="xoso66-playwright"
+                max_workers=1,
+                thread_name_prefix=_PW_THREAD_PREFIX,
+                initializer=_pw_pool_initializer,
             )
     return _pw_pool
 
 
-def run_playwright_thread(fn, *args, **kwargs):
-    """Chạy hàm sync (Playwright) trên thread an toàn Windows."""
+def _run_in_playwright_pool(fn: Callable[[], T]) -> T:
+    if _on_playwright_worker_thread():
+        return fn()
+    return _get_pw_pool().submit(fn).result(timeout=600)
 
-    def wrapped() -> Any:
+
+def run_playwright_thread(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    """Chạy hàm sync (Playwright) trên thread pool (khi cần)."""
+
+    def wrapped() -> T:
         _playwright_thread_setup()
         return fn(*args, **kwargs)
 
-    return _get_pw_pool().submit(wrapped).result(timeout=600)
+    if _on_playwright_worker_thread():
+        return wrapped()
+    if _in_running_asyncio():
+        return _run_in_playwright_pool(wrapped)
+    return wrapped()
+
+
+def run_playwright_browser(
+    session: dict,
+    fn: Callable[[Any, Any, Any], T],
+    *,
+    base_url: str,
+    headless: bool = True,
+    extra_http_headers: dict[str, str] | None = None,
+) -> T:
+    """
+    Chạy fn(playwright, browser, context) trên đúng thread Playwright.
+    Dùng khi caller nằm trong asyncio loop; hoặc thay cho with playwright_browser.
+    """
+
+    def _run() -> T:
+        with _playwright_browser_impl(
+            session,
+            base_url=base_url,
+            headless=headless,
+            extra_http_headers=extra_http_headers,
+        ) as trip:
+            return fn(*trip)
+
+    if _in_running_asyncio():
+        return _run_in_playwright_pool(_run)
+    return _run()
 
 
 @contextmanager
@@ -129,49 +169,6 @@ def _playwright_browser_impl(
             browser.close()
 
 
-def _playwright_browser_threaded(
-    session: dict,
-    *,
-    base_url: str,
-    headless: bool,
-    extra_http_headers: dict[str, str] | None,
-) -> Generator[tuple[Any, Any, Any], None, None]:
-    q: queue.Queue = queue.Queue()
-    holder: dict[str, Any] = {}
-
-    def worker() -> None:
-        _playwright_thread_setup()
-        try:
-            holder["cm"] = _playwright_browser_impl(
-                session,
-                base_url=base_url,
-                headless=headless,
-                extra_http_headers=extra_http_headers,
-            )
-            trip = holder["cm"].__enter__()
-            q.put(("enter", trip))
-            cmd = q.get()
-            holder["cm"].__exit__(cmd[0], cmd[1], cmd[2])
-        except Exception as e:
-            q.put(("fail", e))
-
-    t = threading.Thread(target=worker, daemon=True, name="xoso66-playwright-cm")
-    t.start()
-    msg = q.get(timeout=600)
-    if msg[0] == "fail":
-        t.join(timeout=30)
-        raise msg[1]
-    trip = msg[1]
-    try:
-        yield trip
-    except BaseException as e:
-        q.put((type(e), e, e.__traceback__))
-        raise
-    else:
-        q.put((None, None, None))
-    t.join(timeout=600)
-
-
 @contextmanager
 def playwright_browser(
     session: dict,
@@ -181,16 +178,16 @@ def playwright_browser(
     extra_http_headers: dict[str, str] | None = None,
 ) -> Generator[tuple[Any, Any, Any], None, None]:
     """
-    Yield (playwright, browser, context). Caller tạo page và đóng browser.
+    Yield (playwright, browser, context) trên thread hiện tại.
+
+    Không dùng bên trong coroutine asyncio đang chạy — dùng run_playwright_browser().
+    Mọi thao tác page/context phải nằm trong khối with (cùng thread).
     """
-    if _use_playwright_thread():
-        yield from _playwright_browser_threaded(
-            session,
-            base_url=base_url,
-            headless=headless,
-            extra_http_headers=extra_http_headers,
+    if _in_running_asyncio():
+        raise RuntimeError(
+            "playwright_browser không dùng trong asyncio loop; "
+            "dùng run_playwright_browser(session, fn, base_url=...)."
         )
-        return
     with _playwright_browser_impl(
         session,
         base_url=base_url,

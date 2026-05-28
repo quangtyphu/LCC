@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import Any
 
 _DIR = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get("XOSO66_DATA_DIR", _DIR / "data"))
-DB_PATH = Path(os.environ.get("XOSO66_DB", DATA_DIR / "xoso66.db"))
+from xoso66_paths import cms_game_data_dir, default_db_path
+
+DATA_DIR = Path(os.environ.get("XOSO66_DATA_DIR") or str(cms_game_data_dir()))
+DB_PATH = Path(os.environ.get("XOSO66_DB") or str(default_db_path()))
 
 CMS_COLUMNS = (
     "id",
@@ -392,6 +394,7 @@ def list_accounts() -> list[dict[str, Any]]:
 STATUS_DANG_CHOI = "Đang Chơi"
 STATUS_HET_TIEN = "Hết Tiền"
 STATUS_DU_NGAY = "Đủ ngày"
+STATUS_LOI = "Lỗi"
 
 # Chỉ các reason từ WS pool mới hẹn auto nhận thưởng (không bootstrap lúc mở app).
 MISSION_CLAIM_WS_REASONS = frozenset({"ngắt WS", "đủ cap cược ngày"})

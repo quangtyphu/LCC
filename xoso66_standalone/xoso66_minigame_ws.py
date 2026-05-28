@@ -3,7 +3,7 @@
 WebSocket mini-game XOSO66 (không dùng LC79 / Socket.IO).
 
   python xoso66_minigame_ws.py
-  python xoso66_minigame_ws.py -u cuhoangtoan
+  python xoso66_minigame_ws.py -u quangtyphu
   python xoso66_minigame_ws.py -a acc1 --duration 120
 
 Giữ kết nối: subscribe + ping/pong. In jackpot, kết quả Tài/Xỉu, phiên mới (game_id catalog).
@@ -393,6 +393,12 @@ def _print_watch_jackpot(data: dict[str, Any], state: MultiGameWatchState) -> bo
     if gid not in state.watch_ids:
         return False
     money = data.get("money") if data.get("money") is not None else data.get("jackpot")
+    try:
+        from xoso66_jackpot_hit_notify import record_jackpot_pool
+
+        record_jackpot_pool(gid, money)
+    except Exception:
+        pass
     key = f"{gid}:{money}"
     if state.last_jackpot.get(gid) == key:
         return False
@@ -1170,7 +1176,7 @@ async def listen_minigame_ws(
     """
     from xoso66_minigame_session import get_ws_token
     from xoso66_minigame_catalog import game_by_key
-    from xoso66_minigame_refresh import refresh_minigame_tokens
+    from xoso66_minigame_refresh import prep_tokens_before_ws
     from xoso66_proxy import ensure_proxy
     from xoso66_session import ensure_session, prep_site_session_before_ws
 
@@ -1204,51 +1210,30 @@ async def listen_minigame_ws(
 
     username = username_for_log(aid, session)
 
-    if refresh_before_connect and not ws_token_override:
+    if not ws_token_override:
         rep = await asyncio.to_thread(
-            refresh_minigame_tokens,
+            prep_tokens_before_ws,
             session,
-            account_id=aid,
+            aid,
             game_key=game_key,
-            force=True,
+            force_ws=bool(refresh_before_connect),
         )
-        mg_rep = rep.get("minigame") or {}
-        if not rep.get("ok") or not mg_rep.get("has_ws_token"):
+        if not rep.get("user_token_ok"):
+            err = rep.get("error") or "user-token không dùng được trước WS"
+            raise RuntimeError(f"Không mở WS — {err}")
+        if not rep.get("ok") or not rep.get("has_ws_token"):
             ws_err = rep.get("ws_token") or {}
-            err = rep.get("error") or ws_err.get("msg") or ws_err.get("error") or rep
-            raise RuntimeError(
-                f"Không refresh được mini-game (user/ws token): {err}"
+            err = (
+                rep.get("error")
+                or ws_err.get("msg")
+                or ws_err.get("error")
+                or "không lấy được ws_token"
             )
+            raise RuntimeError(f"Không mở WS — {err}")
         if game_watch:
             from xoso66_round_log import log_ws_connecting
 
-            log_ws_connecting(username)
-    elif game_watch and not ws_token_override:
-        from xoso66_minigame_refresh import _ws_token_age_ok, user_token_status
-        from xoso66_round_log import log_ws_connecting
-
-        mg0 = get_minigame(session)
-        st = await asyncio.to_thread(user_token_status, session)
-        ws_ok = bool(mg0.get("ws_token")) and _ws_token_age_ok(mg0)
-        if st.get("ping_ok") and ws_ok and not st.get("needs_refresh"):
-            log_ws_connecting(username)
-        else:
-            rep = await asyncio.to_thread(
-                refresh_minigame_tokens,
-                session,
-                account_id=aid,
-                game_key=game_key,
-                force=not ws_ok or not st.get("ping_ok"),
-            )
-            mg_rep = rep.get("minigame") or {}
-            if rep.get("ok") and mg_rep.get("has_ws_token"):
-                log_ws_connecting(username)
-            else:
-                ws_err = rep.get("ws_token") or {}
-                err = rep.get("error") or ws_err.get("msg") or ws_err.get("error") or rep
-                raise RuntimeError(
-                    f"Không refresh được mini-game (user/ws token): {err}"
-                )
+            log_ws_connecting(username, user_token_ok=True)
 
     proxy_str = session["proxy"]
 
@@ -1567,6 +1552,21 @@ async def listen_minigame_ws(
                         f"giữ ws_token, thử lại sau {reconnect_delay:.0f}s",
                         flush=True,
                     )
+                    from xoso66_minigame_refresh import (
+                        request_urgent_token_refresh,
+                        user_token_status,
+                    )
+
+                    gname_drop = str(g.get("gamename") or "lobby")
+                    st_drop = await asyncio.to_thread(
+                        user_token_status,
+                        session,
+                        game_id=primary_gid,
+                        gamename=gname_drop,
+                    )
+                    if st_drop.get("ping_ok") is False:
+                        need_minigame_refresh = True
+                        request_urgent_token_refresh(aid, game_key=game_key)
                 else:
                     print(
                         f"[WS] Error: {e} — reconnect in {reconnect_delay}s",
@@ -1690,7 +1690,14 @@ def main() -> int:
     )
     args = ap.parse_args()
     if not (args.username or "").strip() and not (args.account or "").strip():
-        args.username = input("Username: ").strip()
+        from xoso66_config_util import ws_default_username
+
+        default_u = ws_default_username()
+        if default_u:
+            args.username = default_u
+            print(f"[WS] Username mặc định: {default_u}", flush=True)
+        else:
+            args.username = input("Username: ").strip()
     if not resolve_account_id(username=args.username, account_id=args.account):
         print("Cần -u username hoặc -a account.", file=sys.stderr)
         return 1

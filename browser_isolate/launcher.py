@@ -23,7 +23,12 @@ from pathlib import Path
 from typing import Any
 
 from fingerprint import random_fingerprint
-from proxy_util import chrome_proxy_flag, playwright_proxy, proxy_label
+from proxy_util import (
+    chrome_proxy_flag,
+    playwright_proxy,
+    proxy_label,
+    subprocess_hide_window_kwargs,
+)
 from session_store import (
     delete_session,
     get_session,
@@ -82,6 +87,7 @@ def _launch_chrome_native(
     proxy: str,
     url: str = "",
     urls: list[str] | None = None,
+    cdp_port: int = 0,
 ) -> subprocess.Popen[Any]:
     chrome = _find_chrome_exe()
     if not chrome:
@@ -94,6 +100,18 @@ def _launch_chrome_native(
         "--no-first-run",
         "--no-default-browser-check",
     ]
+    port = int(cdp_port or 0)
+    if port > 0:
+        cmd.extend(
+            [
+                f"--remote-debugging-port={port}",
+                "--remote-allow-origins=*",
+                "--window-size=1440,900",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+            ]
+        )
     prep = None
     if proxy.strip():
         from proxy_util import prepare_chrome_proxy
@@ -111,6 +129,7 @@ def _launch_chrome_native(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
     )
 
 

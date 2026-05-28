@@ -96,18 +96,39 @@ def _maintain_user_tokens_loop() -> None:
     import time
 
     from xoso66_accounts_db import username_for_log
-    from xoso66_minigame_refresh import refresh_minigame_tokens, user_token_status
+    from xoso66_minigame_refresh import (
+        pop_urgent_token_refresh_ids,
+        refresh_minigame_tokens,
+        user_token_status,
+    )
     from xoso66_session import ensure_session, persist_session
 
     from xoso66_shutdown import stopping
 
-    while not stopping():
+    def _sleep_until_maintain_due() -> None:
+        from xoso66_minigame_refresh import _urgent_token_refresh_event
+
         for _ in range(max(1, TOKEN_MAINTAIN_INTERVAL_SEC)):
             if stopping():
                 return
-            time.sleep(1)
+            if _urgent_token_refresh_event.wait(timeout=1.0):
+                _urgent_token_refresh_event.clear()
+                return
+
+    while not stopping():
+        _sleep_until_maintain_due()
+        if stopping():
+            return
+        urgent = pop_urgent_token_refresh_ids()
         with _token_maintain_lock:
-            aids = list(_token_maintain_ids)
+            pool = list(_token_maintain_ids)
+        aids: list[str] = []
+        seen: set[str] = set()
+        for aid in list(urgent.keys()) + pool:
+            a = str(aid).strip()
+            if a and a not in seen:
+                seen.add(a)
+                aids.append(a)
         for aid in aids:
             if stopping():
                 return
@@ -119,7 +140,7 @@ def _maintain_user_tokens_loop() -> None:
                 from xoso66_playing_game_store import runtime_token_game_key
 
                 cfg = load_config()
-                game_key = runtime_token_game_key(cfg)
+                game_key = urgent.get(aid) or runtime_token_game_key(cfg)
                 g = game_by_key(game_key)
                 gid = int(g["game_id"])
                 gname = str(g.get("gamename") or "lobby")
@@ -146,7 +167,13 @@ def _maintain_user_tokens_loop() -> None:
                     ws_only=bool(st.get("ping_ok")),
                 )
                 persist_session(aid, session)
-                print(f"[TOKEN] {user} → ok={rep.get('ok')}", flush=True)
+                ping_after = user_token_status(session, game_id=gid, gamename=gname)
+                print(
+                    f"[TOKEN] {user} → refresh_ok={rep.get('ok')} "
+                    f"ping_ok={ping_after.get('ping_ok')}"
+                    f"{(' warn=' + str(rep.get('warn'))) if rep.get('warn') else ''}",
+                    flush=True,
+                )
             except Exception as e:
                 print(f"[TOKEN] {username_for_log(aid)} lỗi maintain: {e}", flush=True)
 
@@ -438,11 +465,26 @@ class WsPoolSupervisor:
         current = set(self.tasks.keys())
         new_set = set(target)
         if not target and current:
-            print(
-                f"[WS-POOL] Giữ {len(current)} nick WS — bỏ apply_pool rỗng",
-                flush=True,
-            )
-            return False
+            # Chỉ giữ WS khi đúng là còn lệnh cược pending của các nick hiện tại.
+            # Nếu không còn pending mà target rỗng, phải cho phép ngắt WS để sync status.
+            pending_ids: set[str] = set()
+            try:
+                from xoso66_auto_bet import pending_bet_account_ids
+
+                pending_ids = {
+                    str(x).strip() for x in pending_bet_account_ids() if str(x).strip()
+                }
+            except Exception:
+                pending_ids = set()
+            if pending_ids:
+                keep_pending = sorted(a for a in current if a in pending_ids)
+                if keep_pending:
+                    target = keep_pending
+                    new_set = set(target)
+                    print(
+                        f"[WS-POOL] Giữ {len(keep_pending)} nick WS — còn cược pending",
+                        flush=True,
+                    )
         if current == new_set and len(target) == len(self.tasks):
             self._sync_token_maintain_ids()
             return False
@@ -578,12 +620,35 @@ class WsPoolSupervisor:
                 )
         if not ready:
             return False
-        target = sorted(set(self.tasks.keys()) | set(ready))
-        names = ", ".join(usernames_for_log(ready))
-        print(
-            f"[WS-POOL] Nạp Hoàn tất — mở WS {len(ready)} nick: {names}",
-            flush=True,
-        )
+        from xoso66_ws_pool import ws_account_count, ws_slots_need_fill
+
+        task_keys = list(self.tasks.keys())
+        need = ws_slots_need_fill(cfg, task_ids=task_keys)
+        cap = ws_account_count(cfg)
+        if need <= 0:
+            names = ", ".join(usernames_for_log(ready))
+            print(
+                f"[WS-POOL] Nạp Hoàn tất — pool WS đầy ({len(task_keys)}/{cap}), "
+                f"chờ bù slot ở phiên mới: {names}",
+                flush=True,
+            )
+            return False
+        to_add = ready[:need]
+        if len(to_add) < len(ready):
+            skipped = ready[need:]
+            print(
+                f"[WS-POOL] Nạp Hoàn tất — chỉ bù {need} slot: "
+                f"{usernames_for_log(to_add)}; chờ slot: "
+                f"{usernames_for_log(skipped)}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[WS-POOL] Nạp Hoàn tất — mở WS {len(to_add)} nick: "
+                f"{usernames_for_log(to_add)}",
+                flush=True,
+            )
+        target = sorted(set(task_keys) | set(to_add))
         return await self.apply_pool(target, cfg=cfg, refresh_new=True)
 
     async def resync_from_config(
@@ -605,28 +670,31 @@ class WsPoolSupervisor:
         from xoso66_accounts_db import username_for_log
         from xoso66_config_util import load_config, main_progress
         from xoso66_ws_pool import (
+            _maybe_auto_switch_assign_strategy_when_no_ws_tasks,
             build_ws_sync_plan,
             get_connected_ws_accounts,
             get_pending_ws_slot_ids,
             schedule_fund_deposit_for_ws_shortage,
-            ws_account_count,
             ws_target_occupied_counts,
         )
 
         cfg = load_config()
         current = await self._apply_pending_evictions(cfg)
         changed = await self._connect_after_deposit(cfg)
-        from xoso66_ws_pool import clear_pending_ws_slot
+        from xoso66_ws_pool import account_deposit_in_flight, clear_pending_ws_slot
 
         task_ids = list(self.tasks.keys())
-        if not self._pool_slots_busy():
-            for aid in list(get_pending_ws_slot_ids()):
-                if aid not in self.tasks and aid not in {
-                    str(x).strip()
-                    for x in get_connected_ws_accounts()
-                    if str(x).strip()
-                }:
-                    clear_pending_ws_slot(aid)
+        connected = {
+            str(x).strip()
+            for x in get_connected_ws_accounts()
+            if str(x).strip()
+        }
+        for aid in list(get_pending_ws_slot_ids()):
+            if aid in self.tasks or aid in connected:
+                continue
+            if account_deposit_in_flight(aid, cfg):
+                continue
+            clear_pending_ws_slot(aid)
         current = sorted(set(task_ids) | get_pending_ws_slot_ids())
 
         plan = build_ws_sync_plan(
@@ -651,19 +719,29 @@ class WsPoolSupervisor:
 
         task_keys = set(self.tasks.keys())
         target_set = set(plan.target)
-        to_open = sorted(
-            set(plan.fill_connect_ids or plan.connect_all or [])
-            or (target_set - task_keys)
-        )
-        if to_open or target_set != task_keys:
+        connected_live = {
+            str(x).strip()
+            for x in get_connected_ws_accounts()
+            if str(x).strip()
+        }
+        want_open = set(plan.fill_connect_ids or plan.connect_all or [])
+        if round_start:
+            to_open = sorted(a for a in want_open if a not in connected_live)
+        else:
+            to_open = sorted(want_open or (target_set - task_keys))
+        if to_open:
             tag = "Phiên mới" if round_start else "Resync"
-            if to_open:
-                print(
-                    f"[WS-POOL] {tag} — bù WS: "
-                    f"{', '.join(username_for_log(a) for a in to_open[:12])}"
-                    f"{f'… +{len(to_open)-12}' if len(to_open) > 12 else ''}",
-                    flush=True,
-                )
+            print(
+                f"[WS-POOL] {tag} — bù WS: "
+                f"{', '.join(username_for_log(a) for a in to_open[:12])}"
+                f"{f'… +{len(to_open)-12}' if len(to_open) > 12 else ''}",
+                flush=True,
+            )
+            for aid in to_open:
+                if aid in self.tasks:
+                    await self._stop_account(aid)
+        pool_changed = bool(to_open) or target_set != task_keys
+        if pool_changed:
             changed = await self.apply_pool(
                 plan.target, cfg=cfg, refresh_new=refresh_new
             ) or changed
@@ -673,18 +751,11 @@ class WsPoolSupervisor:
                 cfg, plan.deposit_ids, label="ws-pool-round-deposit"
             )
 
-        min_target = ws_account_count(cfg)
         occ = ws_target_occupied_counts(cfg)
-        if occ["occupied_n"] < min_target:
-            extra = occ.get("deposit_cache_extra_n", 0)
-            cache_txt = (
-                f" (cache nạp +{extra})" if extra else ""
-            )
-            main_progress(
-                f"[WS-POOL] Sau resync — WS {occ['occupied_n']}/{min_target} "
-                f"(task {occ.get('task_n', 0)} connect {occ['connected_n']} "
-                f"pending {occ.get('pending_n', 0)}{cache_txt})"
-            )
+        task_n = int(occ.get("task_n", 0))
+        _maybe_auto_switch_assign_strategy_when_no_ws_tasks(
+            cfg, task_n=task_n
+        )
 
         self._sync_token_maintain_ids()
         return changed

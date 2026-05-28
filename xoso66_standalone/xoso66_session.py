@@ -301,7 +301,11 @@ def login_account(session: dict) -> dict:
     if code == LOGIN_CODE_2FA:
         raise RuntimeError("Tài khoản cần 2FA (code 80080)")
     if code != 1:
-        raise RuntimeError(data.get("msg") or f"Login thất bại code={code}")
+        msg = str(data.get("msg") or f"Login thất bại code={code}")
+        from xoso66_account_errors import maybe_mark_account_loi_from_session
+
+        maybe_mark_account_loi_from_session(session, msg, source="login")
+        raise RuntimeError(msg)
 
     user_data = data.get("data") if isinstance(data.get("data"), dict) else {}
     return {
@@ -371,6 +375,11 @@ def refresh_account_balance_to_db(
         raw = bal.get("raw")
         if isinstance(raw, dict):
             err = str(raw.get("msg") or raw.get("message") or "")
+            from xoso66_account_errors import maybe_mark_account_loi_from_api
+
+            maybe_mark_account_loi_from_api(
+                session, raw, source="getBalance", account_id=aid
+            )
         else:
             err = str(raw or bal.get("http_status") or "getBalance thất bại")
         return {"ok": False, "account_id": aid, "error": err.strip() or "getBalance thất bại"}
@@ -437,6 +446,7 @@ def ensure_session(account_id: str, *, force_login: bool = False) -> dict:
     if account_id not in accounts:
         raise KeyError(f"Không có account '{account_id}' trong xoso66_sessions.json")
     acc = accounts[account_id]
+    acc.setdefault("id", account_id)
     from xoso66_proxy import ensure_proxy
 
     ensure_proxy(acc)

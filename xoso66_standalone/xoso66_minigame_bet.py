@@ -111,8 +111,24 @@ def place_bet(
         from xoso66_minigame_refresh import ensure_user_token_for_bet
 
         ready, msg = ensure_user_token_for_bet(
-            session, aid, game_key=req.game_key, allow_slow_refresh=False
+            session,
+            aid,
+            game_key=req.game_key,
+            allow_slow_refresh=True,
+            auto_refresh_on_fail=True,
         )
+        if ready:
+            from xoso66_minigame_refresh import ping_user_token
+
+            g = game_by_key(req.game_key)
+            if not ping_user_token(
+                session,
+                game_id=int(g["game_id"]),
+                gamename=str(g.get("gamename") or "lobby"),
+                sub_game_code=str(g.get("sub_game_code") or ""),
+            ).get("ok"):
+                ready = False
+                msg = "ping fail ngay trước placeOrder — không gửi lệnh"
         if not ready:
             return BetResult(
                 ok=False,
@@ -146,6 +162,12 @@ def place_bet(
         timeout=http_timeout,
     )
     ok = isinstance(js, dict) and js.get("code") == 1
+    if not ok and isinstance(js, dict) and aid:
+        from xoso66_account_errors import maybe_mark_account_loi_from_api
+
+        maybe_mark_account_loi_from_api(
+            session, js, source="placeOrder", account_id=aid
+        )
     data = js.get("data") if isinstance(js, dict) and isinstance(js.get("data"), dict) else {}
     if ok and aid:
         try:

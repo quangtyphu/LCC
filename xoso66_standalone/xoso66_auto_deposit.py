@@ -20,7 +20,7 @@ import requests
 
 _DIR = Path(__file__).resolve().parent
 DEPOSIT_CACHE_FILE = _DIR / "data" / "deposit_pending_cache.json"
-DEFAULT_AMOUNT_VND = 100_000
+DEFAULT_AMOUNT_VND = 1_000_000
 DEPOSIT_CACHE_DELAY_SEC = 15 * 60
 DEPOSIT_QUEUE_INTERVAL_SEC = 0
 
@@ -31,6 +31,8 @@ _enqueued: set[str] = set()
 _enqueued_lock = threading.Lock()
 _processing: set[str] = set()
 _processing_lock = threading.Lock()
+_deposit_reserved: set[str] = set()
+_deposit_reserved_lock = threading.Lock()
 _last_deposit_time = 0.0
 _last_deposit_lock = threading.Lock()
 
@@ -124,7 +126,10 @@ def log_deposit_transfer_info(rep: dict[str, Any], *, prefix: str = "[NẠP]") -
 
 
 def default_amount() -> int:
-    return int(_auto_deposit_cfg().get("amount_vnd") or DEFAULT_AMOUNT_VND)
+    ad = _auto_deposit_cfg()
+    amt = int(ad.get("amount_vnd") or DEFAULT_AMOUNT_VND)
+    min_amt = int(ad.get("min_deposit_vnd") or 1_000_000)
+    return max(amt, min_amt)
 
 
 def load_deposit_cache() -> dict[str, float]:
@@ -157,22 +162,87 @@ def remove_from_deposit_cache(account_id: str) -> None:
         save_deposit_cache(cache)
 
 
-def can_create_deposit_order(account_id: str) -> bool:
+def is_deposit_reserved(account_id: str) -> bool:
+    aid = str(account_id).strip()
+    if not aid:
+        return False
+    with _deposit_reserved_lock:
+        return aid in _deposit_reserved
+
+
+def _deposit_blocked_by_cache_or_db(account_id: str) -> bool:
     from xoso66_deposit_orders_db import has_pending_deposit, init_deposit_orders_table
     from xoso66_accounts_db import init_db
 
     init_db()
     init_deposit_orders_table()
 
+    aid = str(account_id).strip()
+    if not aid:
+        return True
     ad = _auto_deposit_cfg()
     ttl = int(ad.get("cache_ttl_sec") or DEPOSIT_CACHE_DELAY_SEC)
     cache = load_deposit_cache()
-    ts = cache.get(str(account_id))
+    ts = cache.get(aid)
     if ts and (time.time() - float(ts)) < ttl:
+        return True
+    if has_pending_deposit(aid, max_age_sec=ttl):
+        return True
+    return False
+
+
+def can_create_deposit_order(account_id: str) -> bool:
+    if is_deposit_reserved(account_id):
         return False
-    if has_pending_deposit(str(account_id), max_age_sec=ttl):
+    return not _deposit_blocked_by_cache_or_db(account_id)
+
+
+def deposit_order_block_reason(account_id: str) -> str | None:
+    """Lý do không tạo đơn mới (None = được phép)."""
+    aid = str(account_id).strip()
+    if not aid:
+        return "account_id trống"
+    if is_deposit_reserved(aid):
+        return "đang reserve tạo đơn"
+    ad = _auto_deposit_cfg()
+    ttl = int(ad.get("cache_ttl_sec") or DEPOSIT_CACHE_DELAY_SEC)
+    cache = load_deposit_cache()
+    ts = cache.get(aid)
+    if ts and (time.time() - float(ts)) < ttl:
+        return "cache nạp còn TTL"
+    from xoso66_deposit_orders_db import has_pending_deposit
+
+    if has_pending_deposit(aid, max_age_sec=ttl):
+        return "DB còn lệnh nạp chưa kết thúc"
+    return None
+
+
+def try_reserve_deposit(account_id: str) -> bool:
+    """
+    Giữ chỗ tạo đơn (atomic) — tránh 2 luồng WS-pool gọi /create-deposit cùng lúc.
+    Ghi cache ngay khi reserve; bỏ cache nếu tạo đơn thất bại.
+    """
+    aid = str(account_id).strip()
+    if not aid:
         return False
+    with _deposit_reserved_lock:
+        if aid in _deposit_reserved:
+            return False
+        if _deposit_blocked_by_cache_or_db(aid):
+            return False
+        _deposit_reserved.add(aid)
+    mark_deposit_cache(aid)
     return True
+
+
+def release_deposit_reserve(account_id: str, *, clear_cache: bool = False) -> None:
+    aid = str(account_id).strip()
+    if not aid:
+        return
+    with _deposit_reserved_lock:
+        _deposit_reserved.discard(aid)
+    if clear_cache:
+        remove_from_deposit_cache(aid)
 
 
 def _deposit_queue_interval_sec() -> float:
@@ -234,7 +304,6 @@ def perform_deposit(
             else:
                 body = {"error": raw}
         if r.status_code == 200 and body.get("ok"):
-            mark_deposit_cache(account_id)
             return body
         err = body.get("error") or f"HTTP {r.status_code}"
         if verbose:

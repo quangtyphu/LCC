@@ -13,6 +13,26 @@ _relays: dict[str, subprocess.Popen] = {}
 _ports: dict[str, int] = {}
 
 
+def python_executable_no_console() -> str:
+    """Windows: pythonw.exe — subprocess không mở cửa sổ cmd đen."""
+    if sys.platform != "win32":
+        return sys.executable
+    pw = Path(sys.executable).with_name("pythonw.exe")
+    return str(pw) if pw.is_file() else sys.executable
+
+
+def subprocess_hide_window_kwargs() -> dict[str, Any]:
+    """Windows: không bật cửa sổ cmd khi spawn Python/Chrome/pproxy."""
+    if sys.platform != "win32":
+        return {}
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0x08000000
+    flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0
+    return {"creationflags": flags, "startupinfo": si}
+
+
 def parse_proxy(proxy_str: str) -> tuple[str, int, str, str]:
     """SOCKS5: host:port hoặc host:port:user:pass (pass có thể chứa ':')."""
     s = (proxy_str or "").strip()
@@ -99,7 +119,7 @@ def ensure_local_http_relay(proxy_str: str) -> str:
     local_port = _free_port()
     popen_kw: dict[str, Any] = {
         "args": [
-            sys.executable,
+            python_executable_no_console(),
             "-m",
             "pproxy",
             "-l",
@@ -112,10 +132,9 @@ def ensure_local_http_relay(proxy_str: str) -> str:
         "stdin": subprocess.DEVNULL,
     }
     if sys.platform == "win32":
-        # Relay phải sống sau khi cms_launch.py thoát — không gắn vào process cha.
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        flags = subprocess_hide_window_kwargs().get("creationflags", 0)
         flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        popen_kw.update(subprocess_hide_window_kwargs())
         popen_kw["creationflags"] = flags
     else:
         popen_kw["start_new_session"] = True

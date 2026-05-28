@@ -347,6 +347,7 @@ def poll_withdraw_until_confirmed(
     days: int = 7,
     serial_no: str | None = None,
     log_prefix: str | None = "[RÚT-POLL]",
+    stop_program_on_exhausted: bool = False,
 ) -> dict[str, Any]:
     from xoso66_shutdown import sleep_interruptible, stopping
 
@@ -398,12 +399,23 @@ def poll_withdraw_until_confirmed(
                     "last_check": last,
                 }
 
+    err_msg = f"hết {max_attempts} lần — chưa thấy Hoàn tất mới khớp lệnh"
+    if stop_program_on_exhausted:
+        handle_withdraw_poll_exhausted(
+            account_id,
+            amount_vnd=int(amount_vnd),
+            serial_no=serial_no,
+            max_attempts=int(max_attempts),
+            error=err_msg,
+            log_prefix=str(log_prefix or "[RÚT-POLL]"),
+        )
+
     return {
         "ok": False,
         "done": False,
         "success": False,
         "confirmed": False,
-        "error": f"hết {max_attempts} lần — chưa thấy Hoàn tất mới khớp lệnh",
+        "error": err_msg,
         "last_check": last,
     }
 
@@ -440,6 +452,58 @@ def withdraw_confirm_poll_interval_sec() -> float:
 
 def withdraw_confirm_poll_max() -> int:
     return int(_withdraw_watch_cfg().get("withdraw_confirm_poll_max", 20))
+
+
+def disable_auto_bet_on_withdraw_timeout() -> bool:
+    """True → hết lượt poll rút mà chưa Hoàn tất thì tắt auto_bet.enabled trong config."""
+    return bool(_withdraw_watch_cfg().get("disable_auto_bet_on_withdraw_timeout", True))
+
+
+def handle_withdraw_poll_exhausted(
+    account_id: str,
+    *,
+    amount_vnd: int,
+    serial_no: str | None = None,
+    max_attempts: int,
+    error: str,
+    log_prefix: str = "[WITHDRAW-WATCH]",
+) -> None:
+    """Rút quá N lần check chưa Hoàn tất → auto_bet.enabled=false, không cược nữa."""
+    from xoso66_accounts_db import username_for_log
+    from xoso66_config_util import CONFIG_PATH, save_user_config_value
+
+    if not disable_auto_bet_on_withdraw_timeout():
+        return
+
+    u = username_for_log(account_id)
+    pfx = (log_prefix or "[WITHDRAW-WATCH]").rstrip()
+    saved = save_user_config_value(("auto_bet", "enabled"), False)
+    msg = (
+        f"{pfx} {u}: ⛔ rút {int(amount_vnd):,}đ — "
+        f"{max_attempts} lần check chưa Hoàn tất → tắt auto_bet.enabled"
+        + (f" (serial {serial_no})" if serial_no else "")
+        + f" — {error}"
+    )
+    if saved:
+        msg += f" (đã ghi {CONFIG_PATH.name})"
+    else:
+        msg += " (⚠ không ghi được config — kiểm tra tay auto_bet.enabled=false)"
+    print(msg, flush=True)
+
+    if _withdraw_watch_cfg().get("telegram_enabled", True):
+        try:
+            from xoso66_telegram_notify import notify_auto_mission
+
+            notify_auto_mission(
+                f"⛔ Tắt auto-bet — rút chưa về sau {max_attempts} lần check\n"
+                f"User: {u}\n"
+                f"Số tiền: {int(amount_vnd):,}đ\n"
+                f"Serial: {serial_no or '—'}\n"
+                f"Lý do: {error}\n"
+                f"→ auto_bet.enabled=false trong {CONFIG_PATH.name}"
+            )
+        except Exception as te:
+            print(f"{pfx} {u}: Telegram lỗi — {te}", flush=True)
 
 
 def start_withdraw_confirm_watch(
@@ -485,6 +549,7 @@ def start_withdraw_confirm_watch(
             max_attempts=max_attempts,
             serial_no=serial_no,
             log_prefix=log_prefix,
+            stop_program_on_exhausted=disable_auto_bet_on_withdraw_timeout(),
         )
         if rep.get("confirmed") and rep.get("success"):
             refresh_account_balance_to_db(aid, session, refresh=True)
@@ -492,7 +557,15 @@ def start_withdraw_confirm_watch(
 
         err = str(rep.get("error") or "chưa thấy Hoàn tất")
         print(f"{log_prefix} {u}: ⚠ chưa xác nhận Hoàn tất — {err}", flush=True)
-        if notify_on_fail and _withdraw_watch_cfg().get("telegram_enabled", True):
+        from xoso66_config_util import load_config
+
+        ab = load_config().get("auto_bet")
+        auto_bet_off = not (isinstance(ab, dict) and ab.get("enabled"))
+        if (
+            notify_on_fail
+            and not auto_bet_off
+            and _withdraw_watch_cfg().get("telegram_enabled", True)
+        ):
             try:
                 from xoso66_telegram_notify import notify_auto_mission
 

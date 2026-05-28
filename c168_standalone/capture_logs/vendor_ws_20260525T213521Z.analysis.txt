@@ -1,0 +1,25 @@
+Log: C:\Users\Quang\Documents\LC79\c168_standalone\capture_logs\vendor_ws_20260525T213521Z.jsonl
+Tong frame game: 0
+Theo loai: {}
+
+=== PHIEN MOI (round_start) — mau ===
+
+=== KET QUA PHIEN (round_result) — mau ===
+
+=== DAT CUOC — frame GUI (de copy API) ===
+  (chua co) — dat 1 cuoc tren web khi script dang chay
+
+=== KET QUA CUOC (bet_recv) — mau ===
+
+=== DAT CUOC (HTTP — khong qua WS h54uk) ===
+  POST {origin}/player/update/addMyTransaction
+  tableID, gameShoe, gameRound, data=[{categoryIdx,stake}], betLimitID, f=-1, c=A
+  categoryIdx: 1=Player, 2=Banker, 3=Tie (khac typeCode WS 0/1/2).
+  Tool: python c168_vendor_bet.py --shoe N --round M --stake 20 --side player
+
+=== Huong dan ===
+1. Cuoc = HTTP addMyTransaction (DevTools Network), khong phai WS send.
+2. Phien = WS GP_NEW_GAME_START (GameInfo handler 4).
+3. Ket qua van = GP_WINNER + winner/tableCards.
+4. So du = messageType UserBalance.
+5. Khong copy wss URL — token het han; dung CDP sniff hoac browser.

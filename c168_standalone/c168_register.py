@@ -23,7 +23,6 @@ Chạy:
 """
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import random
@@ -35,6 +34,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass
@@ -48,7 +48,14 @@ from c168_captcha_solver import (
     solve_turnstile,
 )
 from c168_config_util import load_config
+from c168_provision_ui import (
+    PROVISION_API_SUFFIXES,
+    random_bank_account,
+    random_fund_password,
+    run_post_register_provision,
+)
 from c168_proxy import (
+    chrome_proxy_server,
     list_proxies_prioritized_from_lc79_db,
     playwright_proxy_dict,
     proxy_log_label,
@@ -57,8 +64,8 @@ from c168_proxy import (
 _DIR = Path(__file__).resolve().parent
 REGISTER_API_SUFFIX = "/hall/api/member/register"
 REGISTER_URL_PATH = "/home/register"
-CDP_DEFAULT_URL = "http://127.0.0.1:9222"
-CDP_DEBUG_PORT = 9222
+CDP_DEBUG_PORT = 9333
+CDP_DEFAULT_URL = f"http://127.0.0.1:{CDP_DEBUG_PORT}"
 C168_CHROME_PROFILE_NAME = "c168-chrome-profile"
 
 # Placeholder trên form (tiếng Việt)
@@ -90,8 +97,8 @@ class RegisterInput:
             return "username quá ngắn (tối thiểu 4 ký tự)"
         if len(n.password) < 6:
             return "password quá ngắn (tối thiểu 6 ký tự)"
-        if not re.fullmatch(r"9\d{8}", n.phone):
-            return "phone phải 9 chữ số, bắt đầu 9 (không có 0 đầu, vd: 912345678)"
+        if not re.fullmatch(r"[35789]\d{8}", n.phone):
+            return "phone phải 9 chữ số (không 0 đầu), bắt đầu 3/5/7/8/9 (vd: 912345678, 585181806)"
         if len(n.realname) < 3:
             return "realname quá ngắn"
         return None
@@ -131,7 +138,7 @@ def _pause(page, ms: int) -> None:
 
 
 def _apply_mobile_viewport(page) -> None:
-    """CDP Chrome mặc định desktop — site mobile bị vỡ layout nếu không set viewport."""
+    """Viewport mobile (đăng ký / flow cũ)."""
     try:
         page.set_viewport_size({"width": 390, "height": 844})
     except Exception:
@@ -151,6 +158,45 @@ def _apply_mobile_viewport(page) -> None:
     except Exception:
         pass
     page.wait_for_timeout(800)
+
+
+def _apply_desktop_viewport(page, *, width: int = 1440, height: int = 900) -> None:
+    """Giao diện PC — dùng cho login / mở game vendor."""
+    try:
+        page.set_viewport_size({"width": width, "height": height})
+    except Exception:
+        pass
+    try:
+        cdp = page.context.new_cdp_session(page)
+        cdp.send(
+            "Emulation.setDeviceMetricsOverride",
+            {
+                "width": width,
+                "height": height,
+                "deviceScaleFactor": 1,
+                "mobile": False,
+                "screenWidth": width,
+                "screenHeight": height,
+            },
+        )
+        cdp.detach()
+    except Exception:
+        pass
+    try:
+        page.evaluate(
+            f"""() => {{
+              let m = document.querySelector('meta[name=viewport]');
+              if (!m) {{
+                m = document.createElement('meta');
+                m.name = 'viewport';
+                document.head.appendChild(m);
+              }}
+              m.content = 'width={width}, initial-scale=1';
+            }}"""
+        )
+    except Exception:
+        pass
+    page.wait_for_timeout(400)
 
 
 def _safe_fill_input(loc, value: str, *, char_delay_ms: int = 0) -> None:
@@ -382,15 +428,26 @@ def _c168_chrome_profile_dir() -> str:
     return os.path.join(os.environ.get("TEMP", "."), C168_CHROME_PROFILE_NAME)
 
 
+def _kill_c168_chrome_only() -> None:
+    """Chỉ tắt Chrome C168 (profile c168-chrome-profile), không đụng Chrome cá nhân."""
+    marker = C168_CHROME_PROFILE_NAME
+    ps = (
+        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" -ErrorAction SilentlyContinue | "
+        f"Where-Object {{ $_.CommandLine -like '*{marker}*' }} | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", ps],
+        capture_output=True,
+        timeout=20,
+    )
+    time.sleep(0.8)
+
+
 def _wipe_c168_chrome_profile(*, kill_chrome: bool = True) -> None:
-    """Xóa profile debug — hết trạng thái đăng nhập (đăng ký tài khoản mới)."""
+    """Xóa profile C168 riêng — không tắt Chrome đang dùng hằng ngày."""
     if kill_chrome:
-        subprocess.run(
-            ["taskkill", "/IM", "chrome.exe", "/F"],
-            capture_output=True,
-            timeout=15,
-        )
-        time.sleep(1.5)
+        _kill_c168_chrome_only()
     profile = _c168_chrome_profile_dir()
     if os.path.isdir(profile):
         shutil.rmtree(profile, ignore_errors=True)
@@ -510,9 +567,15 @@ def _close_browser(
     headless: bool,
     kill_chrome: bool = False,
 ) -> None:
+    if keep_open_ms < 0:
+        print(
+            "\nGiữ Chrome C168 mở — tắt cửa sổ khi bạn xong (Chrome cá nhân không bị đụng).",
+            file=sys.stderr,
+        )
+        return
     if keep_open_ms > 0 and page is not None:
         print(
-            f"\nGiữ cửa sổ browser {keep_open_ms // 1000}s để bạn xem…",
+            f"\nGiữ cửa sổ C168 {keep_open_ms // 1000}s…",
             file=sys.stderr,
         )
         try:
@@ -525,12 +588,8 @@ def _close_browser(
     except Exception:
         pass
     if kill_chrome:
-        subprocess.run(
-            ["taskkill", "/IM", "chrome.exe", "/F"],
-            capture_output=True,
-            timeout=15,
-        )
-        print("Đã đóng Chrome.", file=sys.stderr)
+        _kill_c168_chrome_only()
+        print("Đã đóng Chrome C168 (profile riêng).", file=sys.stderr)
 
 
 def _proxy_candidates(
@@ -635,6 +694,49 @@ def _is_encrypted_register_success(body: str, status: int) -> bool:
         pass
     sample = re.sub(r"\s+", "", raw[:400])
     return bool(re.fullmatch(r"[A-Za-z0-9+/=_-]+", sample))
+
+
+def _ensure_logged_in_after_register(page, base: str) -> None:
+    """API register OK nhưng URL vẫn /register — đóng popup và vào trang chủ."""
+    reg_url = base.rstrip("/") + REGISTER_URL_PATH
+    for _ in range(40):
+        url = (page.url or "").lower()
+        if "/register" not in url and "/login" not in url:
+            return
+        _dismiss_blocking_popups(page)
+        for label in (
+            "Vào trang chủ",
+            "Trang chủ",
+            "Bắt đầu chơi",
+            "Nạp ngay",
+            "Xác nhận",
+            "Hoàn tất",
+            "OK",
+            "Đăng nhập",
+        ):
+            try:
+                loc = page.get_by_text(label, exact=False)
+                if loc.count() and loc.first.is_visible():
+                    loc.first.click(force=True, timeout=3000)
+                    page.wait_for_timeout(1200)
+                    break
+            except Exception:
+                continue
+        if "/register" in (page.url or "").lower():
+            try:
+                page.goto(
+                    base.rstrip("/") + "/home",
+                    wait_until="domcontentloaded",
+                    timeout=60_000,
+                )
+            except Exception:
+                pass
+        page.wait_for_timeout(800)
+    if "/register" in (page.url or "").lower():
+        try:
+            page.goto(reg_url.replace("/register", "/home"), timeout=60_000)
+        except Exception:
+            page.goto(base.rstrip("/") + "/", timeout=60_000)
 
 
 def _detect_register_ui_success(page, reg_path: str) -> bool:
@@ -801,7 +903,7 @@ def _resubmit_register_until_ok(
             page,
             register_events,
             from_index=idx,
-            post_click_wait_ms=10_000,
+            post_click_wait_ms=6000,
             flow_wait_ms=register_wait_ms,
         )
         body_j = last_wait.get("body_j") or {}
@@ -918,6 +1020,10 @@ def _capsolver_fallback(
     wait = _wait_register_flow(page, register_events, from_index=idx, timeout_ms=wait_ms)
     result["turnstile_wait"] = wait.get("turnstile")
     body_j = wait.get("body_j") or {}
+    if not wait.get("ok") and body_j.get("code") == 1134:
+        wait = _resubmit_register_until_ok(page, register_events)
+        result["turnstile_resubmit"] = wait.get("turnstile")
+        body_j = wait.get("body_j") or {}
     _apply_register_result(result, body_j, wait.get("event"))
     return result
 
@@ -1119,7 +1225,7 @@ def register_account(
                 _close_browser(browser, page, keep_open_ms=0, headless=headless)
                 continue
 
-            page.wait_for_timeout(6000)
+            page.wait_for_timeout(int(pw_cfg.get("page_ready_ms") or 2000))
             _ensure_register_tab(page)
             bot = _detect_bot_block(page)
             if bot:
@@ -1267,6 +1373,65 @@ def register_account(
     return result
 
 
+def _hall_api_path(url: str) -> str:
+    p = urlparse(url).path or url
+    i = p.lower().find("/hall/api/")
+    return p[i:] if i >= 0 else p
+
+
+def _analyze_api_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    try:
+        from c168_api_analyze import analyze_api_events
+
+        return analyze_api_events(events)
+    except ImportError:
+        return {"api_event_count": len(events)}
+
+
+def _print_analysis_summary(analysis: dict[str, Any]) -> None:
+    try:
+        from c168_api_analyze import print_analysis_summary
+
+        print_analysis_summary(analysis)
+    except ImportError:
+        print(f"API events: {analysis.get('api_event_count', '?')}", file=sys.stderr)
+
+
+def _watch_cdp_until_chrome_closed(
+    *,
+    cdp_url: str,
+    api_events: list[dict[str, Any]],
+    analysis_file: Path,
+    max_minutes: int = 90,
+) -> dict[str, Any]:
+    """Chờ user đóng Chrome, rồi phân tích toàn bộ API đã ghi."""
+    print(
+        "\nĐang ghi log API — đóng cửa sổ Chrome khi bạn xong liên kết bank…",
+        file=sys.stderr,
+    )
+    deadline = time.time() + max(5, max_minutes) * 60
+    while time.time() < deadline:
+        if not _cdp_is_alive(cdp_url):
+            print("Chrome đã đóng — phân tích log bank…", file=sys.stderr)
+            break
+        time.sleep(2)
+    else:
+        print("Hết thời gian chờ — phân tích log hiện có…", file=sys.stderr)
+
+    analysis = _analyze_api_events(api_events)
+    analysis_file.write_text(
+        json.dumps(analysis, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    _print_analysis_summary(analysis)
+    print(f"\nPhân tích bank: {analysis_file}", file=sys.stderr)
+    return {
+        "analysis_file": str(analysis_file),
+        "api_event_count": len(api_events),
+        "analysis": analysis,
+    }
+
+
 def _log_append(path: Path, row: dict[str, Any]) -> None:
     row = {**row, "ts": datetime.now(timezone.utc).isoformat()}
     with path.open("a", encoding="utf-8") as f:
@@ -1310,8 +1475,9 @@ def _start_chrome_debug(
     base: str,
     reg_path: str,
     port: int = CDP_DEBUG_PORT,
+    proxy: str = "",
 ) -> tuple[bool, str]:
-    """Tự mở Chrome debug nếu port chưa lắng nghe."""
+    """Tự mở Chrome debug nếu port chưa lắng nghe. proxy → --proxy-server (SOCKS5 qua relay)."""
     chrome = _find_chrome_exe()
     if not chrome:
         return False, "Không tìm thấy chrome.exe"
@@ -1323,8 +1489,11 @@ def _start_chrome_debug(
         f"--user-data-dir={profile}",
         "--no-first-run",
         "--no-default-browser-check",
-        url,
     ]
+    proxy_srv = chrome_proxy_server(proxy) if proxy.strip() else ""
+    if proxy_srv:
+        cmd.append(f"--proxy-server={proxy_srv}")
+    cmd.append(url)
     try:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as e:
@@ -1377,6 +1546,13 @@ def manual_watch_session(
     headless_browser: bool = False,
     proxy_max_tries: int = 5,
     keep_browser_on_success_ms: int = 0,
+    keep_browser_open: bool = False,
+    provision_after_register: bool = False,
+    bank_manual: bool = False,
+    fund_password: str = "",
+    bank_account: str = "",
+    bank_name: str = "",
+    skip_bank_bind: bool = False,
 ) -> dict[str, Any]:
     """
     CDP/manual: ghi API register.
@@ -1388,6 +1564,7 @@ def manual_watch_session(
     base = str(cfg.get("base_url") or "https://c168b2.cc").rstrip("/")
     reg_path = str(cfg.get("register_path") or REGISTER_URL_PATH)
     log_file = log_path or (_DIR / "c168_manual_log.jsonl")
+    bank_analysis_file = _DIR / "c168_bank_api_analysis.json"
     if log_file.is_file():
         log_file.write_text("", encoding="utf-8")
 
@@ -1402,6 +1579,9 @@ def manual_watch_session(
 
     api_events: list[dict[str, Any]] = []
     register_hits: list[dict[str, Any]] = []
+    api_hits: dict[str, list[dict[str, Any]]] = {
+        suffix: [] for suffix in PROVISION_API_SUFFIXES
+    }
 
     def on_request(req):
         if "hall/api" not in req.url:
@@ -1421,17 +1601,26 @@ def manual_watch_session(
             return
         try:
             body = resp.text()[:8000]
-        except Exception:
-            body = ""
+        except BaseException:
+            return
         row = {
             "kind": "response",
             "status": resp.status,
             "url": resp.url,
+            "path": _hall_api_path(resp.url),
             "method": resp.request.method,
             "body": body,
         }
         api_events.append(row)
         _log_append(log_file, row)
+        for suffix in api_hits:
+            if suffix in resp.url:
+                api_hits[suffix].append(row)
+                print(
+                    f"\n>>> {suffix.split('/')[-1]} status={resp.status}",
+                    file=sys.stderr,
+                )
+                break
         if REGISTER_API_SUFFIX in resp.url:
             register_hits.append(row)
             raw = (body or "").strip()
@@ -1479,31 +1668,53 @@ def manual_watch_session(
 
     if click_only and clear_session and not headless_browser:
         print(
-            "Đăng ký tài khoản mới — đóng Chrome và xóa profile (hết đăng nhập sẵn)…",
+            "Đăng ký mới — xóa profile C168 riêng (không tắt Chrome cá nhân)…",
             file=sys.stderr,
         )
         _wipe_c168_chrome_profile(kill_chrome=True)
 
     use_cdp = bool(connect_cdp) and not headless_browser
     chrome_launched_by_script = False
+    cdp_proxy = (proxy_try[0] if proxy_try else "").strip()
+    if full_auto and not cdp_proxy:
+        return {
+            "ok": False,
+            "error": "Đăng ký C168 bắt buộc qua proxy — dùng --proxy hoặc bỏ --no-proxy (lấy DB).",
+        }
     if use_cdp and (click_only or auto_start_chrome or connect_cdp):
         connect_cdp = cdp_url
-        if not _cdp_is_alive(cdp_url):
-            if auto_start_chrome or (click_only and not headless_browser):
-                print("Đang mở Chrome debug (port 9222)…", file=sys.stderr)
-                ok, msg = _start_chrome_debug(base=base, reg_path=reg_path)
-                if not ok:
-                    return {"ok": False, "error": f"Không mở Chrome debug: {msg}"}
-                chrome_launched_by_script = True
-                print(f"Chrome debug OK: {msg}", file=sys.stderr)
-            else:
-                return {
-                    "ok": False,
-                    "error": (
-                        f"Chrome debug chưa chạy ({cdp_url}). "
-                        "Chạy: start_chrome_debug.bat hoặc --click-only"
-                    ),
-                }
+        must_launch = (
+            auto_start_chrome
+            or (click_only and not headless_browser)
+            or (cdp_proxy and _cdp_is_alive(cdp_url))
+        )
+        if must_launch and (not _cdp_is_alive(cdp_url) or cdp_proxy):
+            if cdp_proxy and _cdp_is_alive(cdp_url):
+                print(
+                    f"Đổi proxy — tắt Chrome C168 cũ, mở lại ({proxy_log_label(cdp_proxy)})…",
+                    file=sys.stderr,
+                )
+                _wipe_c168_chrome_profile(kill_chrome=True)
+            lbl = proxy_log_label(cdp_proxy) if cdp_proxy else "không proxy"
+            print(
+                f"Mở Chrome C168 riêng (port {CDP_DEBUG_PORT}, profile {C168_CHROME_PROFILE_NAME}) — {lbl}…",
+                file=sys.stderr,
+            )
+            ok, msg = _start_chrome_debug(
+                base=base, reg_path=reg_path, proxy=cdp_proxy
+            )
+            if not ok:
+                return {"ok": False, "error": f"Không mở Chrome debug: {msg}"}
+            chrome_launched_by_script = True
+            print(f"Chrome debug OK: {msg}", file=sys.stderr)
+        elif not _cdp_is_alive(cdp_url):
+            return {
+                "ok": False,
+                "error": (
+                    f"Chrome debug chưa chạy ({cdp_url}). "
+                    "Chạy: start_chrome_debug.bat hoặc --click-only"
+                ),
+            }
 
     with sync_playwright() as p:
         browser = None
@@ -1552,7 +1763,12 @@ def manual_watch_session(
                         timeout=120_000,
                     )
                 opened = True
-                result["proxy"] = "Chrome thật (CDP, không qua Playwright launch)"
+                if cdp_proxy:
+                    result["proxy"] = (
+                        f"Chrome CDP + {proxy_log_label(cdp_proxy)}"
+                    )
+                else:
+                    result["proxy"] = "Chrome thật (CDP, không proxy)"
             except Exception as e:
                 result["error"] = (
                     f"Không kết nối CDP {cdp_url}: {e}. "
@@ -1615,12 +1831,7 @@ def manual_watch_session(
             return result
 
         pw_cfg = cfg.get("playwright") if isinstance(cfg.get("playwright"), dict) else {}
-        kill_cdp = (
-            use_cdp
-            and click_only
-            and not headless_browser
-            and chrome_launched_by_script
-        )
+        kill_cdp = False
         if click_only and fill_data:
             _apply_mobile_viewport(page)
             try:
@@ -1629,15 +1840,15 @@ def manual_watch_session(
                     timeout=30_000,
                 )
             except Exception:
-                page.wait_for_timeout(3000)
+                page.wait_for_timeout(1000)
             _ensure_register_tab(page)
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(400)
             try:
                 filled = _fill_by_placeholders(
                     page,
                     fill_data,
                     char_delay_ms=int(pw_cfg.get("human_delay_ms") or 40),
-                    pause_between_ms=int(pw_cfg.get("pause_between_fields_ms") or 200),
+                    pause_between_ms=int(pw_cfg.get("pause_between_fields_ms") or 150),
                 )
             except Exception as e:
                 result["error"] = f"Điền form lỗi: {e}"
@@ -1670,8 +1881,8 @@ def manual_watch_session(
 
             cap_cfg = dict(cfg.get("captcha") or {})
             wait_ms = int(cap_cfg.get("wait_after_submit_ms") or 90_000)
-            post_click_wait_ms = int(cap_cfg.get("pause_after_click_ms") or 10_000)
-            pause_submit = int(pw_cfg.get("pause_before_submit_ms") or 800)
+            post_click_wait_ms = int(cap_cfg.get("pause_after_click_ms") or 6000)
+            pause_submit = int(pw_cfg.get("pause_before_submit_ms") or 2000)
 
             if full_auto:
                 browser_lbl = (
@@ -1697,13 +1908,7 @@ def manual_watch_session(
                     },
                 )
                 _dismiss_blocking_popups(page)
-                print(
-                    "Turnstile thường chạy SAU khi bấm ĐĂNG KÝ — script tự bấm, bạn không cần bấm.",
-                    file=sys.stderr,
-                )
-                ts0 = _wait_turnstile_ready(page, 8_000)
-                result["turnstile_before_submit"] = ts0
-                _dismiss_blocking_popups(page)
+                result["turnstile_before_submit"] = _turnstile_snapshot(page)
                 _pause(page, pause_submit)
                 idx = len(register_hits)
                 print("Đang bấm ĐĂNG KÝ…", file=sys.stderr)
@@ -1739,7 +1944,7 @@ def manual_watch_session(
                     result["turnstile_resubmit"] = wait.get("turnstile")
                     body_j = wait.get("body_j") or {}
 
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(500)
                 ui_ok, via = _infer_register_success(
                     page,
                     register_hits,
@@ -1776,23 +1981,86 @@ def manual_watch_session(
                         f"\n>>> Đăng ký thành công ({via_s}).",
                         file=sys.stderr,
                     )
+                    if provision_after_register:
+                        _ensure_logged_in_after_register(page, base)
+                        page.wait_for_timeout(3000)
+                        fp = (fund_password or "").strip() or random_fund_password()
+                        ba = (bank_account or "").strip() or random_bank_account()
+                        prov = run_post_register_provision(
+                            page,
+                            fund_password=fp,
+                            bank_account=ba,
+                            bank_name=bank_name,
+                            realname=fill_data.realname if fill_data else "",
+                            base_url=base,
+                            api_hits=api_hits,
+                            bank_manual=bank_manual,
+                            skip_bank_bind=skip_bank_bind,
+                        )
+                        result["provision"] = prov
+                        result["fund_password"] = fp
+                        if not bank_manual:
+                            result["bank_account"] = ba
+                        if prov.get("phase") == "bank_manual":
+                            result["bank_manual"] = True
+                            print(
+                                "\n>>> Sẵn sàng liên kết bank (thao tác tay).",
+                                file=sys.stderr,
+                            )
+                        elif not prov.get("ok"):
+                            result["ok"] = False
+                            result["error"] = prov.get("error") or "Provision thất bại"
+                        else:
+                            msg = (
+                                "MK rút OK (chưa liên kết bank)."
+                                if prov.get("phase") == "fund_password_only"
+                                else "Provision OK (MK rút + bank)."
+                            )
+                            print(f"\n>>> {msg}", file=sys.stderr)
+                        if bank_manual and prov.get("phase") == "bank_manual":
+                            keep_browser_open = True
                 else:
                     print(f"\n>>> Thất bại: {result.get('error')}", file=sys.stderr)
                 _log_append(
                     log_file, {"kind": "info", "message": "session end", "result": result}
                 )
-                keep_ms = keep_browser_on_success_ms if result.get("ok") else 0
-                if kill_cdp and not keep_ms:
-                    print(
-                        "Đóng Chrome sau khi chạy xong…",
-                        file=sys.stderr,
-                    )
+                if bank_manual and result.get("bank_manual"):
+                    cdp_alive_url = connect_cdp or CDP_DEFAULT_URL
+                    try:
+                        bank_cap = _watch_cdp_until_chrome_closed(
+                            cdp_url=cdp_alive_url,
+                            api_events=api_events,
+                            analysis_file=bank_analysis_file,
+                        )
+                        result["bank_capture"] = bank_cap
+                        bind_rows = (
+                            bank_cap.get("analysis", {})
+                            .get("likely_flow", {})
+                            .get("bank")
+                            or []
+                        )
+                        if bind_rows:
+                            result["bank_bind_seen"] = True
+                    except Exception as e:
+                        result["bank_capture_error"] = str(e)
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+                    return result
+
+                if keep_browser_open:
+                    keep_ms = -1
+                else:
+                    keep_ms = keep_browser_on_success_ms if result.get("ok") else 0
+                    if keep_ms >= 0:
+                        print("Đóng Chrome C168 sau khi chạy xong…", file=sys.stderr)
                 _close_browser(
                     browser,
                     page,
                     keep_open_ms=keep_ms,
                     headless=headless_browser,
-                    kill_chrome=kill_cdp,
+                    kill_chrome=keep_ms >= 0,
                 )
                 return result
 
@@ -1896,274 +2164,3 @@ def save_account(path: Path, record: dict[str, Any]) -> None:
         rows = []
     rows.append(record)
     path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="C168 — đăng ký: username, mật khẩu, SĐT, họ tên + captcha bên thứ 3",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Ví dụ:
-  python c168_register.py --username myacc01 --password Abc123456 --phone 987654321 --realname "Nguyen Van A"
-  python c168_register.py --random
-  python c168_register.py --random --headed --captcha-token YOUR_TURNSTILE_TOKEN
-  python c168_register.py --click-only --random
-  python c168_register.py --click-only --random --headless
-        """,
-    )
-    parser.add_argument(
-        "--click-only",
-        action="store_true",
-        help="Tự làm hết: điền form + bấm ĐĂNG KÝ + chờ kết quả (--random)",
-    )
-    parser.add_argument(
-        "--wait-click",
-        action="store_true",
-        help="Với --click-only: chỉ điền form, bạn tự bấm ĐĂNG KÝ rồi ENTER",
-    )
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        help="Với --click-only: Chromium ẩn (không mở cửa sổ Chrome debug)",
-    )
-    parser.add_argument("--username", "-u", default="", help="Tên tài khoản")
-    parser.add_argument("--password", "-p", default="", help="Mật khẩu")
-    parser.add_argument(
-        "--phone",
-        default="",
-        help="Số điện thoại (9xxxxxxxx, không 0 đầu; form hiển thị +84)",
-    )
-    parser.add_argument(
-        "--realname",
-        "-n",
-        default="",
-        help="Họ và tên thật (vd: NGUYEN VAN A)",
-    )
-    parser.add_argument("--random", action="store_true", help="Random cả 4 trường")
-    parser.add_argument("--captcha-token", default="", help="Token Turnstile có sẵn")
-    parser.add_argument(
-        "--capsolver",
-        action="store_true",
-        help="Bỏ qua Turnstile trong browser, dùng Capsolver inject token",
-    )
-    parser.add_argument("--save", default=str(_DIR / "c168_accounts.json"))
-    parser.add_argument(
-        "--headed",
-        action="store_true",
-        help="Mở browser (khuyên dùng — Turnstile tự xác minh như đăng ký tay)",
-    )
-    parser.add_argument(
-        "--proxy",
-        default="",
-        help="SOCKS5 host:port:user:pass (ưu tiên hơn DB)",
-    )
-    parser.add_argument(
-        "--no-proxy",
-        action="store_true",
-        help="Không dùng proxy (mặc định: lấy ngẫu nhiên từ game_data.db LC79)",
-    )
-    parser.add_argument(
-        "--keep-open",
-        action="store_true",
-        help="Sau khi chạy xong giữ browser ~2 phút để xem (cần --headed)",
-    )
-    parser.add_argument(
-        "--proxy-max",
-        type=int,
-        default=15,
-        help="Số proxy tối đa thử từ DB khi bị chặn bot (mặc định 15)",
-    )
-    parser.add_argument(
-        "--manual",
-        action="store_true",
-        help="Chỉ mở browser + ghi log API; bạn tự đăng ký tay, xong bấm ENTER",
-    )
-    parser.add_argument(
-        "--manual-wait",
-        type=int,
-        default=45,
-        help="Tối đa phút chờ ở chế độ --manual (mặc định 45)",
-    )
-    parser.add_argument(
-        "--manual-grace",
-        type=int,
-        default=60,
-        help="Sau ENTER vẫn ghi log thêm N giây (mặc định 60)",
-    )
-    parser.add_argument(
-        "--cdp",
-        default="",
-        help="Manual: gắn Chrome thật (remote debug). VD: http://127.0.0.1:9222 — chạy start_chrome_debug.bat trước",
-    )
-    parser.add_argument(
-        "--clear-session",
-        action="store_true",
-        help="Xóa profile/cookie C168 — trang đăng ký mới (mặc định bật với --click-only)",
-    )
-    parser.add_argument(
-        "--keep-session",
-        action="store_true",
-        help="--click-only: giữ đăng nhập cũ (không xóa profile)",
-    )
-    parser.add_argument(
-        "--keep-browser",
-        action="store_true",
-        help="--click-only: sau OK giữ Chrome ~15s (mặc định tự đóng ngay)",
-    )
-    args = parser.parse_args()
-
-    cfg = load_config()
-    if args.click_only and args.headless:
-        cfg.setdefault("playwright", {})["headless"] = True
-    elif args.headed or args.manual or args.click_only:
-        cfg.setdefault("playwright", {})["headless"] = False
-
-    if args.click_only:
-        if not args.random and not (
-            args.username and args.password and args.phone
-        ):
-            args.random = True
-        username = args.username or (random_username() if args.random else "")
-        password = args.password or (random_password() if args.random else "")
-        phone = args.phone or (random_phone_vn() if args.random else "")
-        realname = args.realname or (random_realname() if args.random else "NGUYEN VAN A")
-        inp = RegisterInput(
-            username=username,
-            password=password,
-            phone=phone,
-            realname=realname,
-        ).normalized()
-        err = inp.validate()
-        if err:
-            print(json.dumps({"ok": False, "error": err}, ensure_ascii=False))
-            return 1
-        auto_submit = not args.wait_click
-        if args.headless:
-            print(
-                "Chế độ --click-only --headless: Chromium ẩn, không mở cửa sổ Chrome.",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                "Chế độ --click-only: tự làm hết trên Chrome thật (CDP)."
-                if auto_submit
-                else "Chế độ --click-only --wait-click: điền form, bạn bấm ĐĂNG KÝ.",
-                file=sys.stderr,
-            )
-        do_clear = not args.keep_session and not args.headless
-        if args.clear_session and not args.headless:
-            do_clear = True
-        if auto_submit and not args.headless:
-            do_clear = True
-        out = manual_watch_session(
-            cfg=cfg,
-            proxy=args.proxy,
-            use_proxy_db=not args.no_proxy,
-            wait_minutes=args.manual_wait,
-            connect_cdp="" if args.headless else (args.cdp or CDP_DEFAULT_URL),
-            grace_seconds=max(0, int(args.manual_grace)),
-            clear_session=do_clear,
-            fill_data=inp,
-            auto_start_chrome=not args.headless,
-            auto_submit=auto_submit,
-            headless_browser=args.headless,
-            proxy_max_tries=args.proxy_max,
-            keep_browser_on_success_ms=15_000 if args.keep_browser else 0,
-        )
-        try:
-            sys.stdout.reconfigure(encoding="utf-8")
-        except Exception:
-            pass
-        print(json.dumps(out, ensure_ascii=False, indent=2))
-        print(f"\nLog: {out.get('log_file')}", file=sys.stderr)
-        if out.get("ok"):
-            save_account(
-                Path(args.save),
-                {
-                    "username": inp.username,
-                    "password": inp.password,
-                    "phone": inp.phone,
-                    "realname": inp.realname,
-                    "mode": out.get("mode") or "auto_cdp",
-                },
-            )
-            print(f"Đã lưu {args.save}", file=sys.stderr)
-        return 0 if out.get("ok") else 1
-
-    if args.manual:
-        use_proxy_db = not args.no_proxy
-        print("Chế độ manual — script không đăng ký tự động.", file=sys.stderr)
-        out = manual_watch_session(
-            cfg=cfg,
-            proxy=args.proxy,
-            use_proxy_db=use_proxy_db,
-            wait_minutes=args.manual_wait,
-            connect_cdp=args.cdp or "",
-            grace_seconds=max(0, int(args.manual_grace)),
-            clear_session=bool(args.clear_session),
-        )
-        try:
-            sys.stdout.reconfigure(encoding="utf-8")
-        except Exception:
-            pass
-        print(json.dumps(out, ensure_ascii=False, indent=2))
-        print(f"\nLog chi tiết: {out.get('log_file')}", file=sys.stderr)
-        return 0 if out.get("ok") else 1
-
-    username = args.username or (random_username() if args.random else "")
-    password = args.password or (random_password() if args.random else "")
-    phone = args.phone or (random_phone_vn() if args.random else "")
-    realname = args.realname or (random_realname() if args.random else "NGUYEN VAN A")
-
-    if not args.random and (not username or not password or not phone):
-        parser.error("Cần --username --password --phone (hoặc --random)")
-
-    use_proxy_db = not args.no_proxy
-    proxy_hint = args.proxy or ("DB LC79" if use_proxy_db else "không")
-    print(
-        f"Đăng ký: user={username} phone={normalize_phone(phone)} "
-        f"name={realname} proxy={proxy_hint}",
-        file=sys.stderr,
-    )
-
-    cap_mode = "capsolver" if args.capsolver or args.captcha_token else ""
-    keep_ms = 120_000 if args.keep_open else 0
-    if args.keep_open and not args.headed:
-        cfg.setdefault("playwright", {})["headless"] = False
-    out = register_account(
-        username=username,
-        password=password,
-        phone=phone,
-        realname=realname,
-        cfg=cfg,
-        captcha_token=args.captcha_token,
-        captcha_mode=cap_mode,
-        proxy=args.proxy,
-        use_proxy_db=use_proxy_db,
-        keep_open_ms=keep_ms,
-        proxy_max_tries=args.proxy_max,
-    )
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
-    print(json.dumps(out, ensure_ascii=False, indent=2))
-
-    if out.get("ok"):
-        save_account(
-            Path(args.save),
-            {
-                "username": username,
-                "password": password,
-                "phone": normalize_phone(phone),
-                "realname": realname,
-                "api_base": out.get("api_base"),
-            },
-        )
-        print(f"\nOK — đã lưu {args.save}", file=sys.stderr)
-        return 0
-    return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())

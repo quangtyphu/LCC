@@ -37,6 +37,10 @@ from xoso66_deposit import (
     _game_http,
 )
 from xoso66_session import _merge_response_cookies, ensure_session, persist_session
+from xoso66_config_util import configure_stdio_utf8, safe_print
+
+configure_stdio_utf8()
+print = safe_print  # noqa: A001 — log tiếng Việt an toàn trên Windows/CMS API
 
 MISSION_LIST_PATH = "/server/mission/list"
 MISSION_REWARD_PATH = "/server/mission/reward"
@@ -64,6 +68,27 @@ LEVEL_MISSION_MAP: dict[int, int] = {
 }
 TRACK_SIGN_IDS = (SIGN_ID_MINI_WEEK, SIGN_ID_DAILY_MISSION)
 REWARD_CLAIM_STATUS = 1
+# Site trả 888888 trên level 161 khi đủ cược ngày — không poll chờ bắt kịp DB.
+DAILY_161_DONE_BET_COMPLETE = 888_888
+
+
+def is_daily_161_complete_sentinel(done_bet_money: int | float) -> bool:
+    """Site trả 888888 trên level 161 — coi đủ cược ngày."""
+    return int(done_bet_money or 0) >= DAILY_161_DONE_BET_COMPLETE
+
+
+def needs_daily_161_bet_poll(
+    done_bet_money: int | float, daily_bet_total: int | float
+) -> bool:
+    """
+    Poll chờ mission 161 chỉ khi cả hai đều đúng:
+    done_bet < 888888 VÀ done_bet < tổng cược ngày.
+    """
+    done = int(done_bet_money or 0)
+    total = int(daily_bet_total or 0)
+    if total <= 0:
+        return False
+    return done < DAILY_161_DONE_BET_COMPLETE and done < total
 
 
 def is_mission_reward_rate_limit(msg: str) -> bool:
@@ -74,6 +99,14 @@ def is_mission_reward_rate_limit(msg: str) -> bool:
     return "không gửi lệnh nhiều lần" in m or (
         "nhiều lần" in m and "tải lại trang" in m
     )
+
+
+def is_mission_reward_ip_already_claimed(msg: str) -> bool:
+    """Site: «IP này đã nhận thưởng» — giới hạn theo outbound IP/proxy, không retry poll."""
+    m = str(msg or "").strip().lower()
+    if not m:
+        return False
+    return "ip" in m and "đã nhận" in m and "thưởng" in m
 
 
 def fetch_mission_list(session: dict) -> dict[str, Any]:
@@ -487,6 +520,10 @@ def execute_mission_claims(
         cr = fetch_mission_reward(session, mid, lid)
         claims.append(cr)
         msg = str(cr.get("msg") or "")
+        from xoso66_account_errors import maybe_mark_account_loi
+
+        if maybe_mark_account_loi(aid, msg, source="mission/reward"):
+            break
         _print_mission_claim_result(
             log_prefix=log_prefix,
             username=u,

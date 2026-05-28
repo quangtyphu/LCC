@@ -28,6 +28,12 @@ def main() -> int:
         default="",
         help='JSON array URL, VD: ["https://a.com","https://b.com"]',
     )
+    ap.add_argument(
+        "--cdp-port",
+        type=int,
+        default=0,
+        help="Bật remote debugging (C168 Playwright/CDP gắn profile này)",
+    )
     args = ap.parse_args()
     proxy_raw = args.proxy.strip()
     url_list: list[str] = []
@@ -45,26 +51,27 @@ def main() -> int:
             "server": "",
             "label": "(không proxy)",
         }
+        cdp_port = int(args.cdp_port or 0)
         proc = _launch_chrome_native(
             profile_path=Path(args.profile_dir),
             proxy=proxy_raw,
             url=args.url.strip() or "about:blank",
             urls=url_list or None,
+            cdp_port=cdp_port,
         )
         opened = _normalize_urls(url_list, args.url.strip() or "about:blank")
-        print(
-            json.dumps(
-                {
-                    "ok": True,
-                    "pid": proc.pid,
-                    "proxy_mode": prep.get("mode"),
-                    "proxy_label": prep.get("label"),
-                    "tabs": len(opened),
-                    "urls": opened,
-                },
-                ensure_ascii=False,
-            )
-        )
+        out = {
+            "ok": True,
+            "pid": proc.pid,
+            "proxy_mode": prep.get("mode"),
+            "proxy_label": prep.get("label"),
+            "tabs": len(opened),
+            "urls": opened,
+        }
+        if cdp_port > 0:
+            out["cdp_port"] = cdp_port
+            out["cdp_url"] = f"http://127.0.0.1:{cdp_port}"
+        print(json.dumps(out, ensure_ascii=False))
         return 0
     except Exception as e:
         print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))

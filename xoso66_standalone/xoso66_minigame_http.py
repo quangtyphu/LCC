@@ -121,7 +121,7 @@ def minigame_request(
     proxies = build_proxies(session["proxy"])
     m = method.upper()
 
-    impersonate = os.environ.get("XOSO66_CF_IMPERSONATE", "chrome120")
+    impersonate = os.environ.get("XOSO66_CF_IMPERSONATE", "chrome120")  # chrome131 hay unsupported
     try:
         from curl_cffi import requests as cffi_requests
 

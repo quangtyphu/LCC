@@ -461,7 +461,12 @@ def _ping_one_minigame_token(
                 "reason": "không có session trong DB",
             }
         acc = copy.deepcopy(base)
-        ping = ping_user_token(acc, game_id=gp["gid"], gamename=gp["gname"])
+        ping = ping_user_token(
+            acc,
+            game_id=gp["gid"],
+            gamename=gp["gname"],
+            sub_game_code=gp["sub"],
+        )
         if ping.get("ok"):
             if fetch_ws:
                 fetch_ws_token(acc, game_id=gp["gid"], gamename=gp["gname"])
@@ -582,7 +587,12 @@ def _refresh_one_minigame_token(
             persist_session(account_id, acc)
             sessions[account_id] = acc
 
-        ping2 = ping_user_token(acc, game_id=gp["gid"], gamename=gp["gname"])
+        ping2 = ping_user_token(
+            acc,
+            game_id=gp["gid"],
+            gamename=gp["gname"],
+            sub_game_code=gp["sub"],
+        )
         if not ping2.get("ok") and mg.get("user_token"):
             ping_reason = str(ping2.get("reason") or ping2.get("msg") or "")
             if "cf_clearance" in ping_reason and not (mg.get("cookies") or {}).get("cf_clearance"):
@@ -595,7 +605,12 @@ def _refresh_one_minigame_token(
                 if mg.get("user_token") or (mg.get("cookies") or {}).get("cf_clearance"):
                     persist_session(account_id, acc)
                     sessions[account_id] = acc
-                ping2 = ping_user_token(acc, game_id=gp["gid"], gamename=gp["gname"])
+                ping2 = ping_user_token(
+                    acc,
+                    game_id=gp["gid"],
+                    gamename=gp["gname"],
+                    sub_game_code=gp["sub"],
+                )
 
         if ping2.get("ok"):
             if fetch_ws:

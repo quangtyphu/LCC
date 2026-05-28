@@ -1,0 +1,10 @@
+Log: C:\Users\Quang\Documents\LC79\benbet_standalone\capture_logs\browser_ws_longmebaihai_20260523T085511Z.jsonl
+Tong dong: 0 | gui: 0 | nhan: 0
+
+=== Lenh BET gui (tu script --test-bet hoac bat duoc) ===
+  (chua co frame gui BET)
+
+=== Phan hoi lien quan cuoc (betSuccess, betOfAccount, ...) ===
+  (chua thay — dat cuoc tren web khi script dang chay, hoac dung --test-bet)
+
+Profile: C:\Users\Quang\Documents\LC79\benbet_standalone\capture_logs\bet_profile.json

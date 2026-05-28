@@ -1,0 +1,7 @@
+{"t": 1779391868.9476695, "event": "start", "account_id": "acc11", "log_path": "C:\\Users\\Quang\\Documents\\LC79\\xoso66_standalone\\red_packet_logs\\acc11_20260521T193105Z_slow_claim.jsonl", "username": "bettaixiubnb", "proxy": "113.160.241.74:26856 (socks5, user bTaKnq)", "balance_before": "336862", "balance": "336862"}
+{"t": 1779391874.667325, "event": "network", "path": "/server/user/getBalance", "status": 200, "parsed": {"code": 1, "msg": "Hoàn tất", "time": 1779391875, "v": null, "data": {"money": "336862", "frozen": "0", "total_money": "336862", "credit_money": 0, "total_credit": 0, "bet_money": 336862, "total_asset": 336862, "user_trigger": [], "event": []}}}
+{"t": 1779391876.4890342, "event": "click_once", "x": 700, "y": 450}
+{"t": 1779391878.5077138, "event": "network", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779391878.8714414, "event": "network", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779391884.0628548, "event": "open_click_via_sidebar", "selector": "text=Mở bao lì xì"}
+{"t": 1779391884.102691, "event": "network", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}

@@ -14,11 +14,29 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
+_DIR = Path(__file__).resolve().parent
+if str(_DIR) not in sys.path:
+    sys.path.insert(0, str(_DIR))
+from xoso66_paths import apply_default_env
+
+apply_default_env()
+
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -37,27 +55,67 @@ from xoso66_account_save import DEFAULT_FUND_PASSWORD, save_account_with_site_sy
 DEFAULT_LOGIN_PASSWORD = (os.environ.get("XOSO66_DEFAULT_LOGIN_PASSWORD") or "Valentine1").strip()
 from xoso66_bulk_provision import parse_bulk_text, provision_bulk
 from xoso66_provision import provision_account
+from xoso66_config_util import configure_stdio_utf8
+
+configure_stdio_utf8()
 
 _DIR = Path(__file__).resolve().parent
-_CONFIG = Path(os.environ.get("XOSO66_CONFIG", _DIR / "xoso66_config.json"))
+from xoso66_paths import default_config_path
+
+_CONFIG = Path(os.environ.get("XOSO66_CONFIG") or str(default_config_path()))
 _WEB_DIR = _DIR / "web"
+
+
+def _normalize_qr_base64_payload(raw: Any) -> str:
+    """Chuẩn payload base64 thuần (không prefix data:) cho modal."""
+    if not isinstance(raw, str):
+        return ""
+    s = raw.strip()
+    if not s:
+        return ""
+    if s.startswith("data:") and "," in s:
+        return s.split(",", 1)[1]
+    return s.lstrip()
 
 
 def _enrich_deposit_for_ui(out: dict[str, Any]) -> dict[str, Any]:
     """Thêm URL ảnh QR + object display cho modal (giống LC79)."""
+    from xoso66_deposit import qr_image_to_data_uri
+
     aid = str(out.get("account_id") or "")
     row = get_account(aid) if aid else None
     ti = out.get("transfer_info") if isinstance(out.get("transfer_info"), dict) else {}
 
+    b64 = _normalize_qr_base64_payload(out.get("qr_base64"))
+    if not b64:
+        b64 = _normalize_qr_base64_payload(ti.get("qr_base64"))
+    uri = ti.get("qr_data_uri")
+    if not b64 and isinstance(uri, str) and uri.startswith("data:") and "," in uri:
+        b64 = uri.split(",", 1)[1]
+    if not b64:
+        data_uri = qr_image_to_data_uri(
+            qr_path=str(out.get("qr_image_path") or ""),
+            transfer_info=ti,
+        )
+        if isinstance(data_uri, str) and "," in data_uri:
+            b64 = data_uri.split(",", 1)[1]
+    if b64:
+        out["qr_base64"] = b64
+
+    qr_image_url = ""
     qr_path = out.get("qr_image_path")
     if qr_path:
-        out["qr_image_url"] = "/qr_outputs/" + Path(str(qr_path)).name.replace("\\", "/")
+        p = Path(str(qr_path))
+        if p.is_file():
+            qr_image_url = "/qr_outputs/" + p.name.replace("\\", "/")
+    out["qr_image_url"] = qr_image_url
 
-    uri = ti.get("qr_data_uri")
-    if isinstance(uri, str) and uri.startswith("data:") and "," in uri:
-        out["qr_base64"] = uri.split(",", 1)[1]
-
-    out["message"] = "Tạo lệnh nạp tiền thành công"
+    ok = bool(out.get("ok"))
+    out["message"] = (
+        "Tạo lệnh nạp tiền thành công"
+        if ok
+        else f"Tạo lệnh nạp tiền thất bại: {out.get('error') or 'unknown'}"
+    )
     out["data"] = {
         "username": (row or {}).get("username") or aid,
         "name": ti.get("account_name") or "",
@@ -67,33 +125,96 @@ def _enrich_deposit_for_ui(out: dict[str, Any]) -> dict[str, Any]:
         "amount": out.get("amount") or ti.get("amount"),
         "msg": ti.get("transfer_content") or "",
         "transferContent": ti.get("transfer_content") or "",
-        "qr_link": out.get("qr_image_url") or ti.get("qr_url") or "",
+        "qr_link": qr_image_url,
         "qr_base64": out.get("qr_base64") or "",
         "expired": ti.get("expire_seconds") or 300,
         "pay_url": out.get("pay_url"),
         "trade_no": out.get("trade_no"),
+        # Debug để bạn test khi QR/STK/NDCK không parse được.
+        "method": out.get("method") or "",
+        "transfer_info_error": out.get("transfer_info_error") or "",
+        "deposit_raw_error": out.get("error") or "",
     }
     return out
 
 
 app = FastAPI(title="XOSO66 Accounts API", version="1.0")
 
+# CMS QuanLyChrome (port 3000) gọi API trực tiếp — không cần proxy server.js
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+        "http://0.0.0.0:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def _log_incoming_api_requests(request, call_next):
+    """Luôn in POST/PUT tới /api/* — kể cả 401, để debug CMS không thấy log."""
+    path = request.url.path or ""
+    if path.startswith("/api/") and request.method in (
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+    ):
+        client = request.client.host if request.client else "?"
+        print(
+            f"[API] ← {request.method} {path} (client={client})",
+            flush=True,
+        )
+    return await call_next(request)
+
 
 def _load_api_key() -> str:
+    env = (os.environ.get("XOSO66_API_KEY") or "").strip()
+    if env:
+        return env
+    try:
+        from xoso66_config_util import load_config
+
+        k = str(load_config().get("api_key") or "").strip()
+        if k:
+            return k
+    except Exception:
+        pass
     if _CONFIG.is_file():
         try:
             return str(json.loads(_CONFIG.read_text(encoding="utf-8")).get("api_key") or "").strip()
         except Exception:
             pass
-    return (os.environ.get("XOSO66_API_KEY") or "").strip()
+    return ""
 
 
-def require_api_key(x_api_key: str | None = Header(None, alias="X-API-Key")) -> None:
+def require_api_key(
+    request: Request,
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+) -> None:
     expected = _load_api_key()
     if not expected:
         return
-    if x_api_key != expected:
-        raise HTTPException(status_code=401, detail="API key không hợp lệ")
+    got = (x_api_key or "").strip()
+    if got == expected:
+        return
+    # CMS QuanLyChrome / proxy local hay quên gửi header — chỉ cho loopback.
+    client = (request.client.host if request.client else "") or ""
+    if not got and client in ("127.0.0.1", "::1"):
+        return
+    got_disp = f"{got[:4]}…{got[-2:]}" if len(got) >= 8 else (got or "(trống)")
+    exp_disp = (
+        f"{expected[:4]}…{expected[-2:]}" if len(expected) >= 8 else expected
+    )
+    print(
+        f"[API] 401 X-API-Key không hợp lệ (got={got_disp}, expected={exp_disp}, client={client})",
+        flush=True,
+    )
+    raise HTTPException(status_code=401, detail="API key không hợp lệ")
 
 
 class AccountCreate(BaseModel):
@@ -562,6 +683,10 @@ def _run_deposit(account_id: str, amount: int) -> dict[str, Any]:
     from xoso66_accounts_db import username_for_log
     from xoso66_config_util import load_config
 
+    print(
+        f"[DEPOSIT] bắt đầu account_id={account_id} amount={amount}",
+        flush=True,
+    )
     cfg = load_config()
     ad = cfg.get("auto_deposit") if isinstance(cfg.get("auto_deposit"), dict) else {}
     use_handler = bool(ad.get("handler_enabled", True))
@@ -652,6 +777,10 @@ def _run_refresh(account_id: str, force_login: bool) -> None:
 @app.post("/api/deposit", dependencies=[Depends(require_api_key)])
 def api_deposit(body: DepositBody, bg: BackgroundTasks) -> dict[str, Any]:
     """Nạp QRPay — wait=True trả pay_url / QR (mặc định cho UI)."""
+    print(
+        f"[API] /api/deposit account_id={body.account_id} amount={body.amount} wait={body.wait}",
+        flush=True,
+    )
     if body.wait:
         try:
             out = _run_deposit(body.account_id, body.amount)
@@ -905,6 +1034,10 @@ def api_auto_deposit(body: AutoDepositBody) -> dict[str, Any]:
     """Xếp lệnh auto nạp (100k mặc định) — handler + bên thứ 3."""
     from xoso66_auto_deposit import can_create_deposit_order, default_amount, enqueue_deposit
 
+    print(
+        f"[API] /api/auto-deposit account_id={body.account_id} amount={body.amount} reason={body.reason!r}",
+        flush=True,
+    )
     if not get_account(body.account_id):
         raise HTTPException(404, "Không tìm thấy account")
     if not can_create_deposit_order(body.account_id):
@@ -1119,6 +1252,7 @@ def run_api_server(host: str, port: int) -> None:
 
     from xoso66_shutdown import clear_api_server, register_api_server, stopping
 
+    configure_stdio_utf8()
     _mount_static_assets()
     config = uvicorn.Config(
         app,

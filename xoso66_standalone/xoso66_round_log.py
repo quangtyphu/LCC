@@ -119,10 +119,16 @@ def _side_abbr(side: str) -> str:
     return "T" if s in ("tai", "tài", "big") else "X"
 
 
-def log_ws_connecting(username: str) -> None:
-    """Giống LC79 — báo ngay khi token OK, trước khi WS connect."""
+def log_ws_connecting(username: str, *, user_token_ok: bool | None = None) -> None:
+    """Trước khi WS connect — phân biệt ws_token vs user-token ping."""
     user = str(username or "?").strip()
-    print(f"🔐 [{user}] token OK, kết nối WS", flush=True)
+    if user_token_ok is False:
+        print(
+            f"🔐 [{user}] ws_token OK — user-token chưa ping OK, vẫn mở WS",
+            flush=True,
+        )
+    else:
+        print(f"🔐 [{user}] token OK, kết nối WS", flush=True)
 
 
 def log_ws_connected(username: str, *, account_id: str = "") -> None:

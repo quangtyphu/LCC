@@ -75,6 +75,26 @@ def api_deposit():
         traceback.print_exc()
         return jsonify({"ok": False, "error": f"Lỗi server: {error_msg}"}), 500
 
+
+@app.route('/api/deposit/send-third-party', methods=['POST'])
+def api_deposit_send_third_party():
+    """CMS: gửi lệnh nạp đã tạo (popup QR) cho bên thứ 3."""
+    try:
+        from third_party_deposit_handler import send_existing_order_to_third_party
+
+        data = request.get_json() or {}
+        username = (data.get('username') or '').strip()
+        if not username:
+            return jsonify({"ok": False, "error": "Thiếu username"}), 400
+        result = send_existing_order_to_third_party(username, data)
+        if not result.get("ok"):
+            return jsonify(result), 500
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": f"Lỗi server: {e}"}), 500
+
 import os
 import sys
 os.environ['PYTHONUNBUFFERED'] = '1'

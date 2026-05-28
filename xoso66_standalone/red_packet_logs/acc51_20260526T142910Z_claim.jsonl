@@ -1,0 +1,5 @@
+{"start": true, "user": "tivi360", "proxy": "14.224.225.153:18813 (socks5, user valentine)", "balance": "118308"}
+{"t": 1779805772.5688345, "step": "network_info", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779805776.2773263, "step": "click_rain", "x": 700, "y": 450}
+{"t": 1779805800.8381088, "step": "grab_ui", "ok": false, "code": null, "msg": null, "via": "ui", "raw": {}}
+{"t": 1779805804.0238714, "step": "getredpacketinfo", "ok": true, "code": 1, "msg": "Hoàn tất", "isNew": 0, "list": [], "red_notify": [], "packet_id": null, "raw": {"code": 1, "msg": "Hoàn tất", "time": 1779805804, "v": null, "data": {"list": [], "isNew": 0, "red_notify": []}}}

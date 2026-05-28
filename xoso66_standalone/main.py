@@ -8,8 +8,8 @@ XOSO66 — entry point (một file chạy tất cả, giống LC79 main.py).
 
 Khởi động:
   - Startup checks: balance + token mọi acc «Đang Chơi» (xoso66_startup_checks.py)
-  - SQLite (data/xoso66.db)
-  - CMS API FastAPI (đăng ký, CRUD, nạp, rút, refresh session)
+  - SQLite CMS (Documents/CMS/game_data/xoso66.db)
+  - CMS API Node (QuanLyChrome) hoặc FastAPI backup (:8799)
   - Worker nền (session health) + WS mini-game (game_worker_enabled)
 
 CMS gọi API tại http://<api_host>:<api_port>  (mặc định 0.0.0.0:8799)
@@ -35,6 +35,9 @@ os.chdir(_ROOT)
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from xoso66_paths import apply_default_env
+
+apply_default_env()
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 from xoso66_config_util import configure_stdio_utf8
 
@@ -247,52 +250,24 @@ def main() -> int:
     quiet = startup_quiet(cfg)
 
     if not quiet:
+        from xoso66_accounts_db import DB_PATH
+
         print("=" * 60, flush=True)
         print("XOSO66 — khởi động (main.py)", flush=True)
-        print("  DB: data/xoso66.db", flush=True)
+        print(f"  DB: {DB_PATH}", flush=True)
         print(f"  Config: {os.environ.get('XOSO66_CONFIG', 'xoso66_config.json')}", flush=True)
         print("=" * 60, flush=True)
 
-    if cfg.get("game_worker_enabled"):
-        from xoso66_ws_pool import prime_ws_pool_selection
+    if cfg.get("game_worker_enabled") and not str(
+        os.environ.get("XOSO66_SKIP_WS_PRIME", "")
+    ).strip() in ("1", "true", "yes"):
+        from xoso66_ws_pool import prime_ws_pool_selection, sync_exhausted_dang_choi_to_du_ngay
 
         try:
+            sync_exhausted_dang_choi_to_du_ngay(cfg)
             prime_ws_pool_selection(cfg)
         except Exception as e:
             print(f"[MAIN] Chưa chọn được pool WS: {e}", flush=True)
-
-    from xoso66_startup_checks import run_startup_checks_for_playing_accounts
-
-    scfg = cfg.get("startup_checks") if isinstance(cfg.get("startup_checks"), dict) else {}
-    if scfg.get("startup_async") and not quiet:
-        print(
-            "[MAIN] ⚠ startup_async=true: API lên trước khi check balance/token xong. "
-            "Nên đặt startup_async=false.",
-            flush=True,
-        )
-    try:
-        if scfg.get("startup_async"):
-            def _startup_bg() -> None:
-                try:
-                    run_startup_checks_for_playing_accounts(cfg)
-                except Exception as e:
-                    print(f"[STARTUP] Lỗi nền: {e}", flush=True)
-
-            threading.Thread(
-                target=_startup_bg,
-                daemon=True,
-                name="xoso66-startup-checks",
-            ).start()
-            if not quiet:
-                print(
-                    "[STARTUP] Kiểm tra balance + token «Đang Chơi» chạy nền.",
-                    flush=True,
-                )
-        else:
-            run_startup_checks_for_playing_accounts(cfg)
-    except KeyboardInterrupt:
-        print("\n[MAIN] Hủy trong startup checks.", flush=True)
-        return 130
 
     from xoso66_runtime_status import log_startup_services
 
@@ -309,6 +284,39 @@ def main() -> int:
     )
     api_thread.start()
     time.sleep(0.8)
+
+    scfg = cfg.get("startup_checks") if isinstance(cfg.get("startup_checks"), dict) else {}
+    startup_async = bool(scfg.get("startup_async")) or str(
+        os.environ.get("XOSO66_STARTUP_ASYNC", "")
+    ).strip().lower() in ("1", "true", "yes")
+
+    def _run_startup_checks() -> None:
+        from xoso66_startup_checks import run_startup_checks_for_playing_accounts
+
+        run_startup_checks_for_playing_accounts(cfg)
+
+    try:
+        if startup_async:
+            threading.Thread(
+                target=_run_startup_checks,
+                daemon=True,
+                name="xoso66-startup-checks",
+            ).start()
+            if not quiet:
+                print(
+                    "[STARTUP] Kiểm tra balance + token «Đang Chơi» chạy nền (API đã lên).",
+                    flush=True,
+                )
+        else:
+            if not quiet:
+                print(
+                    "[STARTUP] Kiểm tra balance + token «Đang Chơi» (API đã lên, chờ xong rồi mở worker)…",
+                    flush=True,
+                )
+            _run_startup_checks()
+    except KeyboardInterrupt:
+        print("\n[MAIN] Hủy trong startup checks.", flush=True)
+        return 130
 
     ad = cfg.get("auto_deposit")
     if isinstance(ad, dict) and ad.get("enabled"):

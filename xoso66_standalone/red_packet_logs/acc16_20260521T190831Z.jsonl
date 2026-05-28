@@ -1,0 +1,51 @@
+{"t": 1779390514.792836, "event": "start", "account_id": "acc16", "username": "cuhoangtoan", "balance": "130216"}
+{"t": 1779390520.8628478, "event": "mouse_click", "x": 150, "y": 120, "elapsed": 0.12}
+{"t": 1779390521.5016675, "event": "mouse_click", "x": 281, "y": 217, "elapsed": 0.76}
+{"t": 1779390522.1880658, "event": "mouse_click", "x": 412, "y": 314, "elapsed": 1.45}
+{"t": 1779390522.8812146, "event": "mouse_click", "x": 543, "y": 411, "elapsed": 2.14}
+{"t": 1779390523.668829, "event": "mouse_click", "x": 674, "y": 508, "elapsed": 2.93}
+{"t": 1779390524.3315895, "event": "mouse_click", "x": 805, "y": 605, "elapsed": 3.59}
+{"t": 1779390524.3815095, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390525.0389752, "event": "mouse_click", "x": 936, "y": 702, "elapsed": 4.3}
+{"t": 1779390525.1320791, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390525.694551, "event": "mouse_click", "x": 1067, "y": 149, "elapsed": 4.96}
+{"t": 1779390526.338358, "event": "mouse_click", "x": 1198, "y": 246, "elapsed": 5.6}
+{"t": 1779390526.9800773, "event": "mouse_click", "x": 279, "y": 343, "elapsed": 6.24}
+{"t": 1779390527.6571987, "event": "mouse_click", "x": 410, "y": 440, "elapsed": 6.92}
+{"t": 1779390528.3012362, "event": "mouse_click", "x": 541, "y": 537, "elapsed": 7.56}
+{"t": 1779390528.9924357, "event": "mouse_click", "x": 672, "y": 634, "elapsed": 8.25}
+{"t": 1779390529.6830468, "event": "mouse_click", "x": 803, "y": 731, "elapsed": 8.94}
+{"t": 1779390530.3284683, "event": "mouse_click", "x": 934, "y": 178, "elapsed": 9.59}
+{"t": 1779390531.3925958, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390531.494202, "event": "vue_grab", "result": {"step": "grab_err", "id": 18101960, "code": 1057, "msg": "Số liệu không tồn tại", "data": []}}
+{"t": 1779390531.5068202, "event": "response", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}
+{"t": 1779390533.4107141, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390533.4975145, "event": "vue_grab", "result": {"step": "grab_err", "id": 18101960, "code": 1057, "msg": "Số liệu không tồn tại", "data": []}}
+{"t": 1779390533.50994, "event": "response", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}
+{"t": 1779390535.4416354, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390535.5614314, "event": "vue_grab", "result": {"step": "grab_err", "id": 18101960, "code": 1057, "msg": "Số liệu không tồn tại", "data": []}}
+{"t": 1779390535.6077352, "event": "response", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}
+{"t": 1779390537.3796904, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390537.504971, "event": "vue_grab", "result": {"step": "grab_err", "id": 18101960, "code": 1057, "msg": "Số liệu không tồn tại", "data": []}}
+{"t": 1779390537.5261674, "event": "response", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}
+{"t": 1779390539.385776, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390539.473544, "event": "vue_grab", "result": {"step": "grab_err", "id": 18101960, "code": 1057, "msg": "Số liệu không tồn tại", "data": []}}
+{"t": 1779390539.4932065, "event": "response", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}
+{"t": 1779390541.353869, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390541.4734936, "event": "vue_grab", "result": {"step": "grab_err", "id": 18101960, "code": 1057, "msg": "Số liệu không tồn tại", "data": []}}
+{"t": 1779390541.4933395, "event": "response", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}
+{"t": 1779390543.392337, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390543.5150898, "event": "vue_grab", "result": {"step": "grab_err", "id": 18101960, "code": 1057, "msg": "Số liệu không tồn tại", "data": []}}
+{"t": 1779390543.530587, "event": "response", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}
+{"t": 1779390545.3213377, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390545.4256916, "event": "vue_grab", "result": {"step": "grab_err", "id": 18101960, "code": 1057, "msg": "Số liệu không tồn tại", "data": []}}
+{"t": 1779390545.441361, "event": "response", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}
+{"t": 1779390547.2251189, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390547.3319314, "event": "vue_grab", "result": {"step": "grab_err", "id": 18101960, "code": 1057, "msg": "Số liệu không tồn tại", "data": []}}
+{"t": 1779390547.347669, "event": "response", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}
+{"t": 1779390549.1668613, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390549.2720363, "event": "vue_grab", "result": {"step": "grab_err", "id": 18101960, "code": 1057, "msg": "Số liệu không tồn tại", "data": []}}
+{"t": 1779390549.289762, "event": "response", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}
+{"t": 1779390551.1681316, "event": "response", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779390551.2728226, "event": "vue_grab", "result": {"step": "grab_err", "id": 18101960, "code": 1057, "msg": "Số liệu không tồn tại", "data": []}}
+{"t": 1779390551.2884977, "event": "response", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}

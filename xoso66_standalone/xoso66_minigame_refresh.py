@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -45,6 +46,36 @@ AUTH_FAIL_MSG = re.compile(
     r"token|phiên|phien|login|đăng nhập|dang nhap|hết hạn|het han|unauthorized",
     re.I,
 )
+
+_urgent_token_refresh_lock = threading.Lock()
+_urgent_token_refresh: dict[str, str] = {}
+_urgent_token_refresh_event = threading.Event()
+
+
+def request_urgent_token_refresh(
+    account_id: str,
+    *,
+    game_key: str = "taixiu_dai_loc",
+) -> None:
+    """Đánh thức luồng TOKEN maintain — refresh ngay (không chờ 30 phút)."""
+    aid = str(account_id or "").strip()
+    if not aid:
+        return
+    with _urgent_token_refresh_lock:
+        _urgent_token_refresh[aid] = str(game_key or "taixiu_dai_loc")
+    _urgent_token_refresh_event.set()
+
+
+def pop_urgent_token_refresh_ids() -> dict[str, str]:
+    """account_id → game_key; rỗng nếu không có yêu cầu urgent."""
+    if not _urgent_token_refresh_event.is_set():
+        return {}
+    with _urgent_token_refresh_lock:
+        out = dict(_urgent_token_refresh)
+        _urgent_token_refresh.clear()
+        if not _urgent_token_refresh:
+            _urgent_token_refresh_event.clear()
+    return out
 
 
 def is_minigame_session_error(code: Any = None, msg: str = "") -> bool:
@@ -126,11 +157,25 @@ def _parse_user_token_issued_at(token: str) -> float | None:
         raw = int(parts[1])
     except ValueError:
         return None
-    if raw > 10_000_000_000_000:
+    if raw > 1_000_000_000_000:
         return raw / 1000.0
-    if raw > 10_000_000_000:
+    if raw > 1_000_000_000:
         return float(raw)
     return None
+
+
+def _user_token_age_display_sec(age_tok: float | None) -> float | None:
+    """Ẩn tuổi token parse sai (âm hoặc quá lớn so với max_age)."""
+    if age_tok is None:
+        return None
+    try:
+        a = float(age_tok)
+    except (TypeError, ValueError):
+        return None
+    cap = float(USER_TOKEN_MAX_AGE_SEC) * 3
+    if a < 0 or a > cap:
+        return None
+    return a
 
 
 def _user_token_age_ok(mg: dict) -> bool:
@@ -143,13 +188,27 @@ def _user_token_age_ok(mg: dict) -> bool:
         return False
 
 
+def batch_gamename_candidates(
+    *,
+    gamename: str | None = None,
+    sub_game_code: str | None = None,
+) -> list[str]:
+    """Thử lần lượt — game 9 hay lệch dice_md5 vs dice2."""
+    names: list[str] = []
+    for x in (gamename, sub_game_code):
+        s = str(x or "").strip()
+        if s and s not in names:
+            names.append(s)
+    return names or ["lobby"]
+
+
 def _batch_request_ping(
     session: dict,
     *,
     game_id: int = 9,
     gamename: str = "lobby",
     timeout: int = 12,
-) -> tuple[int, dict[str, Any]]:
+) -> tuple[int, Any]:
     return minigame_request(
         session,
         "POST",
@@ -164,11 +223,46 @@ def _batch_request_ping(
     )
 
 
+def _batch_request_ping_ok(status: int, js: Any) -> tuple[bool, Any, str]:
+    """batchRequest có thể trả {code:1} hoặc [{code:1}, …] — tránh ping code=None."""
+    if status != 200:
+        return False, None, f"HTTP {status}"
+    if isinstance(js, dict):
+        if js.get("code") == 1:
+            return True, js.get("code"), str(js.get("msg") or "")
+        data = js.get("data")
+        if isinstance(data, list) and data:
+            ok = all(isinstance(x, dict) and x.get("code") == 1 for x in data)
+            first = data[0] if data else {}
+            return (
+                ok,
+                first.get("code") if isinstance(first, dict) else js.get("code"),
+                str(js.get("msg") or "")[:200],
+            )
+        return (
+            False,
+            js.get("code"),
+            str(js.get("msg") or js.get("_raw") or "batch dict fail")[:200],
+        )
+    if isinstance(js, list):
+        if not js:
+            return False, None, "batch rỗng"
+        ok = all(isinstance(x, dict) and x.get("code") == 1 for x in js)
+        first = js[0] if js else {}
+        return (
+            ok,
+            first.get("code") if isinstance(first, dict) else None,
+            "batch list fail" if not ok else "",
+        )
+    return False, None, str(js)[:200]
+
+
 def ping_user_token(
     session: dict,
     *,
     game_id: int = 9,
     gamename: str = "lobby",
+    sub_game_code: str | None = None,
 ) -> dict[str, Any]:
     """
     Kiểm tra nhanh (~1–2s): user-token + cookie CF còn dùng được không.
@@ -179,15 +273,29 @@ def ping_user_token(
         return {"ok": False, "reason": "thiếu user_token trong session"}
     if not (mg.get("cookies") or {}).get("cf_clearance"):
         return {"ok": False, "reason": "thiếu cf_clearance — chạy refresh_minigame_cf"}
-    status, js = _batch_request_ping(session, game_id=game_id, gamename=gamename)
-    ok = status == 200 and isinstance(js, dict) and js.get("code") == 1
-    return {
-        "ok": ok,
-        "http_status": status,
-        "code": js.get("code") if isinstance(js, dict) else None,
-        "msg": js.get("msg") if isinstance(js, dict) else str(js)[:200],
-        "auth_error": _is_auth_error(js) if isinstance(js, dict) else False,
+    sub = sub_game_code or mg.get("sub_game_code")
+    last: dict[str, Any] = {
+        "ok": False,
+        "http_status": 0,
+        "code": None,
+        "msg": "batchRequest fail",
+        "auth_error": False,
     }
+    for gn in batch_gamename_candidates(gamename=gamename, sub_game_code=sub):
+        status, js = _batch_request_ping(session, game_id=game_id, gamename=gn)
+        ok, code, msg = _batch_request_ping_ok(status, js)
+        last = {
+            "ok": ok,
+            "http_status": status,
+            "code": code,
+            "msg": msg or None,
+            "gamename": gn,
+            "auth_error": _is_auth_error(js) if isinstance(js, dict) else False,
+        }
+        if ok:
+            mg["gamename"] = gn
+            return last
+    return last
 
 
 def user_token_status(
@@ -212,10 +320,13 @@ def user_token_status(
     age_tok = (now - issued) if issued else None
     gid = int(game_id if game_id is not None else mg.get("last_game_id") or 9)
     gname = str(gamename or mg.get("gamename") or "lobby")
+    sub = str(mg.get("sub_game_code") or "") or None
     if not tok:
         ping: dict[str, Any] = {"ok": False, "reason": "thiếu token"}
     elif do_ping:
-        ping = ping_user_token(session, game_id=gid, gamename=gname)
+        ping = ping_user_token(
+            session, game_id=gid, gamename=gname, sub_game_code=sub
+        )
     else:
         ping = {"ok": None, "skipped": "do_ping=False — chỉ xem tuổi, chưa hỏi server"}
     proactive = float(
@@ -247,10 +358,11 @@ def ensure_user_token_for_bet(
     *,
     game_key: str = "taixiu_dai_loc",
     allow_slow_refresh: bool = False,
+    auto_refresh_on_fail: bool = True,
 ) -> tuple[bool, str]:
     """
     Trước placeOrder: ping batchRequest đúng game_id. Thử refresh CF nhanh (curl).
-    Playwright chỉ khi allow_slow_refresh=True.
+    gameurl → form_token → Playwright khi auto_refresh_on_fail hoặc allow_slow_refresh.
     Trả (ready, message).
     """
     from xoso66_minigame_catalog import game_by_key
@@ -260,8 +372,17 @@ def ensure_user_token_for_bet(
     gid = int(g["game_id"])
     gname = str(g.get("gamename") or "lobby")
 
+    sub_code = str(g.get("sub_game_code") or "dice2")
+
     def _ping_ok() -> bool:
-        return bool(ping_user_token(session, game_id=gid, gamename=gname).get("ok"))
+        return bool(
+            ping_user_token(
+                session,
+                game_id=gid,
+                gamename=gname,
+                sub_game_code=sub_code,
+            ).get("ok")
+        )
 
     if _ping_ok():
         return True, "user-token OK"
@@ -272,8 +393,8 @@ def ensure_user_token_for_bet(
             session,
             game_id=gid,
             gamename=gname,
-            allow_playwright=False,
-            timeout=8,
+            allow_playwright=True,
+            timeout=int(os.environ.get("XOSO66_CF_BET_TIMEOUT", "30")),
         )
 
     if _ping_ok():
@@ -281,9 +402,8 @@ def ensure_user_token_for_bet(
             persist_session(account_id, session)
         return True, "OK sau refresh CF cookie"
 
-    # HTTP gameurl (~3–8s) — không Playwright; xử lý token chết giữa startup và cửa cược.
+    # HTTP gameurl (~3–8s) trước Playwright đầy đủ.
     nav_id = int(g.get("nav_id") or 45)
-    sub_code = str(g.get("sub_game_code") or "dice2")
     gu = refresh_user_token_via_gameurl(
         session,
         nav_id=nav_id,
@@ -296,7 +416,15 @@ def ensure_user_token_for_bet(
             persist_session(account_id, session)
         return True, "OK sau refresh gameurl"
 
-    if allow_slow_refresh:
+    do_full_refresh = bool(allow_slow_refresh or auto_refresh_on_fail)
+    if do_full_refresh:
+        from xoso66_accounts_db import username_for_log
+
+        user = username_for_log(account_id, session)
+        print(
+            f"[TOKEN] {user} ping fail — refresh đầy đủ (CF/user/ws) trước cược…",
+            flush=True,
+        )
         rep = refresh_minigame_tokens(
             session,
             account_id=account_id,
@@ -304,19 +432,122 @@ def ensure_user_token_for_bet(
             force=True,
             ws_only=False,
         )
-        from xoso66_session import persist_session
+        if account_id:
+            persist_session(account_id, session)
+        if _ping_ok():
+            return True, "OK sau refresh đầy đủ (ping OK)"
+        err = str(
+            rep.get("warn")
+            or rep.get("error")
+            or rep.get("msg")
+            or "refresh xong vẫn ping fail"
+        )
+        if account_id:
+            request_urgent_token_refresh(account_id, game_key=game_key)
+        ping = ping_user_token(
+            session, game_id=gid, gamename=gname, sub_game_code=sub_code
+        )
+        return False, _format_user_token_fail_message(
+            account_id,
+            ping=ping,
+            session=session,
+            extra_err=err,
+            queued_urgent=True,
+        )
 
-        persist_session(account_id, session)
-        if rep.get("ok") and ping_user_token(session, game_id=gid, gamename=gname).get("ok"):
-            return True, "OK sau refresh đầy đủ"
-        return False, str(rep.get("error") or rep.get("msg") or "refresh xong vẫn ping fail")
+    if account_id:
+        request_urgent_token_refresh(account_id, game_key=game_key)
 
-    ping = ping_user_token(session, game_id=gid, gamename=gname)
+    ping = ping_user_token(
+        session, game_id=gid, gamename=gname, sub_game_code=sub_code
+    )
+    return False, _format_user_token_fail_message(
+        account_id,
+        ping=ping,
+        session=session,
+        queued_urgent=bool(account_id),
+    )
+
+
+def prep_tokens_before_ws(
+    session: dict,
+    account_id: str,
+    *,
+    game_key: str = "taixiu_dai_loc",
+    force_ws: bool = False,
+) -> dict[str, Any]:
+    """
+    Trước mở WS: ping user-token một lần; fail → refresh (gameurl → đầy đủ).
+    Sau đó lấy ws_token nếu thiếu/hết hạn hoặc force_ws. Lưu DB.
+    """
+    from xoso66_session import persist_session
+
+    aid = str(account_id or session.get("id") or "").strip()
+    g = game_by_key(game_key)
+    gid = int(g["game_id"])
+    gname = str(g.get("gamename") or "lobby")
+
+    ok_user, msg = ensure_user_token_for_bet(
+        session,
+        aid,
+        game_key=game_key,
+        allow_slow_refresh=True,
+        auto_refresh_on_fail=True,
+    )
+    if not ok_user:
+        if aid:
+            persist_session(aid, session)
+        return {
+            "ok": False,
+            "ping_ok": False,
+            "user_token_ok": False,
+            "error": msg,
+        }
+
+    mg = get_minigame(session)
+    need_ws = bool(force_ws) or not mg.get("ws_token") or not _ws_token_age_ok(mg)
+    ws_report: dict[str, Any] = {"ok": True, "skipped": "ws_token còn hạn"}
+    if need_ws:
+        ws_gn = str(mg.get("gamename") or g.get("sub_game_code") or gname)
+        ws_report = fetch_ws_token(session, game_id=gid, gamename=ws_gn)
+        if not ws_report.get("ok") and ws_report.get("need_user_token_refresh"):
+            ensure_user_token_for_bet(
+                session,
+                aid,
+                game_key=game_key,
+                allow_slow_refresh=True,
+                auto_refresh_on_fail=True,
+            )
+            ws_report = fetch_ws_token(session, game_id=gid, gamename=ws_gn)
+
+    if aid:
+        persist_session(aid, session)
+
+    ok_ws = bool(ws_report.get("ok"))
+    return {
+        "ok": ok_ws,
+        "ping_ok": True,
+        "user_token_ok": True,
+        "has_ws_token": bool(get_minigame(session).get("ws_token")),
+        "ws_token": ws_report,
+        "msg": msg,
+        "error": None if ok_ws else (ws_report.get("error") or ws_report.get("msg") or "ws_token fail"),
+    }
+
+
+def _format_user_token_fail_message(
+    account_id: str,
+    *,
+    ping: dict[str, Any],
+    session: dict,
+    extra_err: str = "",
+    queued_urgent: bool = False,
+) -> str:
     st = user_token_status(session, do_ping=False)
     age_db = st.get("age_db_sec")
-    age_tok = st.get("age_token_sec")
+    age_tok = _user_token_age_display_sec(st.get("age_token_sec"))
     if not st.get("has_token"):
-        return False, f"thiếu user-token — chạy xoso66_minigame_refresh.py -a {account_id} --force"
+        return f"thiếu user-token — chạy xoso66_minigame_refresh.py -a {account_id} --force"
     parts = [
         f"user-token không dùng được (ping code={ping.get('code')} {ping.get('msg')})",
     ]
@@ -324,11 +555,15 @@ def ensure_user_token_for_bet(
         parts.append(f"age_db={age_db:.0f}s")
     if age_tok is not None:
         parts.append(f"age_token={age_tok:.0f}s")
-    parts.append(
-        f"Refresh nền: python xoso66_minigame_refresh.py -a {account_id} --force "
-        f"(Playwright ~vài phút — không kịp cửa cược 12–20s)"
-    )
-    return False, ". ".join(parts)
+    if extra_err:
+        parts.append(extra_err)
+    if queued_urgent:
+        parts.append("đã lên lịch refresh user-token nền (TOKEN maintain)")
+    else:
+        parts.append(
+            f"Refresh: python xoso66_minigame_refresh.py -a {account_id} --force"
+        )
+    return ". ".join(parts)
 
 
 def _ws_token_age_ok(mg: dict) -> bool:
@@ -372,7 +607,7 @@ def refresh_minigame_cf(
 
         r = cffi_requests.get(
             url,
-            impersonate=os.environ.get("XOSO66_CF_IMPERSONATE", "chrome131"),
+            impersonate=os.environ.get("XOSO66_CF_IMPERSONATE", "chrome120"),
             headers={
                 "user-agent": ua,
                 "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -396,20 +631,31 @@ def refresh_minigame_cf(
     except Exception as e:
         steps.append({"method": "curl_cffi", "ok": False, "error": str(e)})
 
-    if not allow_playwright or sys.platform.startswith("win"):
+    from xoso66_playwright_ctx import _in_running_asyncio
+
+    win_no_pw = sys.platform.startswith("win") and _in_running_asyncio()
+    if not allow_playwright or win_no_pw:
         ok = bool((mg.get("cookies") or {}).get("cf_clearance"))
-        if not ok and sys.platform.startswith("win"):
+        if not ok and win_no_pw:
             steps.append(
                 {
                     "method": "playwright_minigame",
                     "ok": False,
-                    "skipped": "Windows — dùng curl_cffi; không gọi Playwright từ asyncio",
+                    "skipped": "Windows+asyncio — dùng curl_cffi hoặc TOKEN maintain nền",
+                }
+            )
+        elif not ok and not allow_playwright:
+            steps.append(
+                {
+                    "method": "playwright_minigame",
+                    "ok": False,
+                    "skipped": "allow_playwright=False",
                 }
             )
         return {
             "ok": ok,
             "steps": steps,
-            "playwright_skipped": True,
+            "playwright_skipped": bool(win_no_pw or not allow_playwright),
         }
 
     try:
@@ -658,13 +904,16 @@ def refresh_user_token_via_gameurl(
             {"method": "game/subgameList", "params": {}},
         ],
     )
-    if batch_js.get("code") != 1:
+    batch_ok, batch_code, batch_msg = _batch_request_ping_ok(status, batch_js)
+    if not batch_ok:
         return {
             "ok": False,
             "method": "gameurl",
             "error": "batchRequest sau gameurl thất bại",
-            "batch_code": batch_js.get("code"),
-            "batch_msg": batch_js.get("msg"),
+            "batch_code": batch_code,
+            "batch_msg": batch_msg or (
+                batch_js.get("msg") if isinstance(batch_js, dict) else str(batch_js)[:120]
+            ),
             "user_token": tok[:24] + "...",
         }
 
@@ -904,6 +1153,34 @@ def refresh_user_token_playwright(
             except Exception:
                 page.wait_for_timeout(5_000)
 
+            aid = str(session.get("id") or "").strip()
+            if aid:
+                from xoso66_accounts_db import username_for_log
+                from xoso66_red_packet import red_packet_cfg, try_claim_red_packet_on_home_page
+
+                rp_cfg = red_packet_cfg()
+                if rp_cfg.get("enabled") and rp_cfg.get("on_playwright_token"):
+                    user = username_for_log(aid)
+                    print(
+                        f"[TOKEN-PW] {user} | /home/ xong → thu li xi (piggyback)",
+                        flush=True,
+                    )
+                    rp_rep = try_claim_red_packet_on_home_page(
+                        page,
+                        session,
+                        aid,
+                        persist=True,
+                    )
+                    steps.append(
+                        {
+                            "step": "red_packet_on_home",
+                            "claimed": rp_rep.get("claimed"),
+                            "amount_received": rp_rep.get("amount_received"),
+                            "skipped": rp_rep.get("skipped"),
+                            "reason": rp_rep.get("reason"),
+                        }
+                    )
+
             for open_url in urls_to_open:
                 if captured and mg.get("user_token"):
                     break
@@ -1051,10 +1328,23 @@ def refresh_minigame_tokens(
         ws_report = fetch_ws_token(session, game_id=game_id, gamename=gamename)
         report["ws_token"] = ws_report
 
-    report["ok"] = bool(ws_report.get("ok") and mg.get("user_token"))
+    ping_chk = ping_user_token(
+        session,
+        game_id=game_id,
+        gamename=gamename,
+        sub_game_code=sub_game_code,
+    )
+    report["ping_ok"] = bool(ping_chk.get("ok"))
+    report["ok"] = bool(ws_report.get("ok") and ping_chk.get("ok"))
+    if ws_report.get("ok") and mg.get("user_token") and not ping_chk.get("ok"):
+        report["warn"] = (
+            f"ws_token OK nhưng user-token ping fail "
+            f"(code={ping_chk.get('code')} {ping_chk.get('msg')})"
+        )
     report["minigame"] = {
         "has_user_token": bool(mg.get("user_token")),
         "has_ws_token": bool(mg.get("ws_token")),
+        "ping_ok": report["ping_ok"],
         "ws_url": mg.get("ws_url"),
         "balance_hint": mg.get("balance"),
     }

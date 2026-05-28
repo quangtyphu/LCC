@@ -1,7 +1,0 @@
-﻿python : ─É─âng k├╜: user=qcio1a5mwb phone=949610244 name=TRAN VAN A
-At C:\Users\Quang\AppData\Local\Temp\ps-script-fd8797ef-db2d-4164-8e7f-5ebd5ce1d5ee.ps1:78 char:84
-+ ... ODING='utf-8'; python c168_register.py --random --headed 2>&1 | Out-F ...
-+                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (─É─âng k├╜: use...name=TRAN VAN A:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 

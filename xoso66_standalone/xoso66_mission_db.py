@@ -315,6 +315,7 @@ def force_daily_done_bet_to_account_total(account_id: str) -> int:
             """,
             (total, today, now, str(account_id).strip(), username),
         )
+    set_daily_bet_from_mission_api(account_id, total)
     return total
 
 
@@ -324,17 +325,38 @@ def persist_mission_state(
     levels: list[dict[str, Any]],
     *,
     phase: str = "list",
+    sync_accounts_daily_bet: bool | None = None,
 ) -> dict[str, Any]:
     """
-    Lưu account_missions + ghi đè accounts.daily_bet_total từ done_bet_money (161).
-    Gọi sau mission/list và sau nhận thưởng.
+    Lưu account_missions; có thể ghi accounts.daily_bet_total từ done_bet_money (161).
+
+    sync_accounts_daily_bet:
+      None (mặc định): ghi accounts khi done_bet >= tổng cược ngày, hoặc done_bet = 888888.
+      (tránh poll 1..14 làm tụt DB khi API 161 chậm).
+      True: luôn ghi theo API; False: không đụng accounts.daily_bet_total.
     """
+    from xoso66_accounts_db import daily_bet_today_vnd, get_account
+
+    from xoso66_daily_mission_check import is_daily_161_complete_sentinel
+
     snap = upsert_mission_snapshot(username, account_id, levels)
     daily_bet = int(snap.get("daily_done_bet_money") or 0)
-    set_daily_bet_from_mission_api(account_id, daily_bet)
+    row = get_account(str(account_id).strip()) or {}
+    db_total = int(daily_bet_today_vnd(row))
+    should_sync = sync_accounts_daily_bet
+    if is_daily_161_complete_sentinel(daily_bet):
+        should_sync = True
+    elif should_sync is None:
+        should_sync = not (db_total > 0 and daily_bet < db_total)
+    if should_sync:
+        set_daily_bet_from_mission_api(account_id, daily_bet)
+        accounts_total = daily_bet
+    else:
+        accounts_total = db_total
     snap["db_path"] = str(DB_PATH.resolve())
     snap["save_phase"] = phase
-    snap["accounts_daily_bet_total"] = daily_bet
+    snap["accounts_daily_bet_total"] = accounts_total
+    snap["accounts_daily_bet_synced"] = should_sync
     return snap
 
 

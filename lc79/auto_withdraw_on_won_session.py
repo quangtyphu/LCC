@@ -17,7 +17,7 @@ if sys.platform == 'win32':
 
 # ================= CONSTANTS =================
 API_BASE = "http://127.0.0.1:3000"
-WITHDRAW_AMOUNTS = [200000, 300000, 500000, 1000000, 2000000]  # VND
+WITHDRAW_AMOUNTS = [200000, 300000, 500000]  # VND
 import os as _os
 
 _QUEUE_DIR = _os.path.dirname(_os.path.abspath(__file__))

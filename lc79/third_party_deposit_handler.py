@@ -215,6 +215,81 @@ def create_deposit_order_with_real_qr(username: str, amount: int) -> dict:
 		return {"ok": False, "error": str(e)}
 
 
+def _normalize_qr_base64(qr_base64: str, qr_image_path: str = "", qr_link: str = "") -> str:
+	"""Chuẩn hóa base64 QR; fallback đọc file hoặc tải link."""
+	qr = (qr_base64 or "").strip()
+	if qr and not qr.startswith("data:image"):
+		qr = f"data:image/png;base64,{qr}"
+	if qr:
+		return qr
+	if qr_image_path and os.path.exists(qr_image_path):
+		try:
+			import base64
+			with open(qr_image_path, "rb") as f:
+				return f"data:image/png;base64,{base64.b64encode(f.read()).decode()}"
+		except Exception as e:
+			print(f"⚠️ Không đọc được QR từ file: {e}", flush=True)
+	if qr_link:
+		try:
+			import base64
+			resp = requests.get(qr_link, timeout=10)
+			if resp.ok:
+				return f"data:image/png;base64,{base64.b64encode(resp.content).decode()}"
+		except Exception:
+			pass
+	return ""
+
+
+def send_existing_order_to_third_party(username: str, payload: dict) -> dict:
+	"""
+	Gửi lệnh nạp đã tạo (QR/NDCK có sẵn) cho bên thứ 3 — không tạo lệnh mới.
+	Dùng từ CMS khi user bấm «Gửi» trên popup thông tin nạp.
+	"""
+	order_id = payload.get("order_id") or payload.get("orderId")
+	amount = _parse_amount(payload.get("amount"))
+	if not username or not order_id:
+		return {"ok": False, "error": "Thiếu username hoặc orderId"}
+	if amount <= 0:
+		return {"ok": False, "error": "Thiếu số tiền hợp lệ"}
+
+	qr_image_path = payload.get("qr_image_path") or payload.get("qrImagePath") or ""
+	qr_link = payload.get("qr_link") or payload.get("qrLink") or ""
+	qr_base64 = _normalize_qr_base64(
+		payload.get("qr_base64") or payload.get("qrBase64") or payload.get("qr") or "",
+		qr_image_path,
+		qr_link,
+	)
+	order_data = {
+		"order_id": order_id,
+		"amount": amount,
+		"qr_base64": qr_base64,
+		"transfer_content": payload.get("transfer_content") or payload.get("transferContent") or "",
+		"account_number": payload.get("account_number") or payload.get("accountNumber") or payload.get("receiver") or "",
+		"account_holder": payload.get("account_holder") or payload.get("accountHolder") or payload.get("name") or "",
+		"qr_link": qr_link,
+		"qr_image_path": qr_image_path,
+		"bank": payload.get("bank") or payload.get("type") or "",
+	}
+
+	print(f"📤 [LC79] CMS gửi lệnh #{order_id} ({username}, {amount:,}đ) → bên thứ 3", flush=True)
+	third_party_result = send_to_third_party(username, amount, order_data)
+	if not third_party_result.get("ok"):
+		update_deposit_order_status(order_id, "Thất Bại")
+		try:
+			from auto_deposit_on_out_of_money import remove_from_deposit_cache
+			remove_from_deposit_cache(username)
+		except Exception as e:
+			print(f"⚠️ Không xóa được cache khi gửi bên thứ 3 thất bại: {e}", flush=True)
+		return third_party_result
+
+	return {
+		"ok": True,
+		"order_id": order_id,
+		"transaction_id": third_party_result.get("transaction_id"),
+		"message": "Đã gửi yêu cầu nạp tiền cho bên thứ 3",
+	}
+
+
 def send_to_third_party(username: str, amount: int, order_data: dict) -> dict:
 	"""
 	Gửi thông tin nạp tiền cho bên thứ 3 (theo format của họ).
@@ -414,6 +489,19 @@ def receive_callback():
 		"status": status,
 		"received_at": time.time()
 	}), 200
+
+
+@app.route('/send-deposit', methods=['POST'])
+def send_deposit():
+	"""Gửi lệnh nạp đã tạo cho bên thứ 3 (CMS bấm «Gửi» trên popup)."""
+	data = request.json or {}
+	username = (data.get("username") or "").strip()
+	if not username:
+		return jsonify({"ok": False, "error": "Missing username"}), 400
+	result = send_existing_order_to_third_party(username, data)
+	if not result.get("ok"):
+		return jsonify(result), 500
+	return jsonify(result), 200
 
 
 @app.route('/create-deposit', methods=['POST'])

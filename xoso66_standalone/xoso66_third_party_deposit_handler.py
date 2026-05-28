@@ -78,21 +78,22 @@ def _resolve_account(account_id: str = "", username: str = "") -> dict[str, Any]
     return None
 
 
-def _qr_to_base64(qr_path: str, pay_url: str = "") -> str:
-    if qr_path and os.path.isfile(qr_path):
-        try:
-            raw = Path(qr_path).read_bytes()
-            return f"data:image/png;base64,{base64.b64encode(raw).decode()}"
-        except Exception:
-            pass
-    if pay_url:
-        try:
-            r = requests.get(pay_url, timeout=15)
-            if r.ok:
-                return f"data:image/png;base64,{base64.b64encode(r.content).decode()}"
-        except Exception:
-            pass
-    return ""
+def _qr_to_base64(
+    qr_path: str = "",
+    *,
+    transfer_info: dict[str, Any] | None = None,
+) -> str:
+    """QR gửi bên thứ 3 — từ file/transfer_info cổng, không tải pay_url (HTML)."""
+    from xoso66_deposit import qr_image_to_data_uri
+
+    ti = transfer_info if isinstance(transfer_info, dict) else {}
+    src = str(ti.get("source_url") or "").strip()
+    hdrs = {"User-Agent": "Mozilla/5.0", "referer": src} if src else None
+    return qr_image_to_data_uri(
+        qr_path=qr_path,
+        transfer_info=ti,
+        http_headers=hdrs,
+    )
 
 
 def _bank_fields_from_deposit_result(result: dict[str, Any]) -> dict[str, str]:
@@ -139,22 +140,75 @@ def create_xoso66_deposit_order(account_id: str, amount: int) -> dict[str, Any]:
 
     ti = dep.get("transfer_info") if isinstance(dep.get("transfer_info"), dict) else {}
     trade_no = str(dep.get("trade_no") or "")
-    if trade_no:
-        from xoso66_deposit import fetch_qrpay_transfer_info, transfer_info_bank_fields
+    pay_url = str(dep.get("pay_url") or "")
+    from xoso66_deposit import (
+        fetch_qrpay_transfer_info,
+        fetch_transfer_info_from_pay_url,
+        save_qr_image,
+        transfer_info_bank_fields,
+        transfer_info_has_qr,
+        _should_use_qrpay_api,
+    )
 
-        if not transfer_info_bank_fields(ti).get("account_number"):
+    ch_id = int(dep.get("channel_id") or session.get("channel_id") or 0)
+    if not transfer_info_bank_fields(ti).get("account_number"):
+        if trade_no and _should_use_qrpay_api(trade_no, pay_url, ch_id):
             try:
                 ti = fetch_qrpay_transfer_info(trade_no, session=session)
             except Exception as e:
                 print(f"[CREATE-DEPOSIT] getWUInfo {trade_no}: {e}", flush=True)
+        elif pay_url:
+            try:
+                ti = fetch_transfer_info_from_pay_url(
+                    pay_url, amount=int(amount), session=session
+                )
+            except Exception as e:
+                print(f"[CREATE-DEPOSIT] pay_url CK: {e}", flush=True)
         if dep.get("transfer_info_error"):
             print(
                 f"[CREATE-DEPOSIT] transfer_info lần đầu: {dep.get('transfer_info_error')}",
                 flush=True,
             )
+    elif pay_url and not transfer_info_has_qr(ti):
+        try:
+            extra = fetch_transfer_info_from_pay_url(
+                pay_url, amount=int(amount), session=session
+            )
+            if isinstance(extra, dict):
+                for k, v in extra.items():
+                    if v and not ti.get(k):
+                        ti[k] = v
+                for k in ("qr_data_uri", "qr_url", "qr_base64", "qr_emv_payload", "source_url"):
+                    if extra.get(k):
+                        ti[k] = extra[k]
+        except Exception as e:
+            print(f"[CREATE-DEPOSIT] bổ sung QR từ pay_url: {e}", flush=True)
+
     from xoso66_deposit import transfer_info_bank_fields
 
     bank_fields = transfer_info_bank_fields(ti)
+
+    qr_path = str(dep.get("qr_image_path") or "")
+    use_vietqr_fb = bool(trade_no and _should_use_qrpay_api(trade_no, pay_url, ch_id))
+    try:
+        saved = save_qr_image(
+            ti,
+            aid,
+            session=session,
+            allow_vietqr_fallback=use_vietqr_fb,
+        )
+        if saved:
+            qr_path = saved
+    except Exception as e:
+        print(f"[CREATE-DEPOSIT] lưu QR: {e}", flush=True)
+
+    qr_b64 = _qr_to_base64(qr_path, transfer_info=ti)
+    if not qr_b64:
+        print(
+            f"[CREATE-DEPOSIT] [{user}] không có QR hợp lệ từ cổng — "
+            f"bên thứ 3 có thể báo «mã QR không hợp lệ»",
+            flush=True,
+        )
 
     local_id = create_deposit_order_row(
         account_id=aid,
@@ -164,13 +218,8 @@ def create_xoso66_deposit_order(account_id: str, amount: int) -> dict[str, Any]:
         trade_no=str(dep.get("trade_no") or ""),
         status="Đã tạo đơn",
         order_placed_at_ms=since_ms,
-        qr_image_path=str(dep.get("qr_image_path") or ""),
+        qr_image_path=qr_path,
         transfer_info=ti,
-    )
-
-    qr_b64 = _qr_to_base64(
-        str(dep.get("qr_image_path") or ""),
-        str(dep.get("pay_url") or ""),
     )
 
     return {
@@ -182,9 +231,10 @@ def create_xoso66_deposit_order(account_id: str, amount: int) -> dict[str, Any]:
         "order_placed_at_ms": since_ms,
         "trade_no": dep.get("trade_no"),
         "qr_base64": qr_b64,
-        "qr_image_path": dep.get("qr_image_path"),
+        "qr_image_path": qr_path,
         "pay_url": dep.get("pay_url"),
         "transfer_info": ti,
+        "qr_link": str(ti.get("qr_url") or "").strip(),
         "account_number": bank_fields["account_number"],
         "account_holder": bank_fields["account_holder"],
         "bank": bank_fields["bank"],
@@ -246,10 +296,18 @@ def _third_party_status_from_body(data: dict[str, Any]) -> str:
 
 def _release_deposit_tracking(account_id: str, order_id: int | None = None) -> None:
     """Huỷ / thất bại bên thứ 3 — xóa cache nạp, dừng poll để acc lấy lệnh mới."""
+    aid = str(account_id).strip()
     try:
-        from xoso66_auto_deposit import remove_from_deposit_cache
+        from xoso66_auto_deposit import release_deposit_reserve, remove_from_deposit_cache
 
-        remove_from_deposit_cache(str(account_id))
+        remove_from_deposit_cache(aid)
+        release_deposit_reserve(aid, clear_cache=True)
+    except Exception:
+        pass
+    try:
+        from xoso66_ws_pool import release_ws_blocks_after_deposit
+
+        release_ws_blocks_after_deposit([aid])
     except Exception:
         pass
     if order_id is not None:
@@ -279,6 +337,14 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict[st
         .strip()
         or str(order_id)
     )
+    qr_link = str(ti.get("qr_url") or order_data.get("qr_link") or "").strip()
+    if not qr_link:
+        pay = str(order_data.get("pay_url") or "").strip()
+        if pay.lower().split("?")[0].endswith((".png", ".jpg", ".jpeg", ".webp")):
+            qr_link = pay
+
+    if isinstance(qr_base64, str) and qr_base64 and not qr_base64.startswith("data:image"):
+        qr_base64 = f"data:image/png;base64,{qr_base64.lstrip()}"
 
     payload: dict[str, Any] = {
         "orderId": str(order_id),
@@ -288,7 +354,7 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict[st
         "accountNumber": acc_no,
         "accountHolder": holder,
         "bank": bank,
-        "qrLink": order_data.get("pay_url") or "",
+        "qrLink": qr_link,
         "qrImagePath": order_data.get("qr_image_path") or "",
         "receiver": acc_no,
         "name": holder,
@@ -623,15 +689,31 @@ def _create_deposit_impl() -> Any:
             amount = 100_000
 
     try:
-        from xoso66_auto_deposit import can_create_deposit_order
+        from xoso66_auto_deposit import release_deposit_reserve, try_reserve_deposit
 
-        if not can_create_deposit_order(aid):
+        if not try_reserve_deposit(aid):
             return jsonify({"error": "Đang có lệnh nạp chưa xong"}), 409
     except Exception:
-        pass
+        return jsonify({"error": "Không kiểm tra được trạng thái nạp"}), 503
 
-    result = create_xoso66_deposit_order(aid, amount)
+    try:
+        result = create_xoso66_deposit_order(aid, amount)
+    except Exception as e:
+        try:
+            from xoso66_auto_deposit import release_deposit_reserve
+
+            release_deposit_reserve(aid, clear_cache=True)
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": str(e)}), 500
+
     if not result.get("ok"):
+        try:
+            from xoso66_auto_deposit import release_deposit_reserve
+
+            release_deposit_reserve(aid, clear_cache=True)
+        except Exception:
+            pass
         try:
             print(
                 f"[CREATE-DEPOSIT] FAIL [{user}] {amount:,}đ — {result.get('error')}",
@@ -647,9 +729,9 @@ def _create_deposit_impl() -> Any:
     order_id = int(result["order_id"])
 
     try:
-        from xoso66_auto_deposit import mark_deposit_cache
+        from xoso66_auto_deposit import release_deposit_reserve
 
-        mark_deposit_cache(aid)
+        release_deposit_reserve(aid)
     except Exception:
         pass
 

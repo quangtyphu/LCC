@@ -1,0 +1,10 @@
+Log: C:\Users\Quang\Documents\LC79\benbet_standalone\capture_logs\taixiu_longmebaihai_20260523T082919Z.jsonl
+Tong: 0 | WS gui: 0 | WS nhan: 0
+
+=== LENH DAT CUOC (BET) — gui di ===
+  CHUA CO — dat cuoc tren Chrome (tab script mo) roi chay lai.
+  Hoac xem tat ca frame gui (10 cuoi):
+
+=== Phan hoi sau cuoc (neu co) ===
+
+Profile: C:\Users\Quang\Documents\LC79\benbet_standalone\capture_logs\bet_profile.json

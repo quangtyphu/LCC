@@ -1,0 +1,7 @@
+{"t": 1779391004.4849377, "event": "start", "account_id": "acc21", "username": "gianghomom", "proxy": "14.241.72.253:50427 (socks5, user valentine)"}
+{"t": 1779391013.878562, "event": "network_passive", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779391019.9689176, "event": "load_wait_done", "sec": 10.0}
+{"t": 1779391020.1446507, "event": "network_passive", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779391020.1602447, "event": "click_once", "x": 700, "y": 450}
+{"t": 1779391070.1704292, "event": "idle_done", "sec": 50}
+{"t": 1779391071.083372, "event": "screenshot", "path": "C:\\Users\\Quang\\Documents\\LC79\\xoso66_standalone\\red_packet_logs\\acc21_20260521T191750Z.png", "sec_after_click": 50}

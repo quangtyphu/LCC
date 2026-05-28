@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "origin": "wss://bpcdf.tgmeq.com",
+  "cookies": {
+    "ROUTEID": ".bacweb04",
+    "aswl_cookie": "{\"hall\":\"cb\",\"aswl_cdn\":\"Ali1\",\"stname\":\"BTCB06.flv\"}",
+    "__cflb": "02DiuFPHYJvGgeEYLPE2nLtydFoDn918p8NsCg6g28WRz",
+    "load_balancer": "212069c5054e4967894a82839e39f3ca",
+    "JSESSIONID": "79582D908C5D1548937E45BBD4783F2D",
+    "rcr": "987"
+  },
+  "h54uk_url": "wss://bpcdf.tgmeq.com/h54uk/?token=eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJodHRwczovL3d3dy5iaWtpbWV4LmNvbS93cXdycyIsInN1YiI6IndzIiwid2Vic2l0ZSI6Ik1leEFXUzA4MSIsImlwIjoiMTcxLjIzNi4xODMuMTAiLCJ1c2VyaWQiOiJlY3cyODY1YWdlbnQ4MTQ3NTY0NzAiLCJleHAiOjE3Nzk3NTAyNDR9.4hMYGY9AjpceJkRm0xnU5SA9oUooSH7PqFvWAGDuq4Q",
+  "jk17y_url": "wss://tel617.delta9968.com/jk17y/",
+  "user_id": "ecw2865agent814756470",
+  "referer": "https://bpcdf.tgmeq.com/player/webMain.jsp?dm=1&title=1",
+  "proxy": "14.224.225.153:50317:valentine:valentine",
+  "saved_at": 1779750194.1642542,
+  "username": "hoangnam47"
+}

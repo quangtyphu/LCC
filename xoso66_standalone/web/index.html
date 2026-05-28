@@ -34,16 +34,22 @@
       font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       outline: none; box-shadow: none; appearance: none; -webkit-appearance: none;
     }
+    .inline-input.field-editable {
+      color: #2c3e50;
+      border-bottom: 1px dashed #95a5a6;
+      cursor: text;
+    }
     .inline-input.field-device {
       color: #2980b9; font-weight: 600;
       border-bottom: 1px dashed #5dade2;
     }
-    .inline-input.field-proxy { color: #222; border-bottom: none; }
-    .inline-input:focus { background: rgba(41, 128, 185, 0.06); }
+    .inline-input.field-proxy { color: #1a5276; }
+    .inline-input:focus { background: rgba(41, 128, 185, 0.08); }
     .inline-input.field-device:focus { border-bottom-color: #2980b9; }
+    .inline-input.field-editable:focus { border-bottom-color: #2980b9; border-bottom-style: solid; }
     .inline-input.saving { opacity: 0.55; }
-    .inline-input.saved.field-device { color: #1e8449; border-bottom-color: #27ae60; }
-    .inline-input.saved.field-proxy { color: #1e8449; }
+    .inline-input.saved { color: #1e8449; border-bottom-color: #27ae60; }
+    .inline-input.saved.field-device { border-bottom-color: #27ae60; }
     .inline-input.error { color: #c0392b !important; border-bottom-color: #e74c3c !important; }
     select.status-select {
       width: 100%; max-width: 118px; box-sizing: border-box;
@@ -105,8 +111,13 @@
     #btnRefreshStatus:disabled { opacity: 0.6; cursor: wait; }
     body.page-payments #btnRefreshStatus { background: #2980b9; }
     body.page-payments #btnRefreshStatus:hover { background: #2471a3; }
-    th.th-proxy, td.td-proxy { width: 100px; max-width: 100px; padding: 6px 4px; }
-    th.th-device, td.td-device { width: 56px; max-width: 56px; padding: 6px 4px; }
+    th.th-proxy, td.td-proxy { width: 130px; max-width: 180px; padding: 6px 4px; }
+    th.th-device, td.td-device { width: 64px; max-width: 80px; padding: 6px 4px; }
+    th.th-phone, td.td-phone { width: 88px; max-width: 100px; padding: 6px 4px; }
+    th.th-bank, td.td-bank { width: 72px; max-width: 90px; padding: 6px 4px; }
+    th.th-stk, td.td-stk { width: 100px; max-width: 120px; padding: 6px 4px; }
+    th.th-holder, td.td-holder { width: 100px; max-width: 140px; padding: 6px 4px; }
+    td.td-inline .inline-input { white-space: normal; word-break: break-all; }
     th.th-mission, td.td-mission { min-width: 88px; font-size: 12px; }
     th.th-mini, td.td-mini { min-width: 220px; font-size: 12px; text-align: left; }
     .mini-cell-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
@@ -368,7 +379,10 @@
         <th>Số dư</th><th>Tổng nạp</th><th>Tổng rút</th><th title="Tổng rút + số dư − tổng nạp">Lợi nhuận</th><th>Tổng cược ngày</th>
         <th class="th-mission" title="Điểm danh mỗi ngày — level 161">161</th>
         <th class="th-mini" title="MINI GAME điểm danh 7 ngày">MINI GAME</th>
-        <th class="th-device">Thiết Bị</th><th class="th-proxy">Proxy</th><th>Bank</th><th>STK</th>
+        <th class="th-device" title="Sửa trực tiếp, Enter/blur để lưu">Thiết Bị</th>
+        <th class="th-proxy" title="Sửa trực tiếp">Proxy</th>
+        <th class="th-bank" title="Sửa trực tiếp (chỉ DB)">Bank</th>
+        <th class="th-stk" title="Sửa trực tiếp (chỉ DB)">STK</th>
         <th class="th-vip" title="VIP · thưởng tuần · thưởng tháng (account_vip)">VIP</th>
         <th>Nạp / Rút</th><th>Check</th><th>Sửa / Xóa</th>
       </tr>
@@ -509,6 +523,39 @@ let API_KEY = "";
 let DEFAULT_FUND_PASSWORD = "270288";
 let DEFAULT_LOGIN_PASSWORD = "Valentine1";
 
+// Chặn browser tự khôi phục scroll (hay xảy ra khi mở trong iframe / reload).
+try { if ('scrollRestoration' in history) history.scrollRestoration = 'manual'; } catch (_) {}
+
+/** Khi mở qua CMS iframe (/xoso66-api/) — mọi fetch phải qua proxy, không gọi /api/* trên :3000 */
+const API_PREFIX = (() => {
+  const p = window.location.pathname || "";
+  const i = p.indexOf("/xoso66-api");
+  return i >= 0 ? p.slice(0, i + "/xoso66-api".length) : "";
+})();
+
+const XOSO66_API_PORT = 8799;
+
+/** Origin API thật — tránh gọi nhầm :3000 khi CMS serve UI mà chưa proxy /xoso66-api */
+function apiOrigin() {
+  if (API_PREFIX) return API_PREFIX;
+  const loc = window.location;
+  const host = loc.hostname || "127.0.0.1";
+  const port = loc.port || (loc.protocol === "https:" ? "443" : "80");
+  if (
+    (host === "127.0.0.1" || host === "localhost") &&
+    String(port) !== String(XOSO66_API_PORT)
+  ) {
+    return loc.protocol + "//" + host + ":" + XOSO66_API_PORT;
+  }
+  return "";
+}
+
+function apiPath(path) {
+  const p = path.startsWith("/") ? path : "/" + path;
+  const base = apiOrigin();
+  return base ? base + p : p;
+}
+
 /** Trạng thái CMS (khớp xoso66_accounts_db + bot). */
 const ACCOUNT_STATUSES = [
   "Đang Chơi",
@@ -579,20 +626,38 @@ function apiHeaders(extra) {
   return h;
 }
 
-async function apiFetch(path, options) {
-  options = options || {};
-  const headers = apiHeaders(options.headers);
-  return fetch(path, { ...options, headers });
-}
+let _apiKeyInit = null;
 
 async function initApi() {
   try {
-    const r = await fetch("/api/ui-config");
+    const r = await fetch(apiPath("/api/ui-config"));
+    if (!r.ok) {
+      log("ui-config HTTP " + r.status + " — thiếu X-API-Key cho các API khác");
+      return;
+    }
     const c = await r.json();
-    API_KEY = c.api_key || "";
+    API_KEY = String(c.api_key || "").trim();
     if (c.default_fund_password) DEFAULT_FUND_PASSWORD = c.default_fund_password;
     if (c.default_login_password) DEFAULT_LOGIN_PASSWORD = c.default_login_password;
-  } catch (_) {}
+    if (c.needs_api_key && !API_KEY) {
+      log("Cảnh báo: API yêu cầu key nhưng ui-config không trả api_key");
+    }
+  } catch (e) {
+    log("Không tải ui-config: " + (e.message || e));
+  }
+}
+
+async function ensureApiKey() {
+  if (API_KEY) return;
+  if (!_apiKeyInit) _apiKeyInit = initApi();
+  await _apiKeyInit;
+}
+
+async function apiFetch(path, options) {
+  await ensureApiKey();
+  options = options || {};
+  const headers = apiHeaders(options.headers);
+  return fetch(apiPath(path), { ...options, headers });
 }
 
 function setFormDefaults() {
@@ -765,6 +830,11 @@ async function patchAccountField(accountId, field, value, el) {
     if ("title" in el) el.title = value;
     el.classList.add("saved");
     setTimeout(() => el.classList.remove("saved"), 1500);
+    const cmsFields = ["phone", "account_holder", "device", "proxy", "bank_name", "account_number"];
+    if (cmsFields.includes(field)) {
+      const user = data.username || accountId;
+      log("✓ [" + user + "] " + field + " → " + (value || "(trống)"));
+    }
     if (field === "status") {
       const user = data.username || accountId;
       log("✓ [" + user + "] status → " + value);
@@ -812,6 +882,13 @@ function bindStatusSelects(root) {
       patchAccountField(accountId, "status", sel.value, sel);
     });
   });
+}
+
+function renderInlineInput(accountId, field, value, extraClass) {
+  const aid = escAttr(accountId);
+  const cls = "inline-input field-editable" + (extraClass ? " " + extraClass : "");
+  return `<input type="text" class="${cls}" data-field="${escAttr(field)}" data-account-id="${aid}"`
+    + ` value="${escAttr(value ?? "")}" title="Sửa · Enter/blur lưu · Esc hủy" spellcheck="false">`;
 }
 
 function bindInlineInputs(root) {
@@ -943,17 +1020,23 @@ function resetForm() {
 async function checkConnection() {
   const el = document.getElementById("connStatus");
   try {
-    const r = await fetch("/api/health");
+    const r = await fetch(apiPath("/api/health"));
     if (!r.ok) {
-      el.innerHTML = "<b style='color:#c0392b'>API lỗi HTTP " + r.status + "</b>";
+      el.innerHTML = "<b style='color:#c0392b'>API lỗi HTTP " + r.status + "</b>"
+        + (API_PREFIX
+          ? " — thử <button type='button' onclick='parent.loadXoso66&&parent.loadXoso66()'>Tải lại XOSO66</button> hoặc POST /api/xoso66/ensure"
+          : "");
       return false;
     }
     const h = await r.json();
+    const via = apiOrigin()
+      ? ("API " + apiOrigin() + (API_PREFIX ? " (proxy CMS)" : " (CMS → :8799)"))
+      : "trực tiếp :8799";
     el.innerHTML = "<span style='color:#27ae60'>API XOSO66 OK</span> — " + (h.status || "ok")
-      + " (gọi trực tiếp, không qua CMS)";
+      + " (" + via + ")";
     return true;
   } catch (e) {
-    el.innerHTML = "<b style='color:#c0392b'>Không kết nối API. Chạy: <code>python main.py</code> rồi mở <code>http://127.0.0.1:8799/</code></b>";
+    el.innerHTML = "<b style='color:#c0392b'>Không kết nối API. Chạy: <code>python main.py</code> (hoặc CMS → XOSO66) rồi mở <code>http://127.0.0.1:8799/</code></b>";
     return false;
   }
 }
@@ -1137,13 +1220,13 @@ async function loadList() {
     if (rowCls) tr.className = rowCls;
     const id = esc(row.id);
     const user = esc(row.username);
-    const bank = esc(row.bank_name || (row.bank_code || "").toUpperCase() || "");
+    const bankDisp = row.bank_name || (row.bank_code || "").toUpperCase() || "";
     tr.innerHTML = `
       <td>${idx + 1}</td>
       <td>${esc(row.username)}</td>
-      <td>${esc(row.phone)}</td>
-      <td>${esc(row.account_holder)}</td>
-      <td class="td-status">${renderStatusSelect(id, row.status)}</td>
+      <td class="td-phone td-inline">${renderInlineInput(row.id, "phone", row.phone)}</td>
+      <td class="td-holder td-inline">${renderInlineInput(row.id, "account_holder", row.account_holder)}</td>
+      <td class="td-status">${renderStatusSelect(row.id, row.status)}</td>
       <td class="td-balance" data-balance-for="${id}">${fmtVnd(row.balance ?? 0)}</td>
       <td class="td-dep">${fmtVnd(row.total_deposit ?? 0)}</td>
       <td class="td-wd">${fmtVnd(row.total_withdraw ?? 0)}</td>
@@ -1151,10 +1234,10 @@ async function loadList() {
       <td title="${escAttr(row.daily_bet_day || "")}">${fmtVnd(dailyBetToday(row))}</td>
       <td class="td-mission">${renderDaily161Cell(row)}</td>
       <td class="td-mini">${renderMiniWeekCell(row)}</td>
-      <td class="td-device"><input type="text" class="inline-input field-device" data-field="device" data-account-id="${id}" value="${escAttr(row.device)}" title="${escAttr(row.device)}" spellcheck="false"></td>
-      <td class="td-proxy"><input type="text" class="inline-input field-proxy" data-field="proxy" data-account-id="${id}" value="${escAttr(row.proxy)}" title="${escAttr(row.proxy)}" spellcheck="false"></td>
-      <td>${bank}</td>
-      <td>${esc(row.account_number)}</td>
+      <td class="td-device td-inline">${renderInlineInput(row.id, "device", row.device, "field-device")}</td>
+      <td class="td-proxy td-inline">${renderInlineInput(row.id, "proxy", row.proxy, "field-proxy")}</td>
+      <td class="td-bank td-inline">${renderInlineInput(row.id, "bank_name", bankDisp)}</td>
+      <td class="td-stk td-inline">${renderInlineInput(row.id, "account_number", row.account_number)}</td>
       <td class="td-vip">${renderVipCell(row)}</td>
       <td><div class="cell-actions">
         <button type="button" class="btn btn-deposit btn-sm" data-dep="${id}" data-user="${user}">Nạp</button>
@@ -1272,13 +1355,41 @@ function promptAmount(label, defaultVal) {
   return n;
 }
 
+function appendQrLoadError(imgWrap) {
+  const err = document.createElement("div");
+  err.style.cssText = "padding:24px;background:#f8d7da;color:#721c24;border-radius:8px";
+  err.textContent = "\u274c Kh\u00f4ng t\u1ea3i \u0111\u01b0\u1ee3c \u1ea3nh QR";
+  imgWrap.appendChild(err);
+}
+
+function depositQrDataUri(data) {
+  const qrData = data.data || {};
+  let b64 = String(data.qr_base64 || qrData.qr_base64 || qrData.qrBase64 || "").trim();
+  if (!b64) return "";
+  if (b64.startsWith("data:image")) return b64;
+  const i = b64.indexOf("base64,");
+  if (i >= 0) b64 = b64.slice(i + 7);
+  return "data:image/png;base64," + b64;
+}
+
+function depositQrFileUrl(data) {
+  const qrData = data.data || {};
+  let url = String(data.qr_image_url || qrData.qr_link || qrData.qrLink || "").trim();
+  const pay = String(data.pay_url || qrData.pay_url || "").trim();
+  if (!url || (pay && url === pay)) return "";
+  if (/^https?:\/\//i.test(url)) {
+    if (/\.(png|jpe?g|gif|webp)(\?|$)/i.test(url) || /qr|qrcode|showqr/i.test(url)) return url;
+    return "";
+  }
+  if (url.startsWith("/")) return apiPath(url);
+  return url;
+}
+
 function showDepositQRModal(data) {
   const qrData = data.data || {};
-  let qrImageSrc = data.qr_image_url || qrData.qr_link || qrData.qrLink || "";
-  if (!qrImageSrc) {
-    const b64 = data.qr_base64 || qrData.qr_base64 || qrData.qrBase64;
-    if (b64) qrImageSrc = "data:image/png;base64," + b64;
-  }
+  const qrInline = depositQrDataUri(data);
+  const qrFileUrl = depositQrFileUrl(data);
+  let qrImageSrc = qrInline || qrFileUrl;
   const prev = document.getElementById("qrModalOverlay");
   if (prev) prev.remove();
 
@@ -1317,10 +1428,20 @@ function showDepositQRModal(data) {
     img.src = qrImageSrc;
     img.onerror = function () {
       img.remove();
-      const err = document.createElement("div");
-      err.style.cssText = "padding:24px;background:#f8d7da;color:#721c24;border-radius:8px";
-      err.textContent = "\u274c Kh\u00f4ng t\u1ea3i \u0111\u01b0\u1ee3c \u1ea3nh QR";
-      imgWrap.appendChild(err);
+      const fb = qrInline && img.src !== qrInline ? qrInline : "";
+      if (fb) {
+        const img2 = document.createElement("img");
+        img2.className = "qr-img";
+        img2.alt = "QR Code";
+        img2.src = fb;
+        img2.onerror = function () {
+          img2.remove();
+          appendQrLoadError(imgWrap);
+        };
+        imgWrap.appendChild(img2);
+        return;
+      }
+      appendQrLoadError(imgWrap);
     };
     imgWrap.appendChild(img);
   } else {
@@ -1363,7 +1484,11 @@ async function doDeposit(accountId, username) {
     });
     const data = await res.json();
     if (!res.ok) {
-      log("N\u1ea1p th\u1ea5t b\u1ea1i: " + (data.detail || data.error || res.status));
+      const msg = data.detail || data.error || res.status;
+      if (res.status === 401) {
+        log("N\u1ea1p 401: thi\u1ebfu X-API-Key — F5 trang ho\u1eb7c m\u1edf http://127.0.0.1:8799/");
+      }
+      log("N\u1ea1p th\u1ea5t b\u1ea1i: " + msg);
       return;
     }
     if (data.ok) {
@@ -2093,7 +2218,7 @@ function depositOrderQrLink(row) {
   const p = String(row.qr_image_path || "").trim().replace(/\\/g, "/");
   if (!p) return "";
   const name = p.split("/").pop();
-  return name ? `/qr_outputs/${encodeURIComponent(name)}` : "";
+  return name ? apiPath(`/qr_outputs/${encodeURIComponent(name)}`) : "";
 }
 
 async function loadDepositOrdersPage() {
@@ -2256,7 +2381,11 @@ document.getElementById("btnDepOrderNext").onclick = () => {
 
 document.getElementById("btnPayDeposit").onclick = async () => {
   const acc = await resolvePayAccountId();
-  if (!acc) return;
+  if (!acc) {
+    log("Nạp: chọn user trong ô lọc hoặc nhập username/account_id");
+    alert("Chọn user trong ô lọc hoặc nhập account");
+    return;
+  }
   showCmsPage("accounts");
   await doDeposit(acc.id, acc.username);
   showCmsPage("payments");
@@ -2287,10 +2416,55 @@ document.getElementById("btnRefreshStatus").onclick = () => refreshCurrentPage()
 updateRefreshButtonHint();
 
 (async () => {
+  const bulkLnk = document.querySelector('a[href="/bulk_register.example.csv"]');
+  if (bulkLnk) bulkLnk.href = apiPath("/bulk_register.example.csv");
   await initApi();
   setFormDefaults();
   await checkConnection();
   loadList();
+  // Khi mở menu XOSO66 lần đầu, tự cuộn xuống bảng "Danh sách" cho dễ xem
+  if (!location.hash || location.hash === "#accounts") {
+    const accTotals = document.getElementById("accListTotals");
+    if (accTotals) {
+      // Đổi thứ tự: đưa phần "Danh sách" lên trước, còn form đăng ký + đăng ký theo file xuống dưới.
+      // (Làm 1 lần để tránh nhảy loạn khi bấm các nút reload dữ liệu.)
+      try {
+        if (!window.__xoso66AccountsFormMoved) {
+          window.__xoso66AccountsFormMoved = true;
+          const accPanel = document.getElementById("pageAccounts");
+          const formTitle = document.getElementById("formTitle");
+          const tbl = document.getElementById("tbl");
+          const listH2 = Array.from(accPanel?.querySelectorAll("h2") || [])
+            .find((h) => (h.textContent || "").trim() === "Danh sách");
+          if (accPanel && formTitle && listH2 && tbl) {
+            const fragment = document.createDocumentFragment();
+            let cur = formTitle;
+            while (cur && cur !== listH2) {
+              const next = cur.nextSibling;
+              fragment.appendChild(cur);
+              cur = next;
+            }
+            // chèn form block sau bảng danh sách
+            accPanel.insertBefore(fragment, tbl.nextSibling);
+          }
+        }
+      } catch (_) {}
+
+      const doScroll = () => {
+        try {
+          const rect = accTotals.getBoundingClientRect();
+          const y = rect.top + window.scrollY - 16; // chừa chút khoảng cách
+          const top = Math.max(0, y);
+          const sc = document.scrollingElement;
+          if (sc && typeof sc.scrollTo === "function") sc.scrollTo({ top, behavior: "auto" });
+          else window.scrollTo({ top, behavior: "auto" });
+        } catch (_) {}
+      };
+      // Chạy muộn hơn để ghi đè khôi phục scroll của trình duyệt.
+      requestAnimationFrame(() => requestAnimationFrame(doScroll));
+      setTimeout(doScroll, 350);
+    }
+  }
   if (location.hash === "#payments") showCmsPage("payments");
   else if (location.hash === "#deposit-orders") showCmsPage("deposit-orders");
 })();

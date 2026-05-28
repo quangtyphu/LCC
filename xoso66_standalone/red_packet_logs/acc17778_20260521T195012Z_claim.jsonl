@@ -1,0 +1,5 @@
+{"start": true, "user": "namchung1", "proxy": "14.224.199.205:49103 (socks5, user IBSvRX)", "balance": "272954"}
+{"t": 1779393025.9370165, "step": "network_info", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779393026.0235765, "step": "click_rain", "x": 700, "y": 450}
+{"t": 1779393049.7237802, "step": "grab_ui", "ok": false, "code": null, "msg": null, "via": "ui", "raw": {}}
+{"t": 1779393052.4162776, "step": "getredpacketinfo", "ok": true, "code": 1, "msg": "Hoàn tất", "isNew": 0, "list": [], "red_notify": [], "packet_id": null, "raw": {"code": 1, "msg": "Hoàn tất", "time": 1779393053, "v": null, "data": {"list": [], "isNew": 0, "red_notify": []}}}

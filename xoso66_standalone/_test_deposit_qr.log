@@ -1,0 +1,17 @@
+﻿pay_url: https://pky.topay.cash/Index/paymain?oid=472758&sign=bb09a57cb008e78b7920795d78c4fc66
+qr_image_path: C:\Users\Quang\Documents\LC79\xoso66_standalone\qr_outputs\acc20_KHOAN5WL4LS.png
+ti qr_url: https://pky.topay.cash/static/bankcode/img/napas-jFWvg95W.webp
+ti has_qr: True
+bank: {'account_number': '21810071', 'account_holder': 'Hoang sec cong', 'bank': 'ACB - Ngan hang TMCP A Chau', 'transfer_content': 'KHOAN5WL4LS'}
+saved C:\Users\Quang\Documents\LC79\xoso66_standalone\_topay_proceed_sample.html len 7183
+
+=== 1 img tags ===
+  /static/public/img/erro.png
+
+parse_payment_page_qr: {'qr_url': 'https://pky.topay.cash/static/public/img/erro.png'}
+
+raw data keys: ['action', 'money', 'img', 'link', 'info']
+raw img: 
+raw link: https://pky.topay.cash/Index/paymain?oid=472758&sign=bb09a57cb008e78b7920795d78c4fc66
+
+qr b64 len: 9670 starts: data:image/png;base64,UklGRjwcAABXRUJQVl

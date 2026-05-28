@@ -1,0 +1,552 @@
+{
+  "total_events": 214,
+  "response_count": 64,
+  "unique_paths": [
+    "/hall/api/active/active_popRecharge/currency/VND/language/vi.json",
+    "/hall/api/active/category",
+    "/hall/api/active/coupon/popList",
+    "/hall/api/active/getByTemplate/currency/VND.json",
+    "/hall/api/active/getRedDotV2",
+    "/hall/api/active/isShowV2/default.json",
+    "/hall/api/active/popRegressActive",
+    "/hall/api/active/pop_canReceiveReward",
+    "/hall/api/active/redPackIndex",
+    "/hall/api/active/tasks/newcomer_benefit_pop",
+    "/hall/api/active/tasks/newcomer_benefit_reward/default.json",
+    "/hall/api/active/tasks/task",
+    "/hall/api/agent/promote/binding/reportViewV2",
+    "/hall/api/backstage/customer/getWebTrans/language/vi.json",
+    "/hall/api/backstage/system/status/currency/VND/language/vi/osType/4/platformType/5.json",
+    "/hall/api/competition/football/match/index",
+    "/hall/api/domain/lobby/domainMatch",
+    "/hall/api/finance/maxChargeRate",
+    "/hall/api/finance/maxChargeRate/currency/VND/osType/4.json",
+    "/hall/api/finance/pay/payInfos",
+    "/hall/api/finance/pay/payListV4",
+    "/hall/api/finance/pay/payTypeSetting/language/vi.json",
+    "/hall/api/finance/pay/payTypeV4",
+    "/hall/api/finance/pay/payplatformlistV3",
+    "/hall/api/finance/payPopup/settingAndSlogans/currency/VND/language/vi.json",
+    "/hall/api/game/hall/gameVersion/currency/VND.json",
+    "/hall/api/game/hall/hotListV2/currency/VND/language/vi.json",
+    "/hall/api/game/hall/listPlatformCateExtLink/currency/VND/language/vi.json",
+    "/hall/api/game/hall/listPlatformGameV2/categoryId/4/currency/VND/language/vi/page/1/platformId/1012.json",
+    "/hall/api/game/hall/listSpecialGameV2/currency/VND/language/vi.json",
+    "/hall/api/game/hall/listVirtualBonusPoolV2/currency/VND.json",
+    "/hall/api/gameCenter/gameApi/favoriteGameList",
+    "/hall/api/gameCenter/gameApi/login",
+    "/hall/api/gameCenter/gameApi/logout",
+    "/hall/api/gohal/heartbeat",
+    "/hall/api/gohal/staffAllV3/currency/VND/language/vi.json",
+    "/hall/api/lobby/aboutUs/index/getInfo/language/vi.json",
+    "/hall/api/lobby/config/getAppDownloadInfo.json",
+    "/hall/api/lobby/finance/getSiteCurrencyExchangeRateForOss/queryRateType/0.json",
+    "/hall/api/lobby/footerConfigV2/getInfo/language/vi.json",
+    "/hall/api/lobby/publicityInfo/list/language/vi.json",
+    "/hall/api/lobby/site/getSiteInfo/language/vi.json",
+    "/hall/api/lobby/webapi/forceUpdate/getForceUpdate.json",
+    "/hall/api/lobby/webapi/optimizationV2/site/config/language/vi.json",
+    "/hall/api/lobby/winnerCarousel/result/currency/VND.json",
+    "/hall/api/member/geetest/validate/v4",
+    "/hall/api/member/getFingerprint",
+    "/hall/api/member/login",
+    "/hall/api/member/user/settings/modifyinfo",
+    "/hall/api/message/list/all",
+    "/hall/api/message/list/all/currency/VND/language/vi/page/1/type/99.json",
+    "/hall/api/message/popupcfg/currency/VND.json",
+    "/hall/api/message/read",
+    "/hall/api/message/smsCountry/currency/VND/language/vi.json",
+    "/hall/api/netstat/point/get/static/idx/867498981/idxType/1.json",
+    "/hall/api/statistics/domain/pointer",
+    "/hall/api/third/game/platformExchange/findListAll.json"
+  ],
+  "by_bucket": {
+    "other": [
+      "/hall/api/active/active_popRecharge/currency/VND/language/vi.json",
+      "/hall/api/active/category",
+      "/hall/api/active/coupon/popList",
+      "/hall/api/active/getByTemplate/currency/VND.json",
+      "/hall/api/active/getRedDotV2",
+      "/hall/api/active/isShowV2/default.json",
+      "/hall/api/active/popRegressActive",
+      "/hall/api/active/pop_canReceiveReward",
+      "/hall/api/active/redPackIndex",
+      "/hall/api/active/tasks/newcomer_benefit_pop",
+      "/hall/api/active/tasks/newcomer_benefit_reward/default.json",
+      "/hall/api/active/tasks/task",
+      "/hall/api/agent/promote/binding/reportViewV2",
+      "/hall/api/backstage/customer/getWebTrans/language/vi.json",
+      "/hall/api/backstage/system/status/currency/VND/language/vi/osType/4/platformType/5.json",
+      "/hall/api/competition/football/match/index",
+      "/hall/api/domain/lobby/domainMatch",
+      "/hall/api/game/hall/gameVersion/currency/VND.json",
+      "/hall/api/game/hall/hotListV2/currency/VND/language/vi.json",
+      "/hall/api/game/hall/listPlatformCateExtLink/currency/VND/language/vi.json",
+      "/hall/api/game/hall/listPlatformGameV2/categoryId/4/currency/VND/language/vi/page/1/platformId/1012.json",
+      "/hall/api/game/hall/listSpecialGameV2/currency/VND/language/vi.json",
+      "/hall/api/game/hall/listVirtualBonusPoolV2/currency/VND.json",
+      "/hall/api/gohal/heartbeat",
+      "/hall/api/gohal/staffAllV3/currency/VND/language/vi.json",
+      "/hall/api/lobby/aboutUs/index/getInfo/language/vi.json",
+      "/hall/api/lobby/config/getAppDownloadInfo.json",
+      "/hall/api/lobby/footerConfigV2/getInfo/language/vi.json",
+      "/hall/api/lobby/publicityInfo/list/language/vi.json",
+      "/hall/api/lobby/site/getSiteInfo/language/vi.json",
+      "/hall/api/lobby/webapi/forceUpdate/getForceUpdate.json",
+      "/hall/api/lobby/webapi/optimizationV2/site/config/language/vi.json",
+      "/hall/api/lobby/winnerCarousel/result/currency/VND.json",
+      "/hall/api/member/geetest/validate/v4",
+      "/hall/api/member/getFingerprint",
+      "/hall/api/message/list/all",
+      "/hall/api/message/list/all/currency/VND/language/vi/page/1/type/99.json",
+      "/hall/api/message/popupcfg/currency/VND.json",
+      "/hall/api/message/read",
+      "/hall/api/message/smsCountry/currency/VND/language/vi.json",
+      "/hall/api/netstat/point/get/static/idx/867498981/idxType/1.json",
+      "/hall/api/statistics/domain/pointer",
+      "/hall/api/third/game/platformExchange/findListAll.json"
+    ],
+    "finance": [
+      "/hall/api/finance/maxChargeRate",
+      "/hall/api/finance/maxChargeRate/currency/VND/osType/4.json",
+      "/hall/api/finance/pay/payInfos",
+      "/hall/api/finance/pay/payListV4",
+      "/hall/api/finance/pay/payTypeSetting/language/vi.json",
+      "/hall/api/finance/pay/payTypeV4",
+      "/hall/api/finance/pay/payplatformlistV3",
+      "/hall/api/finance/payPopup/settingAndSlogans/currency/VND/language/vi.json",
+      "/hall/api/lobby/finance/getSiteCurrencyExchangeRateForOss/queryRateType/0.json"
+    ],
+    "login": [
+      "/hall/api/member/login"
+    ],
+    "game": [
+      "/hall/api/gameCenter/gameApi/favoriteGameList",
+      "/hall/api/gameCenter/gameApi/login",
+      "/hall/api/gameCenter/gameApi/logout"
+    ],
+    "user_info": [
+      "/hall/api/member/user/settings/modifyinfo"
+    ]
+  },
+  "post_endpoints": [
+    {
+      "path": "/hall/api/statistics/domain/pointer",
+      "bucket": "other",
+      "x_data_mode": "plain",
+      "post_preview": "{\"kind\":1,\"deviceKind\":3,\"domain\":\"c1686.net\",\"visitsKind\":1,\"time\":1779620766}",
+      "response_code": 1,
+      "response_msg": "返回成功",
+      "encrypted_response": false
+    },
+    {
+      "path": "/hall/api/agent/promote/binding/reportViewV2",
+      "bucket": "other",
+      "x_data_mode": "plain",
+      "post_preview": "{\"accessUrl\":\"https://c1686.net\",\"visitor_device\":\"6eda5c7f-8b99-4320-8249-83e6a2e4ce49\",\"time\":1779620766}",
+      "response_code": 1,
+      "response_msg": "返回成功",
+      "encrypted_response": false
+    },
+    {
+      "path": "/hall/api/member/login",
+      "bucket": "login",
+      "x_data_mode": "json_cipher",
+      "post_preview": "{\"encryptString\":\"DsNQs7JB616U/y0wposj5h98FUXh8FBzHBwG1SBUqMaPJoR7urx0Z2un/IUTvimVx6tXUWkAcEsvmC6T9XxpNdSyybtAaaUeUwWh+eFmZIb7W7RHq0TNFXpKQ0IqMERMNbBQ45UXLu2gaNYSdcTZg1E+xOHOEayZ2ZzKfOazpbBvAq3f8CpvDYnyydDWwPCNQKWYxxgINdCxzz43Yx9jd8eNi3U9bdKMMjx4tgYeLTlzZ6PStVhBYgOHSTLXqv1C4iBtqjdfKz2H0eHR8nHoH9mB7tYl0cdi/J/zagIP/UOjk1XYMq1Ei1sjGR/SZiASmDSFrzjfx90K9eQTV1hPlwJrkOQ2X6CipCfdpwYxlA9oJd11ewkIV0WN+gaNdvVM5UyhE6zCEE/X1wdb/sPzv8vTsrtZXbTz+CC4t1rywGMNMPuOTW0Cmiv2EAW1iPvlCnnOaNNShjzh7abf2BkjoEyDCdOTZUJMw2",
+      "response_code": 1124,
+      "response_msg": "cff289689d0273ca771b5c1ef63dc8db",
+      "encrypted_response": false
+    },
+    {
+      "path": "/hall/api/gohal/heartbeat",
+      "bucket": "other",
+      "x_data_mode": "chipher",
+      "post_preview": "WExx4HtVwjxX73C8+vu0BiSjprmLTOXaWPz+BznVlMQ=",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/member/geetest/validate/v4",
+      "bucket": "other",
+      "x_data_mode": "chipher",
+      "post_preview": "2eLOcJ5CVBA3L+fuC54qZ1rSzuz3Zu/j/4/xNRUdd/ugfEWz7qZc90YWwpWNAGbCo4VobLtcWCNJleUtxp2lRx7qdXatTx05j2+1kGOpBqfFrz/i2ypzpBOiKfAT755POrCj8vOQt7CzYr7jLuFdZtLWGRz+YoeFZefZUBMO4vSazB+HyydSDpaoDauCo6+Ac4+oayZSvpEszBYwcVVJbGoSIz2yFI9sGhzk+cGNyGJ+v0YPb6PHrfv3DuN+BE1DYxJ9qv7ZAvos7Ounp9a1oo7MvGJyZMOxSqS3S25CBmUf7MxqIqsEalU5TQ9DOeLBzm2QpCgxQbdlm8dAdoGr43O9zdPOEtRlV3uufeTYAh1NpGmEWrCOp94SAxzACbM6eKJF0akDFBTEW1lA/1J2iTH1JflnxPe0AJ0vqeZmxvutKNtxOYYu0HMJiktNg+GUWIcld1S3uUqYuhfBnf56uhk3WnA9Fd9J7PoeI6ezbnBXvCYUaO8N",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/gameCenter/gameApi/favoriteGameList",
+      "bucket": "game",
+      "x_data_mode": "chipher",
+      "post_preview": "",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/active/tasks/newcomer_benefit_pop",
+      "bucket": "other",
+      "x_data_mode": "chipher",
+      "post_preview": "",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/active/coupon/popList",
+      "bucket": "other",
+      "x_data_mode": "chipher",
+      "post_preview": "",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/finance/pay/payListV4",
+      "bucket": "finance",
+      "x_data_mode": "chipher",
+      "post_preview": "B2Au8vfZ97gmmlly8J4r5IC+KqKm4KkZlCjdCQlmLOg3y3m7ZZqMKQv3eoqUAVus",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/finance/pay/payTypeV4",
+      "bucket": "finance",
+      "x_data_mode": "chipher",
+      "post_preview": "EslF0Gu7PJ6o6WV5GMdi8o4wa5DOi/BhU+uo0KFlAe/GEhrj67mgdzeR7KtlxnHW",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/active/getRedDotV2",
+      "bucket": "other",
+      "x_data_mode": "chipher",
+      "post_preview": "",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/finance/pay/payplatformlistV3",
+      "bucket": "finance",
+      "x_data_mode": "plain",
+      "post_preview": "{\"payplatformid\":540187,\"payCurrency\":\"\",\"payKind\":100,\"noChannelTopUp\":0,\"time\":1779620779}",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": false
+    },
+    {
+      "path": "/hall/api/message/read",
+      "bucket": "other",
+      "x_data_mode": "plain",
+      "post_preview": "{\"id\":1680002,\"type\":4,\"time\":1779620779}",
+      "response_code": 1,
+      "response_msg": "返回成功",
+      "encrypted_response": false
+    },
+    {
+      "path": "/hall/api/gameCenter/gameApi/logout",
+      "bucket": "game",
+      "x_data_mode": "plain",
+      "post_preview": "{\"token\":\"946765c416b4bc64cbc81779620544012718495\",\"os_type\":3,\"callContext\":\"{\\\"time\\\":\\\"2026-05-24 18:06:19\\\",\\\"scene\\\":\\\"multi terminal login\\\",\\\"stack\\\":\\\"[\\\\\\\"Eh.apiGameLogout (/assets/theme-0/commonChunk.CgzzdHbk.js)\\\\\\\",\\\\\\\"Object.beforeClose (/assets/theme-0/commonChunk.CgzzdHbk.js)\\\\\\\",\\\\\\\"beforeClose (/assets/theme-0/commonChunk.CgzzdHbk.js)\\\\\\\",\\\\\\\"op (/assets/theme-0/commonChunk.CgzzdHbk.js)\\\\\\\",\\\\\\\"/assets/theme-0/commonChunk.CgzzdHbk.js\\\\\\\",\\\\\\\"u (/assets/theme-0/commonChunk.CgzzdH",
+      "response_code": 1,
+      "response_msg": "返回成功",
+      "encrypted_response": false
+    },
+    {
+      "path": "/hall/api/active/tasks/task",
+      "bucket": "other",
+      "x_data_mode": "chipher",
+      "post_preview": "R63V0nbkyZwZ+J0rGPZeENO7b1zeIV/KUV8/YG/C1FayTHwM6PhwxZWFH2Xvqiih",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/finance/pay/payInfos",
+      "bucket": "finance",
+      "x_data_mode": "chipher",
+      "post_preview": "eOUzj8kf6qqUWuX4rH7m0vSMbCH4RBC3nen2roUEaOs=",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/member/getFingerprint",
+      "bucket": "other",
+      "x_data_mode": "chipher",
+      "post_preview": "GXCpF7oEjCHZ4oeBm0kljcGNb5dT9Z0PoJXhQ7uGxv1TzMsE40j255Ghsrk9XU8hH9g43K2HQWuIg62p8WxuxQ5moYxrQJBK+NxVf4JV6TRBYoa/hwXNze/33sdElSXLRT9JF0mkBq6MBPejIlwFkhXBfqsPLrpbKiyXdRLHwUTi0z3APSeLEiiYY50OS4mNm4l6KP6jpke+XRYHpj5QfYmgUf67lhAhV/wxn2PaAU/Wc1gJsRIZhQaLmNEPUon3Mg/mDe75MhYDbLitiFIRIqH6wNO0KARcnRg40+s5A1vr6Apsyv4G/t6WjlLUp+iqenqP2fm/1+GpugZ6YU4K32dxH7zAnUS2ABj4CLukUBzrUugasazfEjNopLQQHn31uJxfofazFyMUsRahx3ThQ0AO80/moUj1fIndGmlJWU8iCZOPYnqeyt9NpYMdtFsTcQnMH8xf0QS1ubQtp9T2+Xulbe3+nTwp4Pxedu1+hRN1KJJD8lxz",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/active/popRegressActive",
+      "bucket": "other",
+      "x_data_mode": "chipher",
+      "post_preview": "",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/active/redPackIndex",
+      "bucket": "other",
+      "x_data_mode": "plain",
+      "post_preview": "{\"robot\":0,\"time\":1779620780}",
+      "response_code": 1,
+      "response_msg": "返回成功",
+      "encrypted_response": false
+    },
+    {
+      "path": "/hall/api/active/pop_canReceiveReward",
+      "bucket": "other",
+      "x_data_mode": "chipher",
+      "post_preview": "",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/member/user/settings/modifyinfo",
+      "bucket": "user_info",
+      "x_data_mode": "chipher",
+      "post_preview": "KJLyUDS20YE6nNf4vfF4pP09uQmdXaki+e8mPfcNz0/tdgUBAFqPi3nkqLE/FM43GOBdauUwwV2Ws+1enUBi1A==",
+      "response_code": null,
+      "response_msg": "",
+      "encrypted_response": true
+    },
+    {
+      "path": "/hall/api/gameCenter/gameApi/login",
+      "bucket": "game",
+      "x_data_mode": "plain",
+      "post_preview": "{\"os_type\":3,\"gameid\":10120000,\"platfromid\":1012,\"exitUrl\":\"\",\"cid\":\"999998\",\"time\":1779620790}",
+      "response_code": 1,
+      "response_msg": "返回成功",
+      "encrypted_response": false
+    }
+  ],
+  "likely_flow": {
+    "register": [],
+    "login": [
+      {
+        "path": "/hall/api/member/login",
+        "bucket": "login",
+        "x_data_mode": "json_cipher",
+        "post_preview": "{\"encryptString\":\"DsNQs7JB616U/y0wposj5h98FUXh8FBzHBwG1SBUqMaPJoR7urx0Z2un/IUTvimVx6tXUWkAcEsvmC6T9XxpNdSyybtAaaUeUwWh+eFmZIb7W7RHq0TNFXpKQ0IqMERMNbBQ45UXLu2gaNYSdcTZg1E+xOHOEayZ2ZzKfOazpbBvAq3f8CpvDYnyydDWwPCNQKWYxxgINdCxzz43Yx9jd8eNi3U9bdKMMjx4tgYeLTlzZ6PStVhBYgOHSTLXqv1C4iBtqjdfKz2H0eHR8nHoH9mB7tYl0cdi/J/zagIP/UOjk1XYMq1Ei1sjGR/SZiASmDSFrzjfx90K9eQTV1hPlwJrkOQ2X6CipCfdpwYxlA9oJd11ewkIV0WN+gaNdvVM5UyhE6zCEE/X1wdb/sPzv8vTsrtZXbTz+CC4t1rywGMNMPuOTW0Cmiv2EAW1iPvlCnnOaNNShjzh7abf2BkjoEyDCdOTZUJMw2",
+        "response_code": 1124,
+        "response_msg": "cff289689d0273ca771b5c1ef63dc8db",
+        "encrypted_response": false
+      }
+    ],
+    "fund_password": [],
+    "bank": []
+  },
+  "game_b": {
+    "session_headers_seen": {
+      "token": "f4f3304f74619205ad8d1779620777537853549",
+      "device": "6eda5c7f-8b99-4320-8249-83e6a2e4ce49",
+      "browserfingerid": "GEE3-01-45eb0ddeb66c0fa2a0f71a27724d21804cb4af50bc05b81a511253b4e54ee801",
+      "sitecode": "2865",
+      "domain": "c1686.net",
+      "currency": "VND",
+      "x-device": "1-1",
+      "x-data-mode": "plain",
+      "x-version": "7.2.162",
+      "appversion": "v7.2.162",
+      "newjwt": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ…fBo0GZG48HM8"
+    },
+    "game_api_login_calls": [
+      {
+        "path": "/hall/api/gameCenter/gameApi/login",
+        "post": "",
+        "x_data_mode": null,
+        "request_headers": {},
+        "status": 200,
+        "response_plain_json": {
+          "code": 1,
+          "msg": "返回成功",
+          "time": 1779620790,
+          "data": {
+            "url": [
+              {
+                "url": "https://ufd.intplaynet.com/player/login/apiLogin0?agentId=wg2865&x=9Dm_ncBZSZANbiKbdZh1NtmVDU0f_rbVJwSsknGcT6qF0Ea8l6GT6sl51Gt8Q9XSQNh23Jz1UaWbP9tRNNe1x13y8lb7yFbhMjpzdgRthCzR9FztfauzYV1mYLsBD3b9uDEoG2b2naZOs2DVUvhSC29KL2tuuxgspOtr9puCrcBkQ_w7Jomz2AZjrLG4lqhvsEVNB9o89Hxjeyq30m-Y2GTHygk3m6xxo2JnzEzBfsTnvLHzu0BUH6Hs-jUmmii7XilWiNVm3OT1DX-tC5yQ7FrHUOgJ7PRueJzvqRMMuyWYp6RTScnpse-Hg_CZCMcxqTEkfVvgmvbv7_YradU3gtHOgDZzRK9PnRpG8c54ek8zRF904GGgd0wPxPjxzzAfexj2Xiy2xyrAw2GUrNWxbSQDNbi_-ugdk3O3o1wC16o"
+              }
+            ],
+            "socket_url": null,
+            "game_url": "https://ufd.intplaynet.com/player/login/apiLogin0?agentId=wg2865&x=9Dm_ncBZSZANbiKbdZh1NtmVDU0f_rbVJwSsknGcT6qF0Ea8l6GT6sl51Gt8Q9XSQNh23Jz1UaWbP9tRNNe1x13y8lb7yFbhMjpzdgRthCzR9FztfauzYV1mYLsBD3b9uDEoG2b2naZOs2DVUvhSC29KL2tuuxgspOtr9puCrcBkQ_w7Jomz2AZjrLG4lqhvsEVNB9o89Hxjeyq30m-Y2GTHygk3m6xxo2JnzEzBfsTnvLHzu0BUH6Hs-jUmmii7XilWiNVm3OT1DX-tC5yQ7FrHUOgJ7PRueJzvqRMMuyWYp6RTScnpse-Hg_CZCMcxqTEkfVvgmvbv7_YradU3gtHOgDZzRK9PnRpG8c54ek8zRF904GGgd0wPxPjxzzAfexj2Xiy2xyrAw2GUrNWxbSQDNbi_-ugdk3O3o1wC16o",
+            "platfromid": 1012,
+            "gameid": 10120000,
+            "direction": 1,
+            "UserName": "",
+            "UserIdx": 0,
+            "gameName": ""
+          }
+        },
+        "response_encrypted": false,
+        "response_preview": "{\"code\":1,\"msg\":\"返回成功\",\"time\":1779620790,\"data\":{\"url\":[{\"url\":\"https://ufd.intplaynet.com/player/login/apiLogin0?agentId=wg2865\\u0026x=9Dm_ncBZSZANbiKbdZh1NtmVDU0f_rbVJwSsknGcT6qF0Ea8l6GT6sl51Gt8Q9XSQNh23Jz1UaWbP9tRNNe1x13y8lb7yFbhMjpzdgRthCzR9FztfauzYV1mYLsBD3b9uDEoG2b2naZOs2DVUvhSC29KL2tuuxgspOtr9puCrcBkQ_w7Jomz2AZjrLG4lqhvsEVNB9o89Hxjeyq30m-Y2GTHygk3m6xxo2JnzEzBfsTnvLHzu0BUH6Hs-jUmmii7XilWiNVm3OT1DX-tC5yQ7FrHUOgJ7PRueJzvqRMMuyWYp6RTScnpse-Hg_CZCMcxqTEkfVvgmvbv7_YradU3gtHOgDZzRK9PnRpG8c54ek8zRF904GGgd0wPxPjxzzAfexj2Xiy2xyrAw2GUrNWxbSQDNbi_-ugdk3O3o1wC16o\"}],\"socket_url\":null,\"game_url\":\"https://ufd.intplaynet.com/player/login/apiLogin0?agentId=wg2865\\u0026x=9Dm_ncBZSZANbiKbdZh1NtmVDU0f_rbVJwSsknGcT6qF0Ea8l6GT6sl51Gt8Q9XSQNh23Jz1UaWbP9tRNNe1x13y8lb7yFbhMjpzdgRthCzR9FztfauzYV1mYLsBD3b9uDE"
+      },
+      {
+        "path": "/hall/api/gameCenter/gameApi/login",
+        "post": "{\"os_type\":3,\"gameid\":10120000,\"platfromid\":1012,\"exitUrl\":\"\",\"cid\":\"999998\",\"time\":1779620790}",
+        "x_data_mode": "plain",
+        "request_headers": {
+          "token": "f4f3304f74619205ad8d1779620777537853549",
+          "newjwt": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ…fBo0GZG48HM8",
+          "device": "6eda5c7f-8b99-4320-8249-83e6a2e4ce49",
+          "browserfingerid": "GEE3-01-45eb0ddeb66c0fa2a0f71a27724d21804cb4af50bc05b81a511253b4e54ee801",
+          "sitecode": "2865",
+          "domain": "c1686.net",
+          "currency": "VND",
+          "x-device": "1-1",
+          "x-data-mode": "plain",
+          "x-version": "7.2.162",
+          "appversion": "v7.2.162"
+        },
+        "status": 200,
+        "response_plain_json": {
+          "code": 1,
+          "msg": "返回成功",
+          "time": 1779620790,
+          "data": {
+            "url": [
+              {
+                "url": "https://ufd.intplaynet.com/player/login/apiLogin0?agentId=wg2865&x=9Dm_ncBZSZANbiKbdZh1NtmVDU0f_rbVJwSsknGcT6qF0Ea8l6GT6sl51Gt8Q9XSQNh23Jz1UaWbP9tRNNe1x13y8lb7yFbhMjpzdgRthCzR9FztfauzYV1mYLsBD3b9uDEoG2b2naZOs2DVUvhSC29KL2tuuxgspOtr9puCrcBkQ_w7Jomz2AZjrLG4lqhvsEVNB9o89Hxjeyq30m-Y2GTHygk3m6xxo2JnzEzBfsTnvLHzu0BUH6Hs-jUmmii7XilWiNVm3OT1DX-tC5yQ7FrHUOgJ7PRueJzvqRMMuyWYp6RTScnpse-Hg_CZCMcxqTEkfVvgmvbv7_YradU3gtHOgDZzRK9PnRpG8c54ek8zRF904GGgd0wPxPjxzzAfexj2Xiy2xyrAw2GUrNWxbSQDNbi_-ugdk3O3o1wC16o"
+              }
+            ],
+            "socket_url": null,
+            "game_url": "https://ufd.intplaynet.com/player/login/apiLogin0?agentId=wg2865&x=9Dm_ncBZSZANbiKbdZh1NtmVDU0f_rbVJwSsknGcT6qF0Ea8l6GT6sl51Gt8Q9XSQNh23Jz1UaWbP9tRNNe1x13y8lb7yFbhMjpzdgRthCzR9FztfauzYV1mYLsBD3b9uDEoG2b2naZOs2DVUvhSC29KL2tuuxgspOtr9puCrcBkQ_w7Jomz2AZjrLG4lqhvsEVNB9o89Hxjeyq30m-Y2GTHygk3m6xxo2JnzEzBfsTnvLHzu0BUH6Hs-jUmmii7XilWiNVm3OT1DX-tC5yQ7FrHUOgJ7PRueJzvqRMMuyWYp6RTScnpse-Hg_CZCMcxqTEkfVvgmvbv7_YradU3gtHOgDZzRK9PnRpG8c54ek8zRF904GGgd0wPxPjxzzAfexj2Xiy2xyrAw2GUrNWxbSQDNbi_-ugdk3O3o1wC16o",
+            "platfromid": 1012,
+            "gameid": 10120000,
+            "direction": 1,
+            "UserName": "",
+            "UserIdx": 0,
+            "gameName": ""
+          }
+        },
+        "response_encrypted": false,
+        "response_preview": "{\"code\":1,\"msg\":\"返回成功\",\"time\":1779620790,\"data\":{\"url\":[{\"url\":\"https://ufd.intplaynet.com/player/login/apiLogin0?agentId=wg2865\\u0026x=9Dm_ncBZSZANbiKbdZh1NtmVDU0f_rbVJwSsknGcT6qF0Ea8l6GT6sl51Gt8Q9XSQNh23Jz1UaWbP9tRNNe1x13y8lb7yFbhMjpzdgRthCzR9FztfauzYV1mYLsBD3b9uDEoG2b2naZOs2DVUvhSC29KL2tuuxgspOtr9puCrcBkQ_w7Jomz2AZjrLG4lqhvsEVNB9o89Hxjeyq30m-Y2GTHygk3m6xxo2JnzEzBfsTnvLHzu0BUH6Hs-jUmmii7XilWiNVm3OT1DX-tC5yQ7FrHUOgJ7PRueJzvqRMMuyWYp6RTScnpse-Hg_CZCMcxqTEkfVvgmvbv7_YradU3gtHOgDZzRK9PnRpG8c54ek8zRF904GGgd0wPxPjxzzAfexj2Xiy2xyrAw2GUrNWxbSQDNbi_-ugdk3O3o1wC16o\"}],\"socket_url\":null,\"game_url\":\"https://ufd.intplaynet.com/player/login/apiLogin0?agentId=wg2865\\u0026x=9Dm_ncBZSZANbiKbdZh1NtmVDU0f_rbVJwSsknGcT6qF0Ea8l6GT6sl51Gt8Q9XSQNh23Jz1UaWbP9tRNNe1x13y8lb7yFbhMjpzdgRthCzR9FztfauzYV1mYLsBD3b9uDE"
+      }
+    ],
+    "game_api_logout_calls": [
+      {
+        "path": "/hall/api/gameCenter/gameApi/logout",
+        "body_preview": "{\"code\":1,\"msg\":\"返回成功\",\"time\":1779620780,\"data\":{\"game_gold\":0,\"code\":1,\"bonus\":\"0\",\"totalGold\":\"0\",\"bonusRequireBet\":\"0\",\"auditMode\":1}}\n",
+        "parsed": {
+          "code": 1,
+          "msg": "返回成功",
+          "time": 1779620780,
+          "data": {
+            "game_gold": 0,
+            "code": 1,
+            "bonus": "0",
+            "totalGold": "0",
+            "bonusRequireBet": "0",
+            "auditMode": 1
+          }
+        }
+      }
+    ],
+    "vendor_urls": [
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501008-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501746-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501576-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501012-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501772-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501058-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501052-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501053-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501783-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501668-2.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501731-2.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501736-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501775-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501747-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501574-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/images/player/dealers/png/1501790-3.png"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/player/query/queryInitWebGameHall"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/player/query/queryWebGameHallRoad"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/player/query/queryEnableFunctionForWebsite"
+      },
+      {
+        "kind": "request",
+        "url": "https://bpcdf.vesnamex777.com/player/query/queryWebGameHallInformation"
+      }
+    ],
+    "inferred_login_body_fields": {
+      "os_type": 3,
+      "gameid": 10120000,
+      "platfromid": 1012,
+      "exitUrl": "",
+      "cid": "999998",
+      "time": 1779620790
+    },
+    "checklist_no_browser": [
+      "POST https://<hall>/hall/api/gameCenter/gameApi/login",
+      "Headers: token, newjwt, device, browserfingerid, sitecode, domain, timestamp, x-request-id, x-version",
+      "Body (plain): os_type, gameid, platfromid, exitUrl, time",
+      "✓ Đã thấy token trong capture",
+      "✓ gameApi/login × 2 — platfromid=1012, gameid=10120000",
+      "✓ Response login JSON đọc được — có thể trích launch URL"
+    ]
+  }
+}

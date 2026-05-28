@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Chọn game có hũ lớn nhất >= ngưỡng config (đọc minigame_jackpots.json)."""
+"""
+Chọn game có hũ lớn nhất >= ngưỡng config (đọc minigame_jackpots.json).
+
+So sánh chọn game: game_id=2 chỉ tính 80% hũ; các game khác 100% (số hũ thật vẫn lưu/log).
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,17 @@ from typing import Any
 
 from xoso66_minigame_catalog import DEFAULT_JACKPOT_GAME_IDS, game_by_id
 from xoso66_minigame_jackpot_store import get_jackpot_store
+
+# So sánh chọn game: game_id=2 (Tài xỉu) chỉ tính 80% hũ; các game khác 100%.
+_JACKPOT_COMPARE_DISCOUNT_GAME_ID = 2
+_JACKPOT_COMPARE_DISCOUNT_RATIO = 0.8
+
+
+def jackpot_compare_vnd(game_id: int, money_vnd: float) -> float:
+    """Giá trị hũ dùng so sánh / ngưỡng min (khác số hũ thật trên WS)."""
+    if int(game_id) == _JACKPOT_COMPARE_DISCOUNT_GAME_ID:
+        return float(money_vnd) * _JACKPOT_COMPARE_DISCOUNT_RATIO
+    return float(money_vnd)
 
 
 @dataclass
@@ -27,6 +42,38 @@ def _auto_bet_cfg(cfg: dict) -> dict:
 def min_jackpot_vnd(cfg: dict) -> float:
     """Ngưỡng auto_bet.min_jackpot_vnd (0 = không lọc)."""
     return float(_auto_bet_cfg(cfg).get("min_jackpot_vnd") or 0)
+
+
+def side_total_by_jackpot_enabled(cfg: dict) -> bool:
+    """0 = tắt (cố định side_total_low_vnd); 1 = bật chia mức theo bậc hũ."""
+    raw = _auto_bet_cfg(cfg).get("side_total_by_jackpot_enabled", 0)
+    try:
+        return int(raw) != 0
+    except (TypeError, ValueError):
+        return bool(raw)
+
+
+def resolve_side_total_vnd(cfg: dict, jackpot_vnd: float | None = None) -> int:
+    """
+    Tổng cược một bên Tài/Xỉu.
+
+    side_total_by_jackpot_enabled=0 → side_total_low_vnd (không xét bậc hũ).
+    Bật + jackpot_side_mid_vnd:
+      min..mid → side_total_low_vnd; > mid → side_total_high_vnd.
+    Bật nhưng mid=0 / không có jackpot → side_total_vnd tĩnh.
+    """
+    acfg = _auto_bet_cfg(cfg)
+    low = int(acfg.get("side_total_low_vnd") or acfg.get("side_total_vnd") or 50_000)
+    if not side_total_by_jackpot_enabled(cfg):
+        return low
+    mid = float(acfg.get("jackpot_side_mid_vnd") or 0)
+    if mid > 0 and jackpot_vnd is not None:
+        jp = float(jackpot_vnd)
+        high = int(acfg.get("side_total_high_vnd") or 100_000)
+        if jp <= mid:
+            return low
+        return high
+    return int(acfg.get("side_total_vnd") or 100_000)
 
 
 def jackpot_money_for_game(cfg: dict, game_id: int) -> float:
@@ -54,30 +101,21 @@ def _fmt_ty_vnd(n: float) -> str:
     return f"{n:,.0f}"
 
 
+def focus_picked_game(cfg: dict) -> PickedGame | None:
+    """
+    Game để log / theo dõi phiên.
+    Đủ ngưỡng → hũ cao nhất >= min; dưới ngưỡng → hũ cao nhất mọi game (sau nổ không giữ game cũ).
+    """
+    best = pick_best_jackpot_game(cfg)
+    if best is not None:
+        return best
+    return highest_jackpot_game(cfg)
+
+
 def last_watch_game_id(cfg: dict) -> int | None:
-    """
-    Game theo dõi phiên khi chưa đủ ngưỡng hũ — game cuối (playing_game.json / active).
-    """
-    from xoso66_playing_game_store import load_playing_game
-
-    acfg = _auto_bet_cfg(cfg)
-    max_age = float(acfg.get("playing_game_max_age_sec") or 1800)
-    saved = load_playing_game(max_age_sec=max_age)
-    if saved:
-        try:
-            return int(saved["game_id"])
-        except (TypeError, ValueError):
-            pass
-    if acfg.get("enabled"):
-        try:
-            from xoso66_auto_bet import get_auto_bet_controller
-
-            playing = get_auto_bet_controller().active_game_id()
-            if playing is not None:
-                return int(playing)
-        except Exception:
-            pass
-    return None
+    """game_id theo dõi khi chưa đủ ngưỡng — luôn hũ cao nhất trong watch list."""
+    picked = focus_picked_game(cfg)
+    return int(picked.game_id) if picked is not None else None
 
 
 def picked_game_from_id(cfg: dict, game_id: int) -> PickedGame | None:
@@ -124,7 +162,7 @@ def log_jackpot_below_min(
             flush=True,
         )
         return True
-    if top.money_vnd >= min_jp:
+    if jackpot_compare_vnd(top.game_id, top.money_vnd) >= min_jp:
         return False
     if str(issue or "").strip():
         return True
@@ -203,6 +241,14 @@ def sync_auto_bet_jackpot_gate(
                     f"< {min_jp:,.0f}",
                     flush=True,
                 )
+                try:
+                    from xoso66_auto_bet import get_auto_bet_controller
+
+                    get_auto_bet_controller().apply_playing_game(
+                        top, cfg=cfg, source="chuyển theo dõi hũ cao nhất"
+                    )
+                except Exception:
+                    pass
         _gate_last_game_id = None
 
     # «Chưa chơi» chỉ in khi BẮT ĐẦU PHIÊN game đang theo dõi (có issue),
@@ -210,34 +256,13 @@ def sync_auto_bet_jackpot_gate(
 
 
 def focus_game_id(cfg: dict | None = None) -> int | None:
-    """game_id để lọc log WS — game đang chơi, đủ hũ, hoặc game cuối khi chờ hũ."""
+    """game_id lọc log WS / handler phiên — theo focus_picked_game (file hũ, không giữ game sau nổ)."""
     if cfg is None:
         from xoso66_config_util import load_config
 
         cfg = load_config()
-    acfg = _auto_bet_cfg(cfg)
-    if acfg.get("enabled"):
-        try:
-            from xoso66_auto_bet import get_auto_bet_controller
-
-            playing = get_auto_bet_controller().active_game_id()
-            if playing is not None:
-                return int(playing)
-        except Exception:
-            pass
-        picked = pick_best_jackpot_game(cfg)
-        if picked is not None:
-            return picked.game_id
-        watch = last_watch_game_id(cfg)
-        if watch is not None:
-            return int(watch)
-        top = highest_jackpot_game(cfg)
-        return top.game_id if top else None
-    picked = pick_best_jackpot_game(cfg)
-    if picked is not None:
-        return picked.game_id
-    top = highest_jackpot_game(cfg)
-    return top.game_id if top else None
+    picked = focus_picked_game(cfg)
+    return int(picked.game_id) if picked is not None else None
 
 
 def _watch_game_ids(cfg: dict) -> list[int]:
@@ -275,14 +300,17 @@ def _pick_from_store(cfg: dict, *, min_jp: float) -> PickedGame | None:
             money = float(str(row.get("money") or "0").replace(",", ""))
         except ValueError:
             continue
-        if money < min_jp:
+        compare = jackpot_compare_vnd(int(gid), money)
+        if compare < min_jp:
             continue
         try:
             key, g = game_by_id(int(gid))
         except KeyError:
             continue
         name = str(row.get("name") or g.get("name") or key)
-        if best is None or money > best.money_vnd:
+        if best is None or compare > jackpot_compare_vnd(
+            best.game_id, best.money_vnd
+        ):
             best = PickedGame(
                 game_id=int(gid),
                 game_key=key,
@@ -310,7 +338,7 @@ def format_jackpot_watch_status(cfg: dict) -> str:
             name = str(row.get("name") or g.get("name") or gid)[:12]
         except KeyError:
             name = str(gid)
-        mark = "✓" if money >= min_jp else "·"
+        mark = "✓" if jackpot_compare_vnd(int(gid), money) >= min_jp else "·"
         parts.append(f"{mark}{name} {money:,.0f}")
     best = pick_best_jackpot_game(cfg)
     top = highest_jackpot_game(cfg)

@@ -1,0 +1,12 @@
+{
+  "reconcile_interval_sec": 60,
+  "chrome_max_concurrent": 10,
+  "daily_bet_cap_vnd": 890000,
+  "watcher_enabled": true,
+  "vendor": {
+    "platform_id": 1012,
+    "category_id": 4,
+    "table_name": "C06",
+    "table_id": 1006
+  }
+}

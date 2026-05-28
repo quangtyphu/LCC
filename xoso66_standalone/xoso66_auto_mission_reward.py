@@ -6,48 +6,36 @@ Luồng (mỗi acc / ngày VN):
   1. Khi WS ép status → «Đủ ngày» (ngắt WS / đủ cap): hẹn check sau initial_delay_sec.
      Không quét lại toàn bộ acc Đủ ngày lúc khởi động main.
   2. mission/list + lưu DB; nếu có level status=1 (MINI 17 + điểm danh 22/161):
-       balance ≥ min_withdraw_vnd → gọi API rút, poll lịch sử đến Hoàn tất, rồi mới POST reward.
+       balance ≥ min_withdraw_vnd → rút bội withdraw_step_vnd (vd. 300k/400k/500k), poll Hoàn tất, POST reward.
        balance < min → chỉ nhận thưởng (không rút).
-  3. Chưa claim được: nếu done_bet_money (161) < tổng cược ngày → poll mỗi poll_interval_sec,
-     tối đa poll_max_attempts; nhận được thì dừng.
-  4. Hết poll: sync done_bet_money local = tổng cược ngày → thử rút + nhận lại.
+  3. Chưa claim được: poll chỉ khi done_bet < 888888 VÀ done_bet < tổng cược ngày,
+     tối đa poll_max_attempts; nhận được thì dừng. Trong lúc poll: không ghi đè
+     accounts.daily_bet_total bằng 161 (giữ tổng cược thật trên DB).
+  4. Hết poll (15/15): sync done_bet_money = tổng cược ngày (accounts + mission) → thử rút + nhận lại.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from xoso66_accounts_db import (
     daily_bet_today_vnd,
-    db_conn,
     get_account,
-    init_db,
     username_for_log,
 )
 from xoso66_config_util import load_config
+from xoso66_paths import cms_game_data_dir
 from xoso66_shutdown import stopping
 from xoso66_time_util import today_vn_str
 
-_QUEUE_DDL = """
-CREATE TABLE IF NOT EXISTS mission_auto_claim_queue (
-    account_id TEXT PRIMARY KEY,
-    vn_day TEXT NOT NULL,
-    phase TEXT NOT NULL DEFAULT 'scheduled',
-    scheduled_at REAL NOT NULL,
-    poll_count INTEGER NOT NULL DEFAULT 0,
-    reward_retry_count INTEGER NOT NULL DEFAULT 0,
-    pending_claims_json TEXT NOT NULL DEFAULT '',
-    last_error TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL
-)
-"""
-
 _QUEUE_LOCK = threading.Lock()
+_QUEUE_FILE = Path(cms_game_data_dir()) / "mission_auto_claim_queue.json"
 _MIN_WITHDRAW_VND = 300_000
+_WITHDRAW_STEP_VND = 100_000
 
 
 def _now_iso() -> str:
@@ -56,29 +44,54 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _migrate_queue_columns(conn: sqlite3.Connection) -> None:
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(mission_auto_claim_queue)")}
-    if "reward_retry_count" not in cols:
-        conn.execute(
-            "ALTER TABLE mission_auto_claim_queue "
-            "ADD COLUMN reward_retry_count INTEGER NOT NULL DEFAULT 0"
-        )
-    if "pending_claims_json" not in cols:
-        conn.execute(
-            "ALTER TABLE mission_auto_claim_queue "
-            "ADD COLUMN pending_claims_json TEXT NOT NULL DEFAULT ''"
-        )
+def _normalize_queue_item(account_id: str, item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "account_id": str(account_id),
+        "vn_day": str(item.get("vn_day") or today_vn_str()),
+        "phase": str(item.get("phase") or "scheduled"),
+        "scheduled_at": float(item.get("scheduled_at") or 0),
+        "poll_count": int(item.get("poll_count") or 0),
+        "reward_retry_count": int(item.get("reward_retry_count") or 0),
+        "pending_claims_json": str(item.get("pending_claims_json") or "")[:4000],
+        "last_error": str(item.get("last_error") or "")[:500],
+        "updated_at": str(item.get("updated_at") or _now_iso()),
+    }
 
 
-def init_mission_claim_queue(conn: sqlite3.Connection | None = None) -> None:
-    if conn is None:
-        init_db()
-        with db_conn() as c:
-            c.execute(_QUEUE_DDL)
-            _migrate_queue_columns(c)
+def _load_queue_map() -> dict[str, dict[str, Any]]:
+    init_mission_claim_queue()
+    try:
+        raw = json.loads(_QUEUE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for k, v in raw.items():
+        if not isinstance(v, dict):
+            continue
+        aid = str(k or "").strip()
+        if not aid:
+            continue
+        out[aid] = _normalize_queue_item(aid, v)
+    return out
+
+
+def _save_queue_map(items: dict[str, dict[str, Any]]) -> None:
+    _QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {aid: _normalize_queue_item(aid, row) for aid, row in items.items()}
+    _QUEUE_FILE.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+def init_mission_claim_queue(conn: object | None = None) -> None:
+    _ = conn
+    _QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if _QUEUE_FILE.exists():
         return
-    conn.execute(_QUEUE_DDL)
-    _migrate_queue_columns(conn)
+    _QUEUE_FILE.write_text("{}", encoding="utf-8")
 
 
 def _cfg() -> dict[str, Any]:
@@ -104,6 +117,10 @@ def _poll_max_attempts() -> int:
 
 def _min_withdraw_vnd() -> int:
     return int(_cfg().get("min_withdraw_vnd", _MIN_WITHDRAW_VND))
+
+
+def _withdraw_step_vnd() -> int:
+    return max(1, int(_cfg().get("withdraw_step_vnd", _WITHDRAW_STEP_VND)))
 
 
 def _sync_balance_to_db(
@@ -188,15 +205,40 @@ def _rate_limit_failures(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def floor_withdraw_amount_vnd(balance: float) -> int:
-    """Bỏ phần lẻ (vd. ,22đ) — rút số nguyên VND."""
+def _all_failures_ip_already_claimed(claims: list[dict[str, Any]]) -> bool:
+    from xoso66_daily_mission_check import is_mission_reward_ip_already_claimed
+
+    failed = [c for c in claims if not c.get("ok")]
+    if not failed:
+        return False
+    return all(
+        is_mission_reward_ip_already_claimed(str(c.get("msg") or "")) for c in failed
+    )
+
+
+def floor_withdraw_amount_vnd(
+    balance: float,
+    *,
+    min_vnd: int | None = None,
+    step_vnd: int | None = None,
+) -> int:
+    """
+    Số tiền rút tự động: bội step_vnd (mặc định 100k), không vượt số dư.
+    Trả 0 nếu balance < min_vnd hoặc không đủ một bội ≥ min (vd. 250k → 0).
+    """
+    min_v = int(min_vnd if min_vnd is not None else _min_withdraw_vnd())
+    step = max(1, int(step_vnd if step_vnd is not None else _withdraw_step_vnd()))
     try:
         b = float(balance)
     except (TypeError, ValueError):
         return 0
-    if b < 0:
+    if b < min_v:
         return 0
-    return int(b)
+    avail = int(b)
+    if avail < 0:
+        return 0
+    amt = (avail // step) * step
+    return amt if amt >= min_v else 0
 
 
 def schedule_mission_claim(account_id: str, *, reason: str = "") -> bool:
@@ -213,37 +255,27 @@ def schedule_mission_claim(account_id: str, *, reason: str = "") -> bool:
         return False
     vn_day = today_vn_str()
     at = time.time() + _initial_delay_sec()
-    init_mission_claim_queue()
     tag = f" ({reason})" if reason else ""
     with _QUEUE_LOCK:
-        with db_conn() as conn:
-            cur = conn.execute(
-                "SELECT phase, vn_day FROM mission_auto_claim_queue WHERE account_id = ?",
-                (aid,),
-            ).fetchone()
-            if cur:
-                phase = str(cur["phase"] or "")
-                if str(cur["vn_day"] or "") == vn_day and phase in ("scheduled", "polling"):
-                    return False
-                if str(cur["vn_day"] or "") == vn_day and phase == "done":
-                    return False
-            conn.execute(
-                """
-                INSERT INTO mission_auto_claim_queue (
-                    account_id, vn_day, phase, scheduled_at, poll_count, last_error, updated_at
-                ) VALUES (?, ?, 'scheduled', ?, 0, '', ?)
-                ON CONFLICT(account_id) DO UPDATE SET
-                    vn_day=excluded.vn_day,
-                    phase='scheduled',
-                    scheduled_at=excluded.scheduled_at,
-                    poll_count=0,
-                    reward_retry_count=0,
-                    pending_claims_json='',
-                    last_error='',
-                    updated_at=excluded.updated_at
-                """,
-                (aid, vn_day, at, _now_iso()),
-            )
+        items = _load_queue_map()
+        cur = items.get(aid) or {}
+        phase = str(cur.get("phase") or "")
+        if str(cur.get("vn_day") or "") == vn_day and phase in ("scheduled", "polling", "done"):
+            return False
+        items[aid] = _normalize_queue_item(
+            aid,
+            {
+                "vn_day": vn_day,
+                "phase": "scheduled",
+                "scheduled_at": at,
+                "poll_count": 0,
+                "reward_retry_count": 0,
+                "pending_claims_json": "",
+                "last_error": "",
+                "updated_at": _now_iso(),
+            },
+        )
+        _save_queue_map(items)
     u = username_for_log(aid, row)
     print(
         f"[AUTO-MISSION] Hẹn {u}: check nhận thưởng sau {_initial_delay_sec():.0f}s{tag}",
@@ -260,6 +292,34 @@ def schedule_mission_claim_many(account_ids: list[str], *, reason: str = "") -> 
     return n
 
 
+def cancel_mission_claim_queue(
+    account_id: str = "",
+    *,
+    username: str = "",
+) -> bool:
+    """Xóa hàng đợi auto-mission — dừng poll/retry (DB mission_auto_claim_queue)."""
+    from xoso66_accounts_db import get_account_by_username
+
+    aid = str(account_id or "").strip()
+    if not aid and username:
+        row = get_account_by_username(username)
+        aid = str((row or {}).get("id") or "").strip()
+    if not aid:
+        return False
+    with _QUEUE_LOCK:
+        items = _load_queue_map()
+        deleted = aid in items
+        if deleted:
+            items.pop(aid, None)
+            _save_queue_map(items)
+    if deleted:
+        print(
+            f"[AUTO-MISSION] Đã xóa hàng đợi: {username_for_log(aid)}",
+            flush=True,
+        )
+    return deleted
+
+
 def _queue_update(
     account_id: str,
     *,
@@ -272,53 +332,45 @@ def _queue_update(
     vn_day: str | None = None,
 ) -> None:
     aid = str(account_id).strip()
-    sets: list[str] = ["updated_at = ?"]
-    vals: list[Any] = [_now_iso()]
-    if phase is not None:
-        sets.append("phase = ?")
-        vals.append(phase)
-    if scheduled_at is not None:
-        sets.append("scheduled_at = ?")
-        vals.append(float(scheduled_at))
-    if poll_count is not None:
-        sets.append("poll_count = ?")
-        vals.append(int(poll_count))
-    if reward_retry_count is not None:
-        sets.append("reward_retry_count = ?")
-        vals.append(int(reward_retry_count))
-    if pending_claims_json is not None:
-        sets.append("pending_claims_json = ?")
-        vals.append(str(pending_claims_json)[:4000])
-    if last_error is not None:
-        sets.append("last_error = ?")
-        vals.append(str(last_error)[:500])
-    if vn_day is not None:
-        sets.append("vn_day = ?")
-        vals.append(vn_day)
-    vals.append(aid)
     with _QUEUE_LOCK:
-        with db_conn() as conn:
-            conn.execute(
-                f"UPDATE mission_auto_claim_queue SET {', '.join(sets)} WHERE account_id = ?",
-                vals,
-            )
+        items = _load_queue_map()
+        cur = items.get(aid)
+        if not cur:
+            return
+        nxt = dict(cur)
+        nxt["updated_at"] = _now_iso()
+        if phase is not None:
+            nxt["phase"] = phase
+        if scheduled_at is not None:
+            nxt["scheduled_at"] = float(scheduled_at)
+        if poll_count is not None:
+            nxt["poll_count"] = int(poll_count)
+        if reward_retry_count is not None:
+            nxt["reward_retry_count"] = int(reward_retry_count)
+        if pending_claims_json is not None:
+            nxt["pending_claims_json"] = str(pending_claims_json)[:4000]
+        if last_error is not None:
+            nxt["last_error"] = str(last_error)[:500]
+        if vn_day is not None:
+            nxt["vn_day"] = vn_day
+        items[aid] = _normalize_queue_item(aid, nxt)
+        _save_queue_map(items)
 
 
 def _due_queue_rows() -> list[dict[str, Any]]:
-    init_mission_claim_queue()
     now = time.time()
     vn_day = today_vn_str()
-    with db_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM mission_auto_claim_queue
-            WHERE vn_day = ? AND phase IN ('scheduled', 'polling', 'reward_retry')
-              AND scheduled_at <= ?
-            ORDER BY scheduled_at ASC
-            """,
-            (vn_day, now),
-        ).fetchall()
-    return [dict(r) for r in rows]
+    with _QUEUE_LOCK:
+        rows = list(_load_queue_map().values())
+    out = [
+        r
+        for r in rows
+        if str(r.get("vn_day") or "") == vn_day
+        and str(r.get("phase") or "") in ("scheduled", "polling", "reward_retry")
+        and float(r.get("scheduled_at") or 0) <= now
+    ]
+    out.sort(key=lambda x: float(x.get("scheduled_at") or 0))
+    return out
 
 
 def _account_balance_vnd(account_id: str, session: dict) -> float:
@@ -336,12 +388,13 @@ def _maybe_withdraw_before_claim(
     *,
     min_vnd: int,
 ) -> dict[str, Any]:
-    """Rút toàn bộ balance nếu ≥ min_vnd; trả summary."""
+    """Rút bội step (mặc định 100k) nếu balance ≥ min_vnd; trả summary."""
     from xoso66_withdraw import resolve_fund_password, withdraw_for_account
 
     u = username_for_log(account_id, row)
     bal = _account_balance_vnd(account_id, session)
-    amt = floor_withdraw_amount_vnd(bal)
+    step = _withdraw_step_vnd()
+    amt = floor_withdraw_amount_vnd(bal, min_vnd=min_vnd, step_vnd=step)
     out: dict[str, Any] = {
         "balance": bal,
         "withdraw_amount": 0,
@@ -349,8 +402,11 @@ def _maybe_withdraw_before_claim(
         "skipped": True,
         "reason": "",
     }
-    if amt < min_vnd:
-        out["reason"] = f"balance {amt:,} < {min_vnd:,}"
+    if amt <= 0:
+        out["reason"] = (
+            f"balance {int(bal):,} < {min_vnd:,} "
+            f"hoặc không đủ bội {step:,} (≥ {min_vnd:,})"
+        )
         print(f"[AUTO-MISSION] {u}: bỏ rút — {out['reason']}", flush=True)
         return out
 
@@ -373,11 +429,20 @@ def _maybe_withdraw_before_claim(
         out["withdraw_raw"] = wr
         tag = "OK" if wr.get("ok") else "FAIL"
         print(f"[AUTO-MISSION] {u}: rút {tag} — {out.get('withdraw_msg')}", flush=True)
+        if not wr.get("ok"):
+            from xoso66_account_errors import maybe_mark_account_loi
+
+            maybe_mark_account_loi(
+                account_id,
+                str(out.get("withdraw_msg") or wr.get("msg") or ""),
+                source="withdraw",
+            )
         if wr.get("ok"):
             _sync_balance_to_db(account_id, session, label="sau API rút")
             from xoso66_withdraw_tracking import (
                 extract_withdraw_serial,
                 poll_withdraw_until_confirmed,
+                disable_auto_bet_on_withdraw_timeout,
                 withdraw_confirm_poll_interval_sec,
                 withdraw_confirm_poll_max,
             )
@@ -401,6 +466,7 @@ def _maybe_withdraw_before_claim(
                 max_attempts=max_attempts,
                 serial_no=serial,
                 log_prefix="[AUTO-MISSION]",
+                stop_program_on_exhausted=disable_auto_bet_on_withdraw_timeout(),
             )
             out["withdraw_poll"] = poll_rep
             confirmed = bool(poll_rep.get("confirmed") and poll_rep.get("success"))
@@ -420,12 +486,16 @@ def _maybe_withdraw_before_claim(
                     f"[AUTO-MISSION] {u}: chưa xác nhận Hoàn tất — bỏ nhận thưởng ({err})",
                     flush=True,
                 )
-                _start_withdraw_confirm_watch(
-                    account_id,
-                    amount_vnd=amt,
-                    since_ms=since_ms,
-                    serial_no=serial,
-                )
+                from xoso66_config_util import load_config
+
+                ab = load_config().get("auto_bet")
+                if isinstance(ab, dict) and ab.get("enabled"):
+                    _start_withdraw_confirm_watch(
+                        account_id,
+                        amount_vnd=amt,
+                        since_ms=since_ms,
+                        serial_no=serial,
+                    )
     except Exception as e:
         out["withdraw_ok"] = False
         out["withdraw_msg"] = str(e)
@@ -463,6 +533,7 @@ def _run_claim_flow(
     do_claim: bool = True,
     withdraw_before: bool = True,
     only_level_keys: set[tuple[int, int]] | None = None,
+    sync_accounts_daily_bet: bool | None = None,
 ) -> dict[str, Any]:
     """mission/list → (rút) → reward → list + DB."""
     from xoso66_daily_mission_check import (
@@ -489,16 +560,22 @@ def _run_claim_flow(
     rep = fetch_mission_list(session)
     persist_session(aid, session)
     if not rep.get("ok"):
+        err = str(rep.get("msg") or "mission/list thất bại")
+        from xoso66_account_errors import maybe_mark_account_loi
+
+        maybe_mark_account_loi(aid, err, source="mission/list")
         return {
             "ok": False,
             "username": u,
             "account_id": aid,
-            "error": str(rep.get("msg") or "mission/list thất bại"),
+            "error": err,
         }
 
     data = rep.get("data") or {}
     levels = collect_tracked_levels(data)
-    mission_snap = persist_mission_state(u, aid, levels, phase="list")
+    mission_snap = persist_mission_state(
+        u, aid, levels, phase="list", sync_accounts_daily_bet=sync_accounts_daily_bet
+    )
 
     claimable = [x for x in levels if x.get("status") == REWARD_CLAIM_STATUS]
     if only_level_keys:
@@ -532,7 +609,13 @@ def _run_claim_flow(
             if rep2.get("ok"):
                 data = rep2.get("data") or {}
                 levels = collect_tracked_levels(data)
-                persist_mission_state(u, aid, levels, phase="after_claim")
+                persist_mission_state(
+                    u,
+                    aid,
+                    levels,
+                    phase="after_claim",
+                    sync_accounts_daily_bet=sync_accounts_daily_bet,
+                )
         else:
             claim_blocked_by_withdraw = True
             detail = (
@@ -546,7 +629,9 @@ def _run_claim_flow(
             )
 
     done_bet = _daily_done_bet_from_levels(levels)
-    daily_total = int(daily_bet_today_vnd(row))
+    daily_total = int(
+        mission_snap.get("accounts_daily_bet_total") or daily_bet_today_vnd(row)
+    )
 
     return {
         "ok": True,
@@ -610,6 +695,21 @@ def _try_finish_after_claims(
     daily_total = int(result.get("daily_bet_total") or 0)
     only_retry = bool(result.get("only_retry_levels"))
 
+    for c in claims:
+        if not c.get("ok"):
+            from xoso66_account_errors import maybe_mark_account_loi
+
+            if maybe_mark_account_loi(
+                aid, str(c.get("msg") or ""), source="mission/reward"
+            ):
+                _queue_update(
+                    aid,
+                    phase="done",
+                    pending_claims_json="",
+                    last_error=str(c.get("msg") or "")[:500],
+                )
+                return True
+
     rate_fails = _rate_limit_failures(claims)
     if rate_fails:
         pending_keys = {
@@ -659,22 +759,46 @@ def _try_finish_after_claims(
         return True
 
     if had_claimable and claims_ok == 0:
+        if _all_failures_ip_already_claimed(claims):
+            msgs = "; ".join(
+                dict.fromkeys(str(c.get("msg") or "").strip() for c in claims if not c.get("ok"))
+            )[:200]
+            print(
+                f"[AUTO-MISSION] {u}: dừng — IP/proxy đã nhận thưởng ({msgs}), "
+                "không poll lại",
+                flush=True,
+            )
+            _queue_update(
+                aid,
+                phase="done",
+                pending_claims_json="",
+                last_error=msgs or "IP đã nhận thưởng",
+            )
+            return True
+
         err = "có mức claimable nhưng reward thất bại"
         _queue_update(aid, phase="polling", last_error=err)
         _reschedule_poll(aid, poll_count, err)
         return True
 
-    if done_bet < daily_total and daily_total > 0:
+    from xoso66_daily_mission_check import needs_daily_161_bet_poll
+
+    if needs_daily_161_bet_poll(done_bet, daily_total):
         if poll_count >= _poll_max_attempts():
             from xoso66_mission_db import force_daily_done_bet_to_account_total
 
             synced = force_daily_done_bet_to_account_total(aid)
             print(
-                f"[AUTO-MISSION] {u}: hết {poll_count} lần poll — "
-                f"sync done_bet_money={synced:,} (= tổng cược ngày) → thử nhận lại",
+                f"[AUTO-MISSION] {u}: hết {poll_count}/{_poll_max_attempts()} lần poll — "
+                f"sync tổng cược ngày DB={synced:,} → thử nhận lại",
                 flush=True,
             )
-            retry = _run_claim_flow(aid, do_claim=True, withdraw_before=True)
+            retry = _run_claim_flow(
+                aid,
+                do_claim=True,
+                withdraw_before=True,
+                sync_accounts_daily_bet=False,
+            )
             if retry.get("ok"):
                 return _try_finish_after_claims(
                     aid,
@@ -693,7 +817,7 @@ def _try_finish_after_claims(
         _reschedule_poll(
             aid,
             poll_count,
-            f"done_bet {done_bet:,} < cược ngày {daily_total:,}",
+            f"done_bet {done_bet:,} < 888888 và < cược ngày {daily_total:,}",
         )
         return True
 
@@ -742,6 +866,16 @@ def _process_queue_row(qrow: dict[str, Any]) -> None:
 
     if not result.get("ok"):
         err = str(result.get("error") or "unknown")
+        from xoso66_account_errors import maybe_mark_account_loi
+
+        if maybe_mark_account_loi(aid, err, source="auto-mission"):
+            _queue_update(
+                aid,
+                phase="done",
+                pending_claims_json="",
+                last_error=err[:500],
+            )
+            return
         if is_reward_retry and reward_retry_count < _reward_retry_max():
             _schedule_reward_retry(
                 aid,
@@ -764,6 +898,16 @@ def _process_queue_row(qrow: dict[str, Any]) -> None:
         return
 
 def _reschedule_poll(account_id: str, poll_count: int, reason: str) -> None:
+    from xoso66_account_errors import maybe_mark_account_loi
+
+    if maybe_mark_account_loi(account_id, reason, source="auto-mission"):
+        _queue_update(
+            account_id,
+            phase="done",
+            pending_claims_json="",
+            last_error=str(reason)[:500],
+        )
+        return
     nxt = poll_count + 1
     at = time.time() + _poll_interval_sec()
     _queue_update(
@@ -791,7 +935,8 @@ def worker_auto_mission_reward_loop(*, quiet: bool = False) -> None:
             f"[AUTO-MISSION] Worker: delay đầu {_initial_delay_sec():.0f}s, "
             f"poll {_poll_interval_sec():.0f}s × {_poll_max_attempts()}, "
             f"rate-limit retry {_reward_retry_delay_sec():.0f}s × {_reward_retry_max()}, "
-            f"rút ≥ {_min_withdraw_vnd():,}đ → chờ Hoàn tất site rồi mới nhận thưởng",
+            f"rút ≥ {_min_withdraw_vnd():,}đ, bội {_withdraw_step_vnd():,}đ "
+            f"(vd. 300k/400k) → chờ Hoàn tất site rồi mới nhận thưởng",
             flush=True,
         )
     while not stopping():

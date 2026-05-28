@@ -43,11 +43,25 @@ def deposit_poll_in_progress(order_id: int) -> bool:
         return int(order_id) in _poll_order_ids
 
 
+_DEPOSIT_TERMINAL_FAIL = frozenset({"Huỷ", "Thất Bại", "Hủy"})
+
+
 def deposit_order_confirmed(order_id: int) -> bool:
     from xoso66_deposit_orders_db import get_deposit_order
 
     row = get_deposit_order(int(order_id)) or {}
     return str(row.get("status") or "").strip() == "Thành Công"
+
+
+def deposit_order_failed(order_id: int) -> str | None:
+    """Trả status nếu đơn đã Huỷ/Thất Bại (để poll dừng sớm)."""
+    from xoso66_deposit_orders_db import get_deposit_order
+
+    row = get_deposit_order(int(order_id)) or {}
+    st = str(row.get("status") or "").strip()
+    if st in _DEPOSIT_TERMINAL_FAIL:
+        return st
+    return None
 
 
 def _parse_create_time_ms(create_time: str) -> int | None:
@@ -209,6 +223,18 @@ def poll_deposit_until_confirmed(
             "via": "order_already_thanh_cong",
             "attempt": 0,
         }
+    if oid:
+        failed_st = deposit_order_failed(oid)
+        if failed_st:
+            return {
+                "ok": False,
+                "done": True,
+                "success": False,
+                "confirmed": False,
+                "cancelled": True,
+                "error": f"đơn #{oid} {failed_st}",
+                "attempt": 0,
+            }
 
     last: dict[str, Any] | None = None
     for attempt in range(1, max(1, int(max_attempts)) + 1):
@@ -222,6 +248,19 @@ def poll_deposit_until_confirmed(
                 "attempt": attempt,
                 "last_check": last,
             }
+        if oid:
+            failed_st = deposit_order_failed(oid)
+            if failed_st:
+                return {
+                    "ok": False,
+                    "done": True,
+                    "success": False,
+                    "confirmed": False,
+                    "cancelled": True,
+                    "error": f"đơn #{oid} {failed_st}",
+                    "attempt": attempt,
+                    "last_check": last,
+                }
         if stopping():
             return {
                 "ok": False,

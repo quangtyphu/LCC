@@ -1,0 +1,9 @@
+Log: C:\Users\Quang\Documents\LC79\benbet_standalone\capture_logs\taixiu_longmebaihai_20260523T081249Z.jsonl
+Tong: 10 | WS gui: 0 | WS nhan: 0
+
+=== Mau dat cuoc (BET) ===
+  (chua bat duoc BET — thu lai sau khi vao ban va dat cuoc)
+
+=== WS nhan (SESSION / ket qua) ===
+
+Profile: C:\Users\Quang\Documents\LC79\benbet_standalone\capture_logs\bet_profile.json

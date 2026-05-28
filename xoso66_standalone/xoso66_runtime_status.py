@@ -16,7 +16,7 @@ def _ab(cfg: dict) -> dict:
 def log_jackpot_snapshot(cfg: dict, *, prefix: str = "[JACKPOT]") -> None:
     from xoso66_minigame_catalog import DEFAULT_JACKPOT_GAME_IDS, GAME_ID_LABELS
     from xoso66_minigame_jackpot_store import get_jackpot_store
-    from xoso66_jackpot_picker import pick_best_jackpot_game
+    from xoso66_jackpot_picker import jackpot_compare_vnd, pick_best_jackpot_game
 
     acfg = _ab(cfg)
     watch = acfg.get("game_ids")
@@ -42,7 +42,8 @@ def log_jackpot_snapshot(cfg: dict, *, prefix: str = "[JACKPOT]") -> None:
         name = row.get("name") or GAME_ID_LABELS.get(gid, "")
         ok = ""
         try:
-            if float(str(money).replace(",", "")) >= min_jp:
+            raw = float(str(money).replace(",", ""))
+            if jackpot_compare_vnd(gid, raw) >= min_jp:
                 ok = " ≥ ngưỡng"
         except ValueError:
             pass
@@ -120,6 +121,14 @@ def log_startup_services(cfg: dict) -> None:
             flush=True,
         )
         if assign_on:
+            from xoso66_bet_assign import ASSIGN_MATCH_MODE_LABELS, assign_match_mode
+
+            mm = assign_match_mode(ab)
+            print(
+                f"[MAIN]     assign_match_mode = {mm}  "
+                f"({ASSIGN_MATCH_MODE_LABELS.get(mm, '?')})",
+                flush=True,
+            )
             print(
                 f"[MAIN]     place_orders = {ab.get('place_orders', False)}  "
                 f"(false = chỉ in kế hoạch, không HTTP cược)",

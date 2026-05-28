@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PAYMENT</title>
+    <style>
+        :root {
+            --ink: #0b1b2e;
+            --blue-900: #1e3a8a;
+            --blue-600: #2563eb;
+            --sky: #e0f2fe;
+            --line: #e2e8f0;
+            --muted: #64748b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html {
+            -webkit-text-size-adjust: 100%;
+        }
+
+        body {
+            font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+            background: radial-gradient(90% 50% at 50% 0%, #dbeafe, transparent 50%), #f1f5f9;
+            color: var(--ink);
+            min-height: 100vh;
+            padding: 12px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .sheet {
+            width: 100%;
+            max-width: 960px;
+            background: #fff;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid #cbd5e1;
+            box-shadow: 0 20px 50px rgba(15, 40, 80, 0.1);
+        }
+
+        .hero {
+            display: grid;
+            grid-template-columns: 1fr 180px;
+            background: linear-gradient(115deg, #1e40af 0%, #2563eb 55%, #0ea5e9 100%);
+            color: #fff;
+            min-height: 120px;
+        }
+
+        .hero-a {
+            padding: 20px 24px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .hero-a .label {
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.04em;
+            opacity: 0.85;
+        }
+
+        .hero-a .oid {
+            font-size: 16px;
+            font-weight: 800;
+            word-break: break-all;
+            color: #ffffff;
+        }
+
+        .hero-b {
+            padding: 20px 18px;
+            background: rgba(0, 0, 0, 0.12);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            min-width: 160px;
+        }
+
+        .hero-b .t {
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            color: #bae6fd;
+        }
+
+        .hero-b .num {
+            font-size: 34px;
+            font-weight: 900;
+            font-variant-numeric: tabular-nums;
+            margin-top: 6px;
+            color: #fff;
+        }
+
+        .body-wrap {
+            display: grid;
+            grid-template-columns: 280px 1fr;
+        }
+
+        .rail {
+            background: linear-gradient(180deg, #f8fafc, #eff6ff);
+            border-right: 1px solid var(--line);
+            padding: 22px 18px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            text-align: center;
+        }
+
+        .rail h3 {
+            font-size: 12px;
+            font-weight: 900;
+            letter-spacing: 0.04em;
+            color: var(--blue-900);
+        }
+
+        .rail .scan-hint {
+            font-size: 12px;
+            color: var(--muted);
+            line-height: 1.45;
+        }
+
+        .bank-badge {
+            width: 100%;
+            max-width: 210px;
+            padding: 14px;
+            border-radius: 10px;
+            border: 1px solid var(--line);
+            background: #fff;
+        }
+
+        .bank-badge img {
+            width: 100%;
+            max-width: 110px;
+            display: block;
+            margin: 0 auto;
+            height: auto;
+        }
+
+        .qr-wrap {
+            width: 100%;
+            max-width: 210px;
+            padding: 14px;
+            border-radius: 12px;
+            border: 1px solid var(--line);
+            background: #fff;
+        }
+
+        .qr-logo {
+            width: 116px;
+            display: block;
+            margin: 0 auto 10px;
+            height: auto;
+        }
+
+        #canvas {
+            width: 150px;
+            height: 150px;
+            margin: 0 auto;
+        }
+
+        #canvas canvas {
+            display: block;
+            margin: 0 auto;
+        }
+
+        .rail .sum {
+            font-size: 24px;
+            font-weight: 900;
+            color: var(--blue-600);
+        }
+
+        .rail .napas-wrap {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .rail .napas-wrap img {
+            width: auto;
+            height: auto;
+            max-width: 80px;
+        }
+
+        .rail .divider {
+            color: #0c4a6e;
+            font-size: 20px;
+        }
+
+        .main {
+            padding: 20px 22px 26px;
+        }
+
+        .main h3 {
+            font-size: 12px;
+            font-weight: 900;
+            letter-spacing: 0.04em;
+            color: var(--blue-900);
+            margin-bottom: 14px;
+            padding-bottom: 8px;
+            border-bottom: 3px solid var(--sky);
+        }
+
+        .pay-method {
+            font-size: 13px;
+            font-weight: 700;
+            color: #334155;
+            margin-bottom: 14px;
+        }
+
+        .pay-method span {
+            color: var(--blue-600);
+        }
+
+        .table-wrap {
+            width: 100%;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        th,
+        td {
+            padding: 12px 10px;
+            text-align: left;
+            border-bottom: 1px solid var(--line);
+            vertical-align: middle;
+        }
+
+        th {
+            width: 130px;
+            color: var(--muted);
+            font-weight: 800;
+            font-size: 13px;
+            background: #f8fafc;
+        }
+
+        td {
+            font-weight: 600;
+            color: #1e293b;
+            word-break: break-word;
+        }
+
+        td.hl {
+            color: #2563eb;
+            font-weight: 800;
+        }
+
+        .copy-cell {
+            text-align: right;
+            width: 92px;
+            min-width: 92px;
+        }
+
+        .copy-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 72px;
+            min-height: 34px;
+            border: 1px solid rgba(37, 99, 235, 0.55);
+            background: #fff;
+            color: #2563eb;
+            font-weight: 700;
+            font-size: 12px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .copy-btn:hover {
+            background: rgba(37, 99, 235, 0.06);
+            border-color: #2563eb;
+        }
+
+        .instr {
+            margin-top: 22px;
+            padding: 16px 18px;
+            background: linear-gradient(180deg, #eff6ff, #f8fafc);
+            border: 1px solid #93c5fd;
+            border-left: 4px solid var(--blue-600);
+            border-radius: 8px;
+        }
+
+        .instr h4 {
+            font-size: 14px;
+            font-weight: 900;
+            color: var(--blue-900);
+            margin-bottom: 8px;
+        }
+
+        .instr ol {
+            margin-left: 18px;
+            color: #334155;
+            font-size: 13px;
+            line-height: 1.7;
+        }
+
+        .instr strong {
+            color: #2563eb;
+        }
+
+        .footer-safe {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px 16px 24px;
+            background: #f8fafc;
+            border-top: 1px solid var(--line);
+            text-align: center;
+            color: #475569;
+            font-size: 13px;
+        }
+
+        .footer-safe .siteseal {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .footer-safe p.title {
+            font-weight: bold;
+            color: #0c4a6e;
+            margin-bottom: 4px;
+        }
+
+        @media (max-width: 820px) {
+            .hero {
+                grid-template-columns: 1fr;
+            }
+
+            .hero-b {
+                min-width: 0;
+            }
+
+            .body-wrap {
+                grid-template-columns: 1fr;
+            }
+
+            .rail {
+                border-right: none;
+                border-bottom: 1px solid var(--line);
+            }
+        }
+
+        @media (max-width: 640px) {
+            body {
+                padding: 10px;
+            }
+
+            .hero-a,
+            .hero-b,
+            .main,
+            .rail {
+                padding-left: 16px;
+                padding-right: 16px;
+            }
+
+            .hero-b .num {
+                font-size: 30px;
+            }
+
+            table {
+                font-size: 13px;
+            }
+
+            th,
+            td {
+                padding: 10px 6px;
+            }
+
+            th {
+                width: 92px;
+                font-size: 12px;
+            }
+
+            .copy-cell {
+                width: 78px;
+                min-width: 78px;
+            }
+
+            .copy-btn {
+                width: 64px;
+                min-height: 32px;
+                font-size: 11px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <main class="sheet">
+        <header class="hero">
+            <div class="hero-a">
+                <p class="label">Mã GD</p>
+                <p class="oid">1779809024443355327996</p>
+            </div>
+            <div class="hero-b">
+                <p class="t">Hết hạn sau</p>
+                <p class="num" id="timeout1">--:--</p>
+            </div>
+        </header>
+
+        <div class="body-wrap">
+            <aside class="rail">
+                <h3>QR CODE</h3>
+                <p class="scan-hint">C&#225;ch 1: Chuy&#7875;n kho&#7843;n b&#7857;ng m&#227; QR</p>
+                <p class="scan-hint">M&#7903; &#7913;ng d&#7909;ng ng&#226;n h&#224;ng v&#224; qu&#233;t m&#227; QR
+                    &#273;&#7875; thanh to&#225;n</p>
+                <div class="bank-badge">
+                    <img class="qr-logo" src="" alt="">
+                    <div id="canvas"></div>
+                </div>
+                <div class="napas-wrap">
+                    <img src="/static/bankcode/img/napas-jFWvg95W.webp" alt="">
+                    <span class="divider">|</span>
+                    <img src="/static/bankcode/img/ACB.png?t=1" alt="">
+                </div>
+                <p class="sum">100,000 ₫</p>
+                <p class="scan-hint">M&#227; QR ch&#7881; c&#243; hi&#7879;u l&#7921;c cho &#273;&#417;n h&#224;ng
+                    hi&#7879;n t&#7841;i, vui l&#242;ng kh&#244;ng s&#7917; d&#7909;ng l&#7841;i cho giao
+                    d&#7883;ch kh&#225;c.</p>
+            </aside>
+
+            <section class="main">
+                <h3>Th&#244;ng Tin &#272;&#417;n H&#224;ng V&#224; Thu H&#7897;</h3>
+                                <div class="pay-method">C&#225;ch 2 : Chuy&#7875;n kho&#7843;n <span>th&#7911; c&#244;ng</span> theo
+                    th&#244;ng tin b&#234;n d&#432;&#7899;i</div>
+                
+                <div class="table-wrap">
+                    <table>
+                        <tbody>
+                            <tr>
+                                <th>Ng&#226;n h&#224;ng</th>
+                                <td>	 ACB - Ngan hang TMCP A Chau</td>
+                                <td class="copy-cell"></td>
+                            </tr>
+                            <tr>
+                                <th>S&#7889; TK</th>
+                                <td id="account">7820028</td>
+                                <td class="copy-cell"><button type="button" class="copy-btn"
+                                        onclick="copy('account', 2)">Copy</button></td>
+                            </tr>
+                            <tr>
+                                <th>Ch&#7911; TK</th>
+                                <td id="userName">NGUYỄN TẤN VINH</td>
+                                <td class="copy-cell"><button type="button" class="copy-btn"
+                                        onclick="copy('userName', 2)">Copy</button></td>
+                            </tr>
+                            <tr>
+                                <th>N&#7897;i dung</th>
+                                <td class="hl" id="remake">CHUYEN9AQ8FN</td>
+                                <td class="copy-cell"><button type="button" class="copy-btn"
+                                        onclick="copy('remake', 2)">Copy</button></td>
+                            </tr>
+                            <tr>
+                                <th>S&#7889; ti&#7873;n</th>
+                                <td class="hl" id="amounts">100,000 ₫</td>
+                                <td class="copy-cell"><button type="button" class="copy-btn"
+                                        onclick="copy('amounts', 2)">Copy</button></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <section class="instr">
+                    <h4>L&#432;u &#253; quan tr&#7885;ng</h4>
+                    <ol>
+                        <li>Vui l&#242;ng chuy&#7875;n kho&#7843;n &#273;&#250;ng <strong>n&#7897;i dung
+                                CHUYEN9AQ8FN</strong> v&#224; &#273;&#250;ng <strong>s&#7889; ti&#7873;n
+                                100,000₫</strong>. N&#7871;u nh&#7853;p sai n&#7897;i dung
+                            ho&#7863;c sai s&#7889; ti&#7873;n, h&#7879;
+                            th&#7889;ng c&#243; th&#7875; kh&#244;ng t&#7921; &#273;&#7897;ng ghi nh&#7853;n.
+                        </li>
+                        <li>M&#227; QR ch&#7881; c&#243; hi&#7879;u l&#7921;c cho m&#7897;t l&#7847;n thanh to&#225;n.
+                            Vui l&#242;ng kh&#244;ng l&#224;m m&#7899;i trang, kh&#244;ng l&#432;u l&#7841;i v&#224;
+                            kh&#244;ng d&#249;ng l&#7841;i m&#227; cho &#273;&#417;n h&#224;ng kh&#225;c &#273;&#7875;
+                            tr&#225;nh ph&#225;t sinh sai s&#243;t.</li>
+                        <li>N&#7871;u c&#7847;n h&#7895; tr&#7907; trong qu&#225; tr&#236;nh thanh to&#225;n, vui
+                            l&#242;ng li&#234;n h&#7879; b&#7897; ph&#7853;n CSKH 24/7.</li>
+                    </ol>
+                </section>
+            </section>
+        </div>
+
+        <footer class="footer-safe">
+            <div class="siteseal">
+                <img width="100" src="/static/bankcode/img/globalsign-siteseal-Qp2t0hE1.png" alt="">
+                <img width="100" src="/static/bankcode/img/pci-dss-compliant-logo-vector-SqY7lAnC.svg" alt="">
+            </div>
+            <p class="title">An to&#224;n th&#244;ng tin - Ti&#234;u chu&#7849;n b&#7843;o m&#7853;t tuy&#7879;t
+                &#273;&#7889;i</p>
+            <p>M&#7885;i th&#244;ng tin thanh to&#225;n &#273;&#7873;u &#273;&#432;&#7907;c m&#227; h&#243;a v&#224;
+                b&#7843;o m&#7853;t nghi&#234;m ng&#7863;t theo ti&#234;u chu&#7849;n an to&#224;n cao nh&#7845;t</p>
+        </footer>
+    </main>
+    <script type="text/javascript" src="/static/momo/js/jquery-3.6.0.min.js"></script>
+    <script type="text/javascript" src="/static/momo/js/utf.js?v=2.0"></script>
+    <script type="text/javascript" src="/static/momo/js/jquery.qrcode.js"></script>
+    <script src="/static/momo/js/layer.js"></script>
+    <script type="text/javascript" src="/static/public/js/FileSaver.js"></script>
+    <script src="/static/public/js/html2canvas.min.js"></script>
+    <script>
+        var sysorder = "6c59556e7359573334304e342b6a547745774e2f50673d3d";
+        var success = 0;
+        countDownTime("595");
+
+        //倒计时
+        function countDownTime(datetime) {
+            if (success == 1) {
+                return false;
+            }
+            datetime = datetime - 1;
+            //换算时分秒
+            let hours = parseInt(datetime / 3600);
+            let minutes = parseInt((datetime - hours * 3600) / 60);
+            let seconds = parseInt(datetime - hours * 3600 - minutes * 60);
+            if (datetime >= 0 && success == 0) {
+                let date = `${minutes < 10 ? '0' + minutes : minutes}:${seconds < 10 ? '0' + seconds : seconds}`;
+                let dateElement = document.getElementById('timeout1');
+                dateElement.innerText = date;
+                setTimeout(function () {
+                    countDownTime(datetime);
+                }, 1000);
+            } else {
+                success = 2;
+                location.href = "/order/show_html.do?type=1&code=bankcode&sysorder=" + sysorder;
+            }
+        }
+
+        //画二维码
+        function toUtf8(str) {
+            var out, i, len, c;
+            out = "";
+            len = str.length;
+            for (i = 0; i < len; i++) {
+                c = str.charCodeAt(i);
+                if ((c >= 0x0001) && (c <= 0x007F)) {
+                    out += str.charAt(i);
+                } else if (c > 0x07FF) {
+                    out += String.fromCharCode(0xE0 | ((c >> 12) & 0x0F));
+                    out += String.fromCharCode(0x80 | ((c >> 6) & 0x3F));
+                    out += String.fromCharCode(0x80 | ((c >> 0) & 0x3F));
+                } else {
+                    out += String.fromCharCode(0xC0 | ((c >> 6) & 0x1F));
+                    out += String.fromCharCode(0x80 | ((c >> 0) & 0x3F));
+                }
+            }
+            return out;
+        }
+        jQuery(function () {
+            $('#canvas').qrcode({
+                render: "canvas", // 设置渲染方式(有两种方式 table和canvas，默认是canvas）
+                width: 150, // 宽度
+                height: 150, // 高度
+                background: "#FFFFFF", // 背景颜色
+                foreground: "#000000", // 前景颜色
+                correctLevel: 0, // 纠错等级
+                // src: 'images/logo4.png',
+                text: toUtf8("00020101021138510010A00000072701210006970416010778200280208QRIBFTTA530370454061000005802VN62160812CHUYEN9AQ8FN63040D89") // 任意内容
+            });
+        })
+
+        //获取订单状态
+        function succInfo() {
+            if (success != 0) {
+                return false;
+            }
+            $.ajax({
+                type: "post",
+                dataType: 'json',
+                url: "/order/check_state.do",
+                data: 'sysorder=' + sysorder,
+                async: false,
+                success: function (da) {
+                    if (da.state == 1) {
+                        success = 1;
+                        setTimeout(function () {
+                            if (da.callbackurl != '' && da.callbackurl != 'null') {
+                                window.location.href = da.callbackurl
+                            } else {
+                                location.href = "/order/show_html.do?type=2&code=bankcode&sysorder=" + sysorder;
+                            }
+                        }, 1500);
+                    } else {
+                        setTimeout(function () {
+                            succInfo();
+                        }, 15000);
+                    }
+                }
+            });
+        }
+        succInfo();
+
+        //下载图片
+        function saveCanvas() {
+            html2canvas($("#canvas")).then(function (canvas) {
+                var imgUri = canvas.toDataURL("image/png").replace("image/png", "image/octet-stream");
+
+                var filename = parseInt(Math.random() * 100);
+                if (filename < 1) {
+                    filename = '1';
+                }
+                filename = filename + '.png';
+                saveAs(imgUri, filename);
+            });
+        }
+        //复制
+        function copy(key, index) {
+            // let el = document.createElement('input')
+            // el.style.height = 0
+            // document.body.appendChild(el)
+            if (key === 'account') {
+                myFunction("7820028");
+                //el.setAttribute('value',"7820028");
+            } else if (key === 'bankName') {
+                myFunction("ACB");
+                //el.setAttribute('value',"ACB");
+            } else if (key === 'amounts') {
+                myFunction("100,000");
+                //el.setAttribute('value',"100,000");
+            } else if (key === 'userName') {
+                myFunction("NGUYỄN TẤN VINH");
+                //el.setAttribute('value',"100,000");
+            } else {
+                myFunction("CHUYEN9AQ8FN");
+                //el.setAttribute('value',"CHUYEN9AQ8FN");
+            }
+            // document.body.appendChild(el);
+            // el.select();
+            // el.setSelectionRange(0, 99999);
+            // document.execCommand('copy');
+            // document.body.removeChild(el);
+            // layer.msg("Thành công", { icon: 1 });
+        }
+
+        function myFunction(copyTest) {
+            var inputTest = document.createElement('input')
+            inputTest.setAttribute('readonly', '')
+            inputTest.value = copyTest
+            document.body.appendChild(inputTest)
+            inputTest.select()
+            document.execCommand('Copy')
+            inputTest.className = 'oInput'
+            inputTest.style.display = 'none'
+            layer.msg("Th\\u00e0nh c\\u00f4ng", { icon: 1 });
+        }
+
+    </script>
+</body>
+
+</html>

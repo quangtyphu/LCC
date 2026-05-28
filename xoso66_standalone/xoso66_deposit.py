@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-XOSO66 — tạo đơn nạp QRPay + lấy STK/nội dung CK (độc lập, không dùng LC79).
+XOSO66 — tạo đơn nạp (TOPAY / cổng banking) + lấy STK/nội dung CK (độc lập).
 
 Chạy thử:
   python xoso66_deposit.py
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import html as html_lib
 import json
 import os
 import re
@@ -29,6 +30,10 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import requests
+
+from xoso66_config_util import configure_stdio_utf8
+
+configure_stdio_utf8()
 
 try:
     from xoso66_session import _requests_session as _game_http_session
@@ -59,7 +64,11 @@ BASE_URL = os.environ.get("XOSO66_BASE_URL", "https://v6sgqpyi.whskxk1.com").rst
 DEPOSIT_ORDER_PATH = "/server/payment/depositorder"
 PAYMENT_ORDER_LIST_PATH = "/server/payment/paymentorderlist"
 QRPAY_BASE = os.environ.get("XOSO66_QRPAY_BASE", "https://pay.qrpay.quest").rstrip("/")
+# QRPay (235) đã gỡ — mặc định TOPAY Ngân hàng trực tuyến (280), cấu hình trong xoso66_config.json
 QRPAY_CHANNEL_ID = 235
+DEFAULT_DEPOSIT_CHANNEL_ID = 280
+DEFAULT_DEPOSIT_CHANNEL_NAME = "TOPAY-Ngân hàng trực tuyến"
+DEFAULT_MIN_DEPOSIT_VND = 1_000_000
 QRPAY_GET_WU_INFO_PATH = "/prod-api/pay/page/PayAccount/getWUInfo"
 _DEPOSIT_PLAYWRIGHT_ACTIONS = ("userCenter/depositorder",)
 _HTTP_DEPOSIT_FALLBACK_CODES = (1004, 10055, 10058)
@@ -216,40 +225,132 @@ def prepare_deposit_payload(
     return body
 
 
-def qrpay_merchant_from_deposit_info(info: dict) -> tuple[int, int, str]:
-    """QRPay-nạp tiền bankking (channel 235) — merchant_id + random_remark."""
+def _deposit_channel_prefs() -> dict[str, Any]:
+    from xoso66_config_util import load_config
+
+    ad = load_config().get("auto_deposit")
+    if not isinstance(ad, dict):
+        ad = {}
+    raw_id = ad.get("deposit_channel_id")
+    return {
+        "channel_id": int(raw_id) if raw_id not in (None, "") else None,
+        "channel_name": str(
+            ad.get("deposit_channel_name") or DEFAULT_DEPOSIT_CHANNEL_NAME
+        ).strip(),
+        "min_amount_vnd": int(ad.get("min_deposit_vnd") or DEFAULT_MIN_DEPOSIT_VND),
+        "topay_bank_bid": str(ad.get("topay_bank_bid") or "").strip(),
+    }
+
+
+def _iter_deposit_channels(info: dict) -> Any:
     for cat in info.get("payment_list") or []:
         for ch in cat.get("channel") or []:
-            if ch.get("id") != QRPAY_CHANNEL_ID:
-                continue
-            merchants = ch.get("merchant") or []
-            if not merchants:
-                break
-            m = merchants[0]
-            return (
-                int(ch["id"]),
-                int(m["id"]),
-                str(m.get("random_remark") or ""),
+            if isinstance(ch, dict):
+                yield ch
+
+
+def _channel_display_name(ch: dict) -> str:
+    return str(ch.get("name") or ch.get("title") or ch.get("channel_name") or "")
+
+
+def merchant_from_deposit_info(
+    info: dict,
+    *,
+    channel_id: int | None = None,
+    name_contains: str | None = None,
+) -> tuple[int, int, str]:
+    """Chọn merchant từ GET depositinfo (channel_id hoặc tên kênh)."""
+    channels = list(_iter_deposit_channels(info))
+    if not channels:
+        raise ValueError("depositinfo không có kênh nạp")
+
+    targets: list[dict] = []
+    if channel_id is not None:
+        cid = int(channel_id)
+        targets = [c for c in channels if int(c.get("id") or 0) == cid]
+        if not targets:
+            names = [f"{c.get('id')}:{_channel_display_name(c)}" for c in channels[:8]]
+            raise ValueError(
+                f"Không tìm thấy channel_id={cid}. Có: {', '.join(names)}"
             )
-    raise ValueError(f"Khong tim thay kenh QRPay (channel_id={QRPAY_CHANNEL_ID})")
+    elif name_contains:
+        key = name_contains.strip().lower()
+        targets = [c for c in channels if key in _channel_display_name(c).lower()]
+
+    if not targets:
+
+        def _default_bank_channel(ch: dict) -> bool:
+            n = _channel_display_name(ch).lower()
+            if any(x in n for x in ("momo", "zalo", "usdt", "trực tuyếnqr", "mã quét")):
+                return False
+            return "topay" in n and "ngân hàng trực tuyến" in n
+
+        targets = [c for c in channels if _default_bank_channel(c)]
+
+    if not targets:
+        raise ValueError(
+            "Không tìm thấy kênh nạp — chỉnh deposit_channel_id / deposit_channel_name trong config"
+        )
+
+    ch = targets[0]
+    merchants = ch.get("merchant") or []
+    if not merchants:
+        raise ValueError(
+            f"Kênh {_channel_display_name(ch)} (id={ch.get('id')}) không có merchant"
+        )
+    m = merchants[0]
+    return int(ch["id"]), int(m["id"]), str(m.get("random_remark") or "")
 
 
-def resolve_qrpay_params(session: dict) -> tuple[int, int, str]:
-    """merchant_id + random_remark cho QRPay (cache neu da dung kenh 235)."""
+def _channel_exists_in_info(info: dict, channel_id: int) -> bool:
+    return any(int(c.get("id") or 0) == int(channel_id) for c in _iter_deposit_channels(info))
+
+
+def resolve_deposit_params(session: dict) -> tuple[int, int, str]:
+    """merchant_id + random_remark — ưu tiên config, cache session nếu kênh còn tồn tại."""
+    prefs = _deposit_channel_prefs()
+    info = get_deposit_info(session=session)
+    if not info.get("ok"):
+        raise ValueError(f"depositinfo lỗi: {info.get('raw')}")
+
+    cached_ch = int(session.get("channel_id") or 0)
+    pref_ch = prefs.get("channel_id")
+
     if (
         session.get("merchant_id")
         and session.get("random_remark") is not None
-        and int(session.get("channel_id") or 0) == QRPAY_CHANNEL_ID
+        and cached_ch
+        and cached_ch != QRPAY_CHANNEL_ID
+        and _channel_exists_in_info(info, cached_ch)
+        and (pref_ch is None or cached_ch == int(pref_ch))
     ):
         return (
-            QRPAY_CHANNEL_ID,
+            cached_ch,
             int(session["merchant_id"]),
             str(session.get("random_remark") or ""),
         )
-    info = get_deposit_info(session=session)
-    if not info.get("ok"):
-        raise ValueError(f"depositinfo loi: {info.get('raw')}")
-    return qrpay_merchant_from_deposit_info(info)
+
+    if cached_ch == QRPAY_CHANNEL_ID or (
+        cached_ch and not _channel_exists_in_info(info, cached_ch)
+    ):
+        session.pop("channel_id", None)
+        session.pop("merchant_id", None)
+        session.pop("random_remark", None)
+
+    return merchant_from_deposit_info(
+        info,
+        channel_id=pref_ch,
+        name_contains=None if pref_ch else prefs.get("channel_name"),
+    )
+
+
+def qrpay_merchant_from_deposit_info(info: dict) -> tuple[int, int, str]:
+    """Legacy QRPay 235 — kênh đã gỡ trên site."""
+    return merchant_from_deposit_info(info, channel_id=QRPAY_CHANNEL_ID)
+
+
+def resolve_qrpay_params(session: dict) -> tuple[int, int, str]:
+    return resolve_deposit_params(session)
 
 
 def fetch_cek_p(session: dict) -> str:
@@ -384,12 +485,20 @@ def get_deposit_info(account_id: str | None = None, session: dict | None = None)
     }
 
 
-def apply_qrpay_to_session(session: dict, info: dict | None = None) -> dict:
-    """Gan merchant_id / random_remark QRPay tu depositinfo."""
+def apply_deposit_channel_to_session(session: dict, info: dict | None = None) -> dict:
+    """Gán merchant_id / random_remark từ depositinfo (kênh theo config)."""
     if info is None:
         info = get_deposit_info(session=session)
+    if not info.get("ok"):
+        return session
     try:
-        ch_id, mer_id, remark = qrpay_merchant_from_deposit_info(info)
+        prefs = _deposit_channel_prefs()
+        pref_ch = prefs.get("channel_id")
+        ch_id, mer_id, remark = merchant_from_deposit_info(
+            info,
+            channel_id=pref_ch,
+            name_contains=None if pref_ch else prefs.get("channel_name"),
+        )
         session["channel_id"] = ch_id
         session["merchant_id"] = mer_id
         session["random_remark"] = remark
@@ -397,6 +506,10 @@ def apply_qrpay_to_session(session: dict, info: dict | None = None) -> dict:
     except ValueError:
         pass
     return session
+
+
+def apply_qrpay_to_session(session: dict, info: dict | None = None) -> dict:
+    return apply_deposit_channel_to_session(session, info)
 
 
 # ── paymentorderlist (JSON thuong — khong ma hoa) ────────────────────────────
@@ -530,8 +643,14 @@ def deposit_order_playwright(session: dict, plain: dict) -> dict[str, Any]:
     return {"ok": js.get("code") == 1, "raw": js, "method": "playwright"}
 
 
-def save_qr_image(transfer_info: dict, account_id: str, session: dict | None = None) -> str | None:
-    """Lưu QR từ getWUInfo (base64 hoặc qr_url) → qr_outputs/."""
+def save_qr_image(
+    transfer_info: dict,
+    account_id: str,
+    session: dict | None = None,
+    *,
+    allow_vietqr_fallback: bool = False,
+) -> str | None:
+    """Lưu QR từ cổng (base64 / qr_url). VietQR tự dựng chỉ khi allow_vietqr_fallback=True (QRPay)."""
     QR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     remark = (
         transfer_info.get("transfer_content")
@@ -541,6 +660,14 @@ def save_qr_image(transfer_info: dict, account_id: str, session: dict | None = N
     )
     safe = re.sub(r"[^\w\-]", "_", str(remark))[:48]
     out_path = QR_OUTPUT_DIR / f"{account_id}_{safe}.png"
+
+    emv = transfer_info.get("qr_emv_payload")
+    if emv:
+        try:
+            out_path.write_bytes(emv_qr_to_png_bytes(str(emv)))
+            return str(out_path)
+        except Exception as e:
+            print(f"[QR] render EMV TOPAY: {e}", flush=True)
 
     uri = transfer_info.get("qr_data_uri")
     if isinstance(uri, str) and uri.startswith("data:"):
@@ -552,22 +679,34 @@ def save_qr_image(transfer_info: dict, account_id: str, session: dict | None = N
             pass
 
     url = transfer_info.get("qr_url")
-    if url:
+    if url and not _is_decorative_payment_img(str(url)):
+        src = str(transfer_info.get("source_url") or "").strip()
+        hdrs = {"User-Agent": DEFAULT_UA}
+        if src:
+            hdrs["referer"] = src
         try:
-            r = _game_http(session or {}).get(str(url), timeout=25)
-            if r.ok:
-                out_path.write_bytes(r.content)
-                return str(out_path)
+            host = urlparse(str(url)).netloc.lower()
+            if session and host and host not in urlparse(BASE_URL).netloc.lower():
+                r = requests.get(str(url), headers=hdrs, timeout=25)
+            else:
+                r = _game_http(session or {}).get(str(url), headers=hdrs, timeout=25)
+            if r.ok and r.content:
+                ct = str(r.headers.get("Content-Type") or "").lower()
+                if "image" in ct or str(url).lower().endswith((".png", ".jpg", ".jpeg")):
+                    out_path.write_bytes(r.content)
+                    return str(out_path)
         except Exception:
             pass
 
-    # QRPay getWUInfo thường không trả ảnh — dựng VietQR từ STK + NDCK
-    bank_map = {"VPBank": "VPB", "ACB": "ACB", "Vietcombank": "VCB", "Techcombank": "TCB"}
+    if not allow_vietqr_fallback:
+        return None
+
+    # QRPay legacy — dựng VietQR (TOPAY phải dùng QR trên trang cổng)
     bank_name = transfer_info.get("bank_name") or ""
     account_no = transfer_info.get("account_no") or ""
     content = transfer_info.get("transfer_content") or ""
     amount = transfer_info.get("amount")
-    code = bank_map.get(str(bank_name), str(bank_name))
+    code = _vietqr_bank_code(str(bank_name))
     if code and account_no and content and amount:
         from urllib.parse import quote
 
@@ -583,6 +722,618 @@ def save_qr_image(transfer_info: dict, account_id: str, session: dict | None = N
         except Exception:
             pass
     return None
+
+
+def transfer_info_from_deposit_data(data: dict | None) -> dict | None:
+    """Parse data.info từ response depositorder (nếu site trả sẵn STK)."""
+    if not isinstance(data, dict):
+        return None
+    info = data.get("info")
+    if isinstance(info, list):
+        for item in info:
+            if isinstance(item, dict):
+                norm = _normalize_transfer_info({"data": item})
+                if norm.get("account_no"):
+                    return norm
+    if isinstance(info, dict):
+        norm = _normalize_transfer_info({"data": info})
+        if norm.get("account_no"):
+            return norm
+    return None
+
+
+def _pay_url_trade_token(pay_url: str) -> str:
+    q = urlparse(str(pay_url or "").strip())
+    if q.query:
+        m = re.search(r"([\w]{16,})", q.query)
+        if m:
+            return m.group(1)
+    tail = (q.path or "").rstrip("/").split("/")[-1]
+    if tail and "." not in tail and len(tail) >= 16:
+        return tail
+    return ""
+
+
+def _should_use_qrpay_api(trade_no: str, pay_url: str | None, channel_id: int) -> bool:
+    if int(channel_id or 0) == QRPAY_CHANNEL_ID:
+        return True
+    return "qrpay" in str(pay_url or "").lower()
+
+
+def _html_element_text(html: str, element_id: str) -> str:
+    """Đọc text trong #id (hỗ trợ nháy đơn/đôi, khoảng trắng)."""
+    for pat in (
+        rf'id=["\']{re.escape(element_id)}["\'][^>]*>\s*([^<]+)',
+        rf'id=["\']{re.escape(element_id)}["\'][^>]*>([^<]+)</',
+    ):
+        m = re.search(pat, html, re.I | re.S)
+        if m:
+            return html_lib.unescape(m.group(1).strip())
+    return ""
+
+
+def _fetch_topay_http(
+    url: str,
+    topay_http: requests.Session | None = None,
+    *,
+    referer: str = "",
+) -> str:
+    """
+    GET trang TOPAY và giữ cookie theo `topay_http` giữa các bước.
+    Không gửi cookie xoso66-session sang domain TOPAY vì có thể làm sai luồng.
+    """
+    ref = str(referer or url).strip()
+    headers: dict[str, str] = {
+        "User-Agent": DEFAULT_UA,
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "vi,en-US;q=0.9,en;q=0.8",
+    }
+    if ref:
+        headers["referer"] = ref
+    http = topay_http or requests
+    r = (
+        http.get(str(url).strip(), headers=headers, timeout=25)
+        if topay_http
+        else requests.get(str(url).strip(), headers=headers, timeout=25)
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"TOPAY HTTP {r.status_code}")
+    return r.text
+
+
+def _parse_account_from_emv(emv: str) -> str | None:
+    """Số TK từ payload VietQR EMV (tag 01 trong NAPAS 38) — fallback khi HTML chưa render."""
+    emv = str(emv or "").strip()
+    if not emv.startswith("000201"):
+        return None
+    m = re.search(r"A00000072701(\d{2})(\d+)", emv)
+    if not m:
+        return None
+    ln = int(m.group(1))
+    payload = m.group(2)[:ln]
+    m2 = re.search(r"01(\d{2})(\d+)", payload)
+    if m2:
+        aln = int(m2.group(1))
+        acct = m2.group(2)[:aln]
+        if acct.isdigit() and 6 <= len(acct) <= 20:
+            return acct
+    runs = re.findall(r"\d{8,16}", payload)
+    return runs[-1] if runs else None
+
+
+def _parse_topay_paymain_fields(html: str, *, amount: int | None = None) -> dict[str, Any]:
+    """STK / NDCK / EMV từ HTML paymain (một lần GET)."""
+    account_no = _html_element_text(html, "account")
+    emv = extract_topay_emv_payload(html)
+    if not account_no and emv:
+        account_no = _parse_account_from_emv(emv) or ""
+    amounts_raw = _html_element_text(html, "amounts")
+    amt = amount
+    if amounts_raw:
+        digits = re.sub(r"[^\d]", "", amounts_raw)
+        if digits:
+            amt = int(digits)
+    ti: dict[str, Any] = {
+        "amount": amt or amount,
+        "bank_name": _topay_bank_name_from_html(html),
+        "account_no": account_no,
+        "account_name": _html_element_text(html, "userName"),
+        "transfer_content": _html_element_text(html, "remake"),
+        "gateway": "topay",
+        "raw": {"topay_page": "paymain", "has_emv": bool(emv)},
+    }
+    if emv:
+        ti["qr_emv_payload"] = emv
+    return ti
+
+
+def _abs_payment_url(page_url: str, href: str) -> str:
+    href = str(href or "").strip()
+    if not href:
+        return ""
+    if href.startswith(("data:", "http://", "https://")):
+        return href
+    parsed = urlparse(str(page_url or "").strip())
+    if href.startswith("//"):
+        return f"{parsed.scheme}:{href}"
+    if href.startswith("/"):
+        return f"{parsed.scheme}://{parsed.netloc}{href}"
+    base = f"{parsed.scheme}://{parsed.netloc}{parsed.path or ''}"
+    return f"{base.rstrip('/')}/{href.lstrip('/')}"
+
+
+def _parse_qr_value(val: Any) -> tuple[str | None, str | None]:
+    """
+    Chuẩn hóa qrCode từ API cổng → (data_uri, url).
+    Hỗ trợ data:image/..., URL http, hoặc base64 thuần.
+    """
+    if not isinstance(val, str):
+        return None, None
+    s = val.strip()
+    if not s:
+        return None, None
+    if s.startswith("data:image"):
+        return s, None
+    if s.startswith("http://") or s.startswith("https://"):
+        return None, s
+    if len(s) > 80 and re.fullmatch(r"[A-Za-z0-9+/=\s]+", s):
+        compact = re.sub(r"\s+", "", s)
+        return f"data:image/png;base64,{compact}", None
+    return None, None
+
+
+def extract_topay_emv_payload(html: str) -> str | None:
+    """Chuỗi VietQR EMV trong script TOPAY paymain (jquery.qrcode text: toUtf8(...))."""
+    if not html:
+        return None
+    for pat in (
+        r'toUtf8\(\s*"(000201[^"]+)"\s*\)',
+        r'text:\s*toUtf8\(\s*"(000201[^"]+)"\s*\)',
+        r'"(00020101021\d{30,})"',
+    ):
+        m = re.search(pat, html, re.I | re.S)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def _is_decorative_payment_img(url: str) -> bool:
+    """Logo napas / bank / seal — không phải mã QR quét chuyển khoản."""
+    low = str(url or "").lower()
+    return any(
+        x in low
+        for x in (
+            "napas",
+            "bankcode",
+            "globalsign",
+            "pci-dss",
+            "erro.png",
+            "siteseal",
+            "/static/public/img/",
+            ".svg",
+            ".webp",
+        )
+    )
+
+
+def emv_qr_to_png_bytes(emv_payload: str) -> bytes:
+    """Render PNG QR từ payload EMV (giống $('#canvas').qrcode trên TOPAY)."""
+    import qrcode
+
+    emv = str(emv_payload or "").strip()
+    if not emv.startswith("000201"):
+        raise ValueError("EMV payload không hợp lệ")
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=6,
+        border=2,
+    )
+    qr.add_data(emv)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    from io import BytesIO
+
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def parse_payment_page_qr(html: str, page_url: str) -> dict[str, Any]:
+    """Lấy QR thật từ HTML trang cổng — ưu tiên EMV TOPAY, bỏ logo napas."""
+    out: dict[str, Any] = {}
+    if not html:
+        return out
+
+    emv = extract_topay_emv_payload(html)
+    if emv:
+        out["qr_emv_payload"] = emv
+        return out
+
+    m = re.search(
+        r"(data:image/(?:png|jpeg|jpg);base64,[A-Za-z0-9+/=]+)",
+        html,
+        re.I,
+    )
+    if m:
+        out["qr_data_uri"] = m.group(1)
+        return out
+
+    img_patterns = (
+        r'<img[^>]+(?:id|class)=["\'][^"\']*qr[^"\']*["\'][^>]+src=["\']([^"\']+)["\']',
+        r'<img[^>]+src=["\']([^"\']+)["\'][^>]+(?:id|class)=["\'][^"\']*qr[^"\']*["\']',
+        r'<img[^>]+src=["\']([^"\']*(?:showqr|showQr|qrcode\.do)[^"\']*)["\']',
+    )
+    for pat in img_patterns:
+        for im in re.finditer(pat, html, re.I):
+            src = _abs_payment_url(page_url, im.group(1))
+            if not src or _is_decorative_payment_img(src):
+                continue
+            if src.startswith("data:image"):
+                out["qr_data_uri"] = src
+                return out
+            out["qr_url"] = src
+            return out
+
+    return out
+
+
+def transfer_info_has_qr(ti: dict[str, Any] | None) -> bool:
+    if not isinstance(ti, dict):
+        return False
+    if ti.get("qr_emv_payload") or ti.get("qr_data_uri") or ti.get("qr_url"):
+        return True
+    return bool(str(ti.get("qr_base64") or "").strip())
+
+
+def _vietqr_bank_code(bank_name: str) -> str:
+    """Map tên ngân hàng site → mã VietQR (fallback cuối, không dùng cho TOPAY)."""
+    s = str(bank_name or "").upper()
+    rules = (
+        ("ACB", "ACB"),
+        ("VIETCOMBANK", "VCB"),
+        ("VCB", "VCB"),
+        ("TECHCOMBANK", "TCB"),
+        ("TCB", "TCB"),
+        ("VPBANK", "VPB"),
+        ("VPB", "VPB"),
+        ("BIDV", "BIDV"),
+        ("MBBANK", "MB"),
+        ("MB BANK", "MB"),
+        ("TPBANK", "TPB"),
+        ("SACOMBANK", "STB"),
+        ("AGRIBANK", "VBA"),
+    )
+    for needle, code in rules:
+        if needle in s:
+            return code
+    token = re.split(r"[\s\-–—|]", s.strip(), maxsplit=1)[0]
+    return token[:8] if token else ""
+
+
+def qr_image_to_data_uri(
+    *,
+    qr_path: str = "",
+    transfer_info: dict[str, Any] | None = None,
+    http_headers: dict[str, str] | None = None,
+) -> str:
+    """Ảnh QR gửi bên thứ 3 — chỉ từ file / transfer_info, không tải pay_url HTML."""
+    ti = transfer_info if isinstance(transfer_info, dict) else {}
+
+    uri = ti.get("qr_data_uri")
+    if isinstance(uri, str) and uri.startswith("data:image"):
+        return uri
+
+    emv = ti.get("qr_emv_payload")
+    if emv:
+        try:
+            raw = emv_qr_to_png_bytes(str(emv))
+            return f"data:image/png;base64,{base64.b64encode(raw).decode()}"
+        except Exception:
+            pass
+
+    raw_b64 = ti.get("qr_base64")
+    if isinstance(raw_b64, str) and len(raw_b64.strip()) > 80:
+        s = raw_b64.strip()
+        if s.startswith("data:image"):
+            return s
+        return f"data:image/png;base64,{s}"
+
+    path = str(qr_path or ti.get("qr_image_path") or "").strip()
+    if path and os.path.isfile(path):
+        try:
+            raw = Path(path).read_bytes()
+            return f"data:image/png;base64,{base64.b64encode(raw).decode()}"
+        except Exception:
+            pass
+
+    url = str(ti.get("qr_url") or "").strip()
+    if url.startswith("http"):
+        hdrs = dict(http_headers or {})
+        hdrs.setdefault("User-Agent", DEFAULT_UA)
+        try:
+            r = requests.get(url, headers=hdrs, timeout=25)
+            if r.ok and r.content and "image" in str(
+                r.headers.get("Content-Type") or ""
+            ).lower():
+                return f"data:image/png;base64,{base64.b64encode(r.content).decode()}"
+        except Exception:
+            pass
+    return ""
+
+
+def _topay_bank_name_from_html(html: str) -> str:
+    for pat in (
+        r"<th>\s*Ng[^<]*</th>\s*<td[^>]*>([^<]+)</td>",
+        r"Ngân hàng</th>\s*<td>([^<]+)</td>",
+    ):
+        m = re.search(pat, html, re.I | re.S)
+        if m:
+            return html_lib.unescape(m.group(1).strip())
+    return ""
+
+
+def _topay_order_context(html: str, pay_url: str) -> str:
+    """Mã đơn TOPAY: hidden order_code hoặc oid/o_code trên pay_url."""
+    for pat in (
+        r'id=["\']order_code["\'][^>]*value=["\']([^"\']+)["\']',
+        r'name=["\']order_code["\'][^>]*value=["\']([^"\']+)["\']',
+        r'id=["\']o_code["\'][^>]*value=["\']([^"\']+)["\']',
+        r'name=["\']o_code["\'][^>]*value=["\']([^"\']+)["\']',
+    ):
+        m = re.search(pat, html, re.I)
+        if m:
+            return html_lib.unescape(m.group(1).strip())
+    # Fallback: o_code/orderCode trong JS (khi không có input hidden như regex đầu).
+    for pat in (
+        r"o_code['\"]?\s*[:=]\s*['\"]([^'\"]+)['\"]",
+        r"orderCode['\"]?\s*[:=]\s*['\"]([^'\"]+)['\"]",
+        r"order_code['\"]?\s*[:=]\s*['\"]([^'\"]+)['\"]",
+    ):
+        m = re.search(pat, html, re.I | re.S)
+        if m:
+            return html_lib.unescape(m.group(1).strip())
+    q = parse_qs(urlparse(str(pay_url or "").strip()).query)
+    for key in ("o_code", "order_code", "oid", "orderCode"):
+        vals = q.get(key)
+        if vals and str(vals[0]).strip():
+            return str(vals[0]).strip()
+    return ""
+
+
+def _topay_collect_bank_bids(html: str) -> list[str]:
+    """Danh sách bid ngân hàng trên trang chọn NH (data-code / link proceed)."""
+    bids: list[str] = []
+    for pat in (
+        r'data-code=["\']([^"\']+)["\']',
+        r'proceed_deposit\.do\?bid=([^&"\']+)',
+        r'["\']bid["\']\s*:\s*["\']([^"\']+)["\']',
+    ):
+        bids.extend(re.findall(pat, html, re.I))
+    out: list[str] = []
+    for b in bids:
+        b = str(b).strip()
+        if b and b not in out:
+            out.append(b)
+    return out
+
+
+def _topay_bid_try_order(bids: list[str], configured: str) -> list[str]:
+    order: list[str] = []
+    cfg = str(configured or "").strip()
+    if cfg:
+        order.append(cfg)
+    for b in bids:
+        if b not in order:
+            order.append(b)
+    return order
+
+
+def fetch_topay_paymain_info(
+    pay_url: str,
+    *,
+    amount: int | None = None,
+    session: dict | None = None,
+) -> dict:
+    """
+    TOPAY paymain: STK/NDCK + EMV trong script (#canvas qrcode).
+    Trang có thể chưa render ngay sau tạo đơn — retry vài giây.
+    """
+    pay_url = str(pay_url or "").strip()
+    topay_http = requests.Session()
+    last_err = ""
+    for attempt in range(1, 4):
+        html = _fetch_topay_http(pay_url, topay_http, referer=pay_url)
+        ti = _parse_topay_paymain_fields(html, amount=amount)
+        ti["source_url"] = pay_url
+        has_emv = bool(ti.get("qr_emv_payload"))
+        has_acct = bool(str(ti.get("account_no") or "").strip())
+        if has_emv or has_acct:
+            if attempt > 1:
+                print(
+                    f"[TOPAY] paymain OK sau lần {attempt} "
+                    f"(STK={'có' if has_acct else 'EMV'})",
+                    flush=True,
+                )
+            elif has_emv and not has_acct:
+                print(
+                    "[TOPAY] paymain: STK lấy từ EMV (HTML chưa có #account)",
+                    flush=True,
+                )
+            return ti
+        last_err = "chưa có STK/EMV trên paymain"
+        if attempt < 3:
+            time.sleep(1.2)
+    raise RuntimeError(last_err)
+
+
+def fetch_topay_transfer_info(
+    pay_url: str,
+    *,
+    bank_bid: str | None = None,
+    amount: int | None = None,
+    session: dict | None = None,
+) -> dict:
+    """
+    TOPAY: trang cổng thường bắt chọn 1 ngân hàng → proceed_deposit.do mới có QR EMV.
+    Giống thao tác trên UI bên thứ 3 (chọn NH rồi mới quét mã).
+    """
+    pay_url = str(pay_url or "").strip()
+    parsed = urlparse(pay_url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    cfg_bid = str(bank_bid or "").strip()
+
+    topay_http = requests.Session()
+    html = _fetch_topay_http(pay_url, topay_http, referer=pay_url)
+    ti_peek = _parse_topay_paymain_fields(html, amount=amount)
+    bank_bids = _topay_collect_bank_bids(html)
+    order_code = _topay_order_context(html, pay_url)
+
+    # Paymain đã render sẵn QR + STK, không có bước chọn NH trên HTML
+    if (
+        transfer_info_has_qr(ti_peek)
+        and str(ti_peek.get("account_no") or "").strip()
+        and not bank_bids
+    ):
+        ti_peek["source_url"] = pay_url
+        print("[TOPAY] paymain đủ QR (không cần chọn bank)", flush=True)
+        return ti_peek
+
+    if not order_code:
+        raise RuntimeError("TOPAY: không có order_code / oid trên link nạp")
+
+    # Link paymain?oid=… thường chưa có list NH — mở trang index cùng oid để lấy data-code
+    if not bank_bids and re.search(r"paymain", pay_url, re.I):
+        list_url = re.sub(r"paymain", "index", pay_url, flags=re.I)
+        if list_url != pay_url:
+            try:
+                html_list = _fetch_topay_http(
+                    list_url, topay_http, referer=pay_url
+                )
+                bank_bids = _topay_collect_bank_bids(html_list)
+                order_code = order_code or _topay_order_context(html_list, list_url)
+            except Exception as e:
+                print(f"[TOPAY] không mở được trang chọn NH: {e}", flush=True)
+
+    try_bids = _topay_bid_try_order(bank_bids, cfg_bid)
+    if not try_bids:
+        raise RuntimeError(
+            "TOPAY: không thấy danh sách bank (data-code) — "
+            "cấu hình auto_deposit.topay_bank_bid (bid lấy khi bấm 1 NH trên trang)"
+        )
+
+    if len(try_bids) > 1 or bank_bids:
+        print(
+            f"[TOPAY] chọn ngân hàng (bid) — thử {len(try_bids)} mã: "
+            f"{', '.join(try_bids[:4])}{'…' if len(try_bids) > 4 else ''}",
+            flush=True,
+        )
+
+    last_err = ""
+    for bid in try_bids:
+        proceed_url = f"{base}/index/proceed_deposit.do?bid={bid}&o_code={order_code}"
+        try:
+            body = _fetch_topay_http(proceed_url, topay_http, referer=pay_url)
+            ti = _parse_topay_paymain_fields(body, amount=amount)
+            if not transfer_info_has_qr(ti):
+                extra = parse_payment_page_qr(body, proceed_url)
+                ti.update({k: v for k, v in extra.items() if v})
+            if transfer_info_has_qr(ti):
+                ti["source_url"] = proceed_url
+                ti["gateway"] = "topay"
+                ti["raw"] = {
+                    "topay_bid": bid,
+                    "order_code": order_code[:24],
+                    "topay_page": "proceed",
+                }
+                if not str(ti.get("account_no") or "").strip() and ti.get("qr_emv_payload"):
+                    ti["account_no"] = _parse_account_from_emv(
+                        str(ti["qr_emv_payload"])
+                    ) or ti.get("account_no")
+                print(
+                    f"[TOPAY] bid={bid} → có QR EMV"
+                    + (
+                        f" | STK {ti.get('account_no')} | NDCK {ti.get('transfer_content')}"
+                        if ti.get("account_no")
+                        else ""
+                    ),
+                    flush=True,
+                )
+                return ti
+            last_err = f"bid={bid}: chưa có EMV"
+        except Exception as e:
+            last_err = f"bid={bid}: {e}"
+
+    if "paymain" in pay_url.lower():
+        try:
+            ti = fetch_topay_paymain_info(pay_url, amount=amount, session=session)
+            if transfer_info_has_qr(ti):
+                return ti
+        except Exception:
+            pass
+
+    raise RuntimeError(
+        f"TOPAY: đã thử chọn bank nhưng chưa lấy được QR — {last_err}"
+    )
+
+
+def fetch_transfer_info_from_pay_url(
+    pay_url: str,
+    *,
+    amount: int | None = None,
+    session: dict | None = None,
+) -> dict:
+    """
+    Lấy STK/NDCK từ trang cổng thanh toán (TOPAY / TIMEPAY-style API).
+    """
+    pay_url = str(pay_url or "").strip()
+    if not pay_url:
+        raise ValueError("pay_url trống")
+    if "topay" in pay_url.lower():
+        prefs = _deposit_channel_prefs()
+        return fetch_topay_transfer_info(
+            pay_url,
+            bank_bid=str(prefs.get("topay_bank_bid") or "") or None,
+            amount=amount,
+            session=session,
+        )
+    token = _pay_url_trade_token(pay_url)
+    if not token:
+        raise ValueError(f"Không parse token từ pay_url: {pay_url[:80]}")
+    parsed = urlparse(pay_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    api = f"{origin}/user/tradepay/{token}"
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "user-agent": DEFAULT_UA,
+        "referer": pay_url,
+    }
+    r = requests.get(api, headers=headers, timeout=25)
+    if r.status_code != 200:
+        raise RuntimeError(f"Pay gateway HTTP {r.status_code}: {r.text[:200]}")
+    try:
+        js = r.json()
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Pay gateway không phải JSON: {r.text[:200]}") from e
+    data = js.get("data") if isinstance(js.get("data"), dict) else {}
+    ok = js.get("success") is True or str(js.get("code")) in ("200", "1")
+    if not ok and not data.get("bankAccount"):
+        raise RuntimeError(js.get("message") or f"Pay gateway code={js.get('code')}")
+    qr_uri, qr_url = _parse_qr_value(data.get("qrCode"))
+    ti = {
+        "amount": data.get("amount") or amount,
+        "bank_name": data.get("bankName") or data.get("bankCode"),
+        "account_no": data.get("bankAccount") or data.get("accountNo"),
+        "account_name": data.get("payName") or data.get("accountName"),
+        "transfer_content": data.get("descCode") or data.get("remark"),
+        "qr_data_uri": qr_uri,
+        "qr_url": qr_url or data.get("qrUrl") or data.get("qr_url"),
+        "raw": js,
+        "source_url": api,
+    }
+    if not ti.get("account_no"):
+        raise RuntimeError("API cổng không trả số tài khoản (đơn hết hạn?)")
+    return ti
 
 
 def parse_deposit_response(decrypted: Any) -> dict:
@@ -627,8 +1378,11 @@ def create_deposit_order(
     extra_plain: dict | None = None,
 ) -> dict:
     """
-    Tạo đơn nạp QRPay trên XOSO66 + lấy STK/nội dung CK (getWUInfo).
+    Tạo đơn nạp XOSO66 (TOPAY / cổng banking) + lấy STK/nội dung CK.
     """
+    prefs = _deposit_channel_prefs()
+    amount = max(int(amount), int(prefs["min_amount_vnd"]))
+
     sessions = load_sessions()
     session = session or sessions.get(account_id)
     if not session:
@@ -643,10 +1397,10 @@ def create_deposit_order(
         return {"ok": False, "account_id": account_id, "error": f"Session/login: {e}"}
 
     if not session.get("merchant_id"):
-        apply_qrpay_to_session(session)
+        apply_deposit_channel_to_session(session)
     get_deposit_info(session=session)
     session.pop("aes_session_key", None)
-    ch_id, mer_id, remark = resolve_qrpay_params(session)
+    ch_id, mer_id, remark = resolve_deposit_params(session)
     session["channel_id"] = ch_id
     session["merchant_id"] = mer_id
     session["random_remark"] = remark
@@ -709,6 +1463,7 @@ def create_deposit_order(
         "ok": success,
         "account_id": account_id,
         "amount": amount,
+        "channel_id": ch_id,
         "pay_url": pay_url,
         "trade_no": trade_no,
         "order_no": parsed.get("order_no"),
@@ -717,14 +1472,45 @@ def create_deposit_order(
         "method": method,
     }
 
-    if trade_no:
+    ti: dict | None = None
+    raw = parsed.get("raw")
+    if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
+        ti = transfer_info_from_deposit_data(raw["data"])
+
+    if trade_no and _should_use_qrpay_api(trade_no, pay_url, ch_id):
         try:
-            out["transfer_info"] = fetch_qrpay_transfer_info(trade_no, session=session)
-            qr_path = save_qr_image(out["transfer_info"], account_id, session=session)
-            if qr_path:
-                out["qr_image_path"] = qr_path
+            ti = fetch_qrpay_transfer_info(trade_no, session=session)
         except Exception as e:
             out["transfer_info_error"] = str(e)
+    elif pay_url:
+        try:
+            ti = ti or fetch_transfer_info_from_pay_url(
+                pay_url, amount=amount, session=session
+            )
+        except Exception as e:
+            out["transfer_info_error"] = str(e)
+
+    if ti:
+        out["transfer_info"] = ti
+        try:
+            use_vietqr_fb = bool(
+                trade_no and _should_use_qrpay_api(trade_no, pay_url, ch_id)
+            )
+            qr_path = save_qr_image(
+                ti,
+                account_id,
+                session=session,
+                allow_vietqr_fallback=use_vietqr_fb,
+            )
+            if qr_path:
+                out["qr_image_path"] = qr_path
+            elif not transfer_info_has_qr(ti):
+                print(
+                    f"[NẠP] {account_id}: không lưu được file QR từ cổng",
+                    flush=True,
+                )
+        except Exception:
+            pass
 
     if not out["ok"]:
         raw = parsed.get("raw") or {}
@@ -818,7 +1604,7 @@ def _normalize_transfer_info(js: Any) -> dict:
     d = js.get("data") if isinstance(js.get("data"), dict) else js
     if isinstance(d, list) and d:
         d = d[0] if isinstance(d[0], dict) else {}
-    return {
+    info: dict[str, Any] = {
         "amount": d.get("amount") or d.get("money") or d.get("payAmount"),
         "bank_name": d.get("bankName") or d.get("bank") or d.get("bank_name") or d.get("bankCode"),
         "account_no": (
@@ -845,12 +1631,18 @@ def _normalize_transfer_info(js: Any) -> dict:
             or d.get("payRemark")
         ),
         "qr_url": d.get("qrUrl") or d.get("qr_url") or d.get("qrcode") or d.get("s3Url"),
-        "qr_data_uri": d.get("qrCode") if isinstance(d.get("qrCode"), str) and d.get("qrCode", "").startswith("data:") else None,
+        "qr_data_uri": None,
         "merchant_order_no": d.get("merchatOrderNo") or d.get("merchantOrderNo") or d.get("systemOrderNo"),
         "expire_seconds": d.get("expireTime"),
         "status": d.get("statusStr"),
         "raw": js,
     }
+    qr_uri, qr_url = _parse_qr_value(d.get("qrCode"))
+    if qr_uri:
+        info["qr_data_uri"] = qr_uri
+    if qr_url:
+        info["qr_url"] = qr_url
+    return info
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -982,7 +1774,7 @@ def print_setup_help() -> None:
 
 2) pip install -r requirements.txt  (xoso66_crypto.py)
 
-3) Kênh nạp: chỉ QRPay-nạp tiền bankking (min 100k)
+3) Kênh nạp: TOPAY Ngân hàng trực tuyến (channel 280) — min 1M, chỉnh trong xoso66_config.json
 
 4) (Tuỳ chọn) cek_p trong session neu GET /index/encryptKey khong tra header
 

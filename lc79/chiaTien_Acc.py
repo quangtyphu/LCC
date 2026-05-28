@@ -183,7 +183,7 @@ def _strategy8_sim_pick_v2v3(
     return None
 
 
-def _strategy8_plan_outside_session(
+def _strategy_outside_plan_session(
     to_assign: List[Tuple[int, str]],
     online_users: List[str],
     balances: Dict[str, int],
@@ -193,10 +193,12 @@ def _strategy8_plan_outside_session(
     today_bets: Dict[str, int],
     config: dict,
     window: dict,
+    max_head: int = 2,
 ) -> Tuple[Optional[int], Optional[str], List[str]]:
     """
-    Mô phỏng phiên strategy 8: lệnh nào rơi vào nhánh others (ngoài V2/V3).
-    Trả (mức max others, user balance max, head_pair).
+    Mô phỏng phiên strategy 3/8: lệnh nào rơi vào nhánh others (ngoài V2/V3).
+    Trả (mức max others, user balance max, head_users).
+    max_head=1 → 1 acc dư sau cược nhỏ nhất; max_head=2 → tối đa 2 acc (strategy 8).
     """
     used_sim: set[str] = set()
     others_amounts: List[int] = []
@@ -220,12 +222,18 @@ def _strategy8_plan_outside_session(
 
     outside_max = max(others_amounts) if others_amounts else None
 
-    pool = [u for u in online_users if u not in priority_v2 and u not in priority_v3]
+    priority_set = {u for u in priority_users if u}
+    pool = [
+        u for u in online_users
+        if u not in priority_v2
+        and u not in priority_v3
+        and u not in priority_set
+    ]
     user_max_bal: Optional[str] = None
     if pool:
         user_max_bal = max(pool, key=lambda u: (balances.get(u, 0), u))
 
-    head_pair: List[str] = []
+    head_users: List[str] = []
     sim_rows: List[Tuple[str, int, int]] = []
     if others_amounts:
         sim_amounts = list(others_amounts)
@@ -241,10 +249,172 @@ def _strategy8_plan_outside_session(
                 balances,
                 priority_v2,
                 priority_v3,
+                initial_used=used_sim,
+                exclude_users=priority_set,
             )
-            head_pair = _strategy10_priority_two_from_simulation(sim_rows)
+            if max_head >= 2:
+                head_users = _strategy10_priority_two_from_simulation(sim_rows)
+            else:
+                u = _strategy10_priority_one_from_simulation(sim_rows)
+                head_users = [u] if u else []
 
-    return outside_max, user_max_bal, head_pair
+    return outside_max, user_max_bal, head_users
+
+
+def _strategy3_plan_session(
+    to_assign: List[Tuple[int, str]],
+    online_users: List[str],
+    balances: Dict[str, int],
+    priority_users: List[str],
+    priority_v2: List[str],
+    priority_v3: List[str],
+    config: dict,
+    window: dict,
+) -> Tuple[
+    Optional[int],
+    Optional[str],
+    List[str],
+    Optional[str],
+    Optional[int],
+    Optional[int],
+]:
+    """
+    Strategy 3: mô phỏng không qua V2/V3.
+    Trả (outside_max, user_max_bal, head_users, priority_user, priority_amount, head_after).
+    """
+    priority_set = {u for u in priority_users if u}
+    used_sim: set[str] = set()
+    others_amounts: List[int] = []
+    priority_user: Optional[str] = None
+    priority_amount: Optional[int] = None
+
+    for amount, _door in to_assign:
+        took_priority = False
+        for u in _iter_priority_users_for_bet(priority_users, amount, config, window):
+            if u in online_users and u not in used_sim:
+                if balances.get(u, 0) >= amount:
+                    used_sim.add(u)
+                    if priority_user is None:
+                        priority_user = u
+                        priority_amount = amount
+                    took_priority = True
+                    break
+        if not took_priority:
+            others_amounts.append(amount)
+
+    outside_max = max(others_amounts) if others_amounts else None
+
+    pool = [
+        u for u in online_users
+        if u not in priority_v2
+        and u not in priority_v3
+        and u not in priority_set
+    ]
+    user_max_bal: Optional[str] = None
+    if pool:
+        user_max_bal = max(pool, key=lambda u: (balances.get(u, 0), u))
+
+    head_users: List[str] = []
+    head_after: Optional[int] = None
+    sim_rows: List[Tuple[str, int, int]] = []
+    if others_amounts:
+        sim_amounts = list(others_amounts)
+        if outside_max is not None:
+            try:
+                sim_amounts.remove(outside_max)
+            except ValueError:
+                pass
+        if sim_amounts:
+            sim_rows = _strategy10_simulate_tight_fit_allocations(
+                online_users,
+                sorted(sim_amounts, reverse=True),
+                balances,
+                priority_v2,
+                priority_v3,
+                initial_used=used_sim,
+                exclude_users=priority_set,
+            )
+            u = _strategy10_priority_one_from_simulation(sim_rows)
+            if u:
+                head_users = [u]
+                for su, _amt, after in sim_rows:
+                    if su == u:
+                        head_after = after
+                        break
+
+    return outside_max, user_max_bal, head_users, priority_user, priority_amount, head_after
+
+
+def _strategy3_print_three_priorities(
+    priority_user: Optional[str],
+    priority_amount: Optional[int],
+    priority_users: List[str],
+    min_priority_amount: int,
+    outside_max: Optional[int],
+    user_max_bal: Optional[str],
+    head_users: List[str],
+    head_after: Optional[int],
+    balances: Dict[str, int],
+) -> None:
+    """In 3 acc ưu tiên strategy 3."""
+    if priority_user:
+        p_line = (
+            f"{priority_user} (mức {priority_amount}, "
+            f"balance={balances.get(priority_user, 0)})"
+        )
+    else:
+        names = [u for u in priority_users if u]
+        if names and min_priority_amount > 0:
+            p_line = (
+                f"{', '.join(names)} (chưa nhận: không có mức >= {min_priority_amount}; "
+                f"không gán nhánh others/random)"
+            )
+        elif names:
+            p_line = f"{', '.join(names)} (chưa nhận lệnh priority phiên này)"
+        else:
+            p_line = "(không cấu hình PRIORITY_USERS)"
+    if user_max_bal and outside_max is not None:
+        b_line = (
+            f"{user_max_bal} → mức {outside_max} "
+            f"(balance={balances.get(user_max_bal, 0)})"
+        )
+    else:
+        b_line = "(không có mức others / không đủ acc)"
+    if head_users:
+        h = head_users[0]
+        after_s = head_after if head_after is not None else "?"
+        h_line = f"{h} (dư sau cược mô phỏng={after_s}, balance={balances.get(h, 0)})"
+    else:
+        h_line = "(không mô phỏng được acc dư nhỏ nhất)"
+    print("[STRAT3] 3 acc ưu tiên phiên:", flush=True)
+    print(f"  1) PRIORITY: {p_line}", flush=True)
+    print(f"  2) Balance cao nhất còn lại: {b_line}", flush=True)
+    print(f"  3) Dư sau cược nhỏ nhất: {h_line}", flush=True)
+
+
+def _strategy8_plan_outside_session(
+    to_assign: List[Tuple[int, str]],
+    online_users: List[str],
+    balances: Dict[str, int],
+    priority_users: List[str],
+    priority_v2: List[str],
+    priority_v3: List[str],
+    today_bets: Dict[str, int],
+    config: dict,
+    window: dict,
+) -> Tuple[Optional[int], Optional[str], List[str]]:
+    return _strategy_outside_plan_session(
+        to_assign,
+        online_users,
+        balances,
+        priority_users,
+        priority_v2,
+        priority_v3,
+        today_bets,
+        config,
+        window,
+        max_head=2,
+    )
 
 
 def _strategy8_outside_try_order(
@@ -255,12 +425,15 @@ def _strategy8_outside_try_order(
     priority_v2: List[str],
     priority_v3: List[str],
     head_pair: List[str],
+    priority_users: Optional[List[str]] = None,
 ) -> List[str]:
-    """Nhánh others strategy 8: thử head_pair (mô phỏng giống strat 10) rồi random phần còn lại."""
+    """Nhánh others: thử head_pair rồi random; không dùng PRIORITY_USERS / V2 / V3."""
+    priority_set = {u for u in (priority_users or []) if u}
     others = [
         u for u in online_users
         if u not in priority_v2
         and u not in priority_v3
+        and u not in priority_set
         and u not in used
     ]
     others_set = set(others)
@@ -282,6 +455,7 @@ def _strategy8_choose_from_outside(
     used: set,
     balances: Dict[str, int],
     candidates: List[Tuple[int, str, int]],
+    priority_users: List[str],
     priority_v2: List[str],
     priority_v3: List[str],
     outside_max_amount: Optional[int],
@@ -289,10 +463,13 @@ def _strategy8_choose_from_outside(
     max_bal_slot_used: bool,
     head_pair: List[str],
 ) -> Tuple[Optional[str], Optional[int], Optional[int], bool]:
-    """Chọn user nhánh others (ngoài V2/V3) — strategy 8 only."""
+    """Chọn user nhánh others: loại PRIORITY_USERS, V2, V3."""
+    priority_set = {u for u in priority_users if u}
     outside_pool = [
         t for t in candidates
-        if t[1] not in priority_v2 and t[1] not in priority_v3
+        if t[1] not in priority_v2
+        and t[1] not in priority_v3
+        and t[1] not in priority_set
     ]
     if not outside_pool:
         return None, None, None, max_bal_slot_used
@@ -301,13 +478,10 @@ def _strategy8_choose_from_outside(
         outside_max_amount is not None
         and amount == outside_max_amount
         and not max_bal_slot_used
-        and user_max_bal
-        and user_max_bal not in used
     ):
-        for after_c, u, bal_c in outside_pool:
-            if u == user_max_bal:
-                max_bal_slot_used = True
-                return u, after_c, bal_c, max_bal_slot_used
+        after_c, u, bal_c = max(outside_pool, key=lambda t: (t[2], t[1]))
+        max_bal_slot_used = True
+        return u, after_c, bal_c, max_bal_slot_used
 
     by_user = {u: (after_c, bal_c) for after_c, u, bal_c in outside_pool}
     for u in _strategy8_outside_try_order(
@@ -318,6 +492,7 @@ def _strategy8_choose_from_outside(
         priority_v2,
         priority_v3,
         head_pair,
+        priority_users,
     ):
         if u in by_user:
             after_c, bal_c = by_user[u]
@@ -571,18 +746,22 @@ def _strategy10_simulate_tight_fit_allocations(
     balances: Dict[str, int],
     priority_v2: List[str],
     priority_v3: List[str],
+    initial_used: Optional[set] = None,
+    exclude_users: Optional[set] = None,
 ) -> List[Tuple[str, int, int]]:
     """
     Mức cược từ **cao → thấp** (đúng thứ tự `to_assign`): mỗi mức gán 1 user ngoài V2/V3
     (chưa dùng trong mô phỏng) có **balance nhỏ nhất** mà vẫn >= mức — tức “trên mức
     gần nhất” / khớp chặt. Trả [(user, amount, balance_sau_cược), ...].
     """
-    used_sim: set[str] = set()
+    used_sim: set[str] = set(initial_used or [])
+    skip = set(exclude_users or [])
     out: List[Tuple[str, int, int]] = []
     for amt in amounts_high_to_low:
         pool = [
             u for u in online_users
             if u not in used_sim
+            and u not in skip
             and u not in priority_v2
             and u not in priority_v3
             and balances.get(u, 0) >= amt
@@ -613,6 +792,16 @@ def _strategy10_priority_two_from_simulation(
         if len(picked) >= 2:
             break
     return picked
+
+
+def _strategy10_priority_one_from_simulation(
+    sim_rows: List[Tuple[str, int, int]],
+) -> Optional[str]:
+    """Sau mô phỏng: 1 user có balance sau cược (`after`) nhỏ nhất (hòa thì username)."""
+    if not sim_rows:
+        return None
+    u, _amt, _after = min(sim_rows, key=lambda t: (t[2], t[0]))
+    return u
 
 
 def _strategy10_user_try_order(
@@ -705,7 +894,7 @@ def assign_bets(
 
     balances = _fresh_balances_for_online(online_users)
     today_bets = _fetch_today_bets_for_online(online_users) if (
-        strategy in (8, 10, 11, 12)
+        strategy in (3, 8, 10, 11, 12)
     ) else {}
     weekly_bets = _fetch_weekly_bets_for_online(online_users) if strategy in (6, 8) else {}
     monthly_bets = _fetch_monthly_bets_for_online(online_users) if strategy == 5 else {}
@@ -793,6 +982,41 @@ def assign_bets(
         elif strategy7_min_amt == strategy7_max_amt:
             print("[STRAT7] mức min=max → chỉ 1 slot ưu tiên max", flush=True)
 
+    # State chỉ strategy 3: PRIORITY → balance max (mức others lớn nhất) → dư sau cược nhỏ nhất
+    strategy3_outside_max_amount: Optional[int] = None
+    strategy3_user_max_bal: Optional[str] = None
+    strategy3_head_users: List[str] = []
+    strategy3_max_bal_slot_used = False
+    if strategy == 3 and to_assign:
+        (
+            strategy3_outside_max_amount,
+            strategy3_user_max_bal,
+            strategy3_head_users,
+            strategy3_priority_user,
+            strategy3_priority_amount,
+            _strategy3_head_after,
+        ) = _strategy3_plan_session(
+            to_assign,
+            online_users,
+            balances,
+            PRIORITY_USERS,
+            PRIORITY_USERS_V2,
+            PRIORITY_USERS_V3,
+            config,
+            window,
+        )
+        _strategy3_print_three_priorities(
+            strategy3_priority_user,
+            strategy3_priority_amount,
+            PRIORITY_USERS,
+            _priority_users_min_bet_amount(config, window),
+            strategy3_outside_max_amount,
+            strategy3_user_max_bal,
+            strategy3_head_users,
+            _strategy3_head_after,
+            balances,
+        )
+
     # State chỉ strategy 8
     strategy8_outside_max_amount: Optional[int] = None
     strategy8_user_max_bal: Optional[str] = None
@@ -868,7 +1092,7 @@ def assign_bets(
                     after, chosen, _bal = random.choice(candidates)  # Random
     
             elif strategy == 3:
-                # Ưu tiên PRIORITY_USERS, fallback AFTER thấp nhất
+                # 1) PRIORITY  2) balance cao nhất → mức others max  3) dư sau cược nhỏ nhất → random
                 chosen, after, _bal = None, None, None
                 for u in _iter_priority_users_for_bet(PRIORITY_USERS, amount, config, window):
                     if u in online_users and u not in used:
@@ -879,13 +1103,29 @@ def assign_bets(
                             after = bal - amount
                             break
                 if chosen is None:
-                    after, chosen, _bal = min(candidates, key=lambda t: t[0])
+                    chosen, after, _bal, strategy3_max_bal_slot_used = (
+                        _strategy8_choose_from_outside(
+                            amount,
+                            online_users,
+                            used,
+                            balances,
+                            candidates,
+                            PRIORITY_USERS,
+                            PRIORITY_USERS_V2,
+                            PRIORITY_USERS_V3,
+                            strategy3_outside_max_amount,
+                            strategy3_user_max_bal,
+                            strategy3_max_bal_slot_used,
+                            strategy3_head_users,
+                        )
+                    )
+
                 if chosen is None:
                     msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
                     print(msg)
                     send_telegram(msg)
                     return []
-    
+
             elif strategy == 4:
                 # Ưu tiên PRIORITY_USERS, fallback: balance cao → thấp cho users KHÔNG thuộc V2/V3, sau đó mới đến V2 rồi V3
                 chosen, after, _bal = None, None, None
@@ -1039,6 +1279,7 @@ def assign_bets(
                             used,
                             balances,
                             candidates,
+                            PRIORITY_USERS,
                             PRIORITY_USERS_V2,
                             PRIORITY_USERS_V3,
                             strategy8_outside_max_amount,

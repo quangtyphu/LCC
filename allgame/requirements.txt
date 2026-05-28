@@ -1,0 +1,2 @@
+# Tối thiểu cho skeleton; bổ sung khi nối Chrome (playwright) / vendor WS
+# playwright>=1.40.0

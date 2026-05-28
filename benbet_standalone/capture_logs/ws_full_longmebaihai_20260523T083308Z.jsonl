@@ -1,0 +1,10 @@
+{"dir": "ws_send", "payload": "{\"M\":\"ENTER_LOBBY\",\"A\":[],\"H\":\"luckydiceHub\",\"I\":0}", "hub": "", "method": "ENTER_LOBBY", "t": 1779525191.6224854}
+{"dir": "ws_send", "payload": "{\"I\": \"0\"}", "hub": "", "method": "ping", "t": 1779525191.694571}
+{"dir": "ws_recv_raw", "payload": "{}", "hub": "", "method": "", "t": 1779525192.2186167}
+{"dir": "ws_recv", "payload": "[{\"CurrentState\": 0, \"IsJackpot\": false, \"Result\": {\"Dice1\": -1, \"Dice2\": -1, \"Dice3\": -1}, \"SessionID\": 2063786, \"Ellapsed\": 27, \"TotalBetTai\": 334995000, \"TotalBetXiu\": 312396000, \"TotalTai\": 226, \"TotalXiu\": 221, \"Jackpot\": 1366956992}]", "hub": "", "method": "sessionInfo", "t": 1779525192.6130867}
+{"dir": "ws_recv", "payload": "[{\"CurrentState\": 0, \"IsJackpot\": false, \"Result\": {\"Dice1\": -1, \"Dice2\": -1, \"Dice3\": -1}, \"SessionID\": 2063786, \"Ellapsed\": 26, \"TotalBetTai\": 347530000, \"TotalBetXiu\": 325421000, \"TotalTai\": 240, \"TotalXiu\": 231, \"Jackpot\": 1366956992}]", "hub": "", "method": "sessionInfo", "t": 1779525193.614547}
+{"dir": "ws_send", "payload": "{\"M\":\"BET\",\"A\":[10000,0,1],\"H\":\"luckydiceHub\",\"I\":1}", "hub": "", "method": "BET", "t": 1779525194.4100971}
+{"dir": "ws_recv", "payload": "[\"Lỗi không xác định!\"]", "hub": "", "method": "message", "t": 1779525194.5972214}
+{"dir": "ws_send", "payload": "{\"I\": \"1\"}", "hub": "", "method": "ping", "t": 1779525194.59837}
+{"dir": "ws_recv", "payload": "[{\"CurrentState\": 0, \"IsJackpot\": false, \"Result\": {\"Dice1\": -1, \"Dice2\": -1, \"Dice3\": -1}, \"SessionID\": 2063786, \"Ellapsed\": 25, \"TotalBetTai\": 347530000, \"TotalBetXiu\": 326815000, \"TotalTai\": 240, \"TotalXiu\": 233, \"Jackpot\": 1366956992}]", "hub": "", "method": "sessionInfo", "t": 1779525194.6160073}
+{"dir": "ws_recv", "payload": "[{\"CurrentState\": 0, \"IsJackpot\": false, \"Result\": {\"Dice1\": -1, \"Dice2\": -1, \"Dice3\": -1}, \"SessionID\": 2063786, \"Ellapsed\": 24, \"TotalBetTai\": 369202000, \"TotalBetXiu\": 336544000, \"TotalTai\": 255, \"TotalXiu\": 245, \"Jackpot\": 1366956992}]", "hub": "", "method": "sessionInfo", "t": 1779525195.6267807}

@@ -13,6 +13,19 @@ DEFAULT_FUND_PASSWORD = (os.environ.get("XOSO66_DEFAULT_FUND_PASSWORD") or "2702
 
 _SITE_ONLY_KEYS = frozenset({"fund_password", "bank_code", "bank_name", "account_number"})
 
+# CMS sửa tay trên bảng — cho phép ghi rỗng / chỉ DB (không gọi site bind).
+_CMS_INLINE_KEYS = frozenset(
+    {
+        "phone",
+        "account_holder",
+        "device",
+        "proxy",
+        "bank_code",
+        "bank_name",
+        "account_number",
+    }
+)
+
 
 def _step(name: str, ok: bool, **extra: Any) -> dict[str, Any]:
     return {"step": name, "ok": ok, **extra}
@@ -62,7 +75,7 @@ def save_account_with_site_sync(
             continue
         if k in _SITE_ONLY_KEYS:
             continue
-        if v is not None and v != "":
+        if v is not None and (v != "" or k in _CMS_INLINE_KEYS):
             patch[k] = v
 
     fund_pw = str(body.get("fund_password") or "").strip()
@@ -169,6 +182,14 @@ def save_account_with_site_sync(
             patch["account_number"] = account_number
     elif fund_pw and _db_has_fund_password(cur):
         patch["fund_password"] = fund_pw
+    else:
+        # Chưa đủ điều kiện bind site — vẫn ghi metadata bank/STK lên DB (CMS inline).
+        if bank_code and "bank_code" not in patch:
+            patch["bank_code"] = bank_code
+        if bank_name and "bank_name" not in patch:
+            patch["bank_name"] = bank_name
+        if account_number and "account_number" not in patch:
+            patch["account_number"] = account_number
 
     if not patch:
         return cur, sync_steps

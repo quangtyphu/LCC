@@ -131,7 +131,8 @@ def refresh_cf_playwright(session: dict, *, headless: bool | None = None) -> dic
 
             _apply_cookies(session, context.cookies())
     except Exception as e:
-        return {"ok": False, "method": "playwright", "error": str(e)}
+        err = str(e).strip() or f"{type(e).__name__}: {e!r}"
+        return {"ok": False, "method": "playwright", "error": err}
 
     hdrs = dict(session.get("headers") or {})
     for key in CF_HEADERS:

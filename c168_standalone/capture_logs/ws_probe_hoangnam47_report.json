@@ -1,0 +1,13 @@
+{
+  "cdp": "http://127.0.0.1:9361",
+  "table_id": 1006,
+  "duration_sec": 60,
+  "recv": 0,
+  "parsed": 0,
+  "stats": {},
+  "by_message_type": {},
+  "by_event_type": {},
+  "table_ids_top": {},
+  "table_1006_events": [],
+  "unparsed_samples": []
+}

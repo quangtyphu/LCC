@@ -1,0 +1,29 @@
+﻿=== ensure_session ===
+session ok, channel 280
+=== create_deposit_order ===
+{
+  "ok": true,
+  "pay_url": "https://pky.topay.cash/Index/paymain?oid=472733&sign=61a3f9e43f3aeb59be02702870430ba7",
+  "trade_no": null,
+  "channel_id": 280,
+  "qr_image_path": "C:\\Users\\Quang\\Documents\\LC79\\xoso66_standalone\\qr_outputs\\acc20_TIEN3AU3XP.png",
+  "method": "http",
+  "ti_has_qr": true,
+  "ti_bank": {
+    "account_number": "49191717",
+    "account_holder": "Ho├áng sau khß╗ünh",
+    "bank": "ACB - Ngan hang TMCP A Chau",
+    "transfer_content": "TIEN3AU3XP"
+  },
+  "ti_qr_url": "https://pky.topay.cash/static/bankcode/img/napas-jFWvg95W.webp",
+  "ti_qr_data": false,
+  "ti_gateway": "topay",
+  "raw_keys": [
+    "action",
+    "money",
+    "img",
+    "link",
+    "info"
+  ],
+  "raw_info_type": "list"
+}

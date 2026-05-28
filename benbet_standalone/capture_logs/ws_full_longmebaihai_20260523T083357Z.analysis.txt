@@ -1,0 +1,20 @@
+Log: C:\Users\Quang\Documents\LC79\benbet_standalone\capture_logs\ws_full_longmebaihai_20260523T083357Z.jsonl
+Tong dong: 17 | gui: 4 | nhan: 12
+
+=== Lenh BET gui (tu script --test-bet hoac bat duoc) ===
+  {"M": "BET", "A": [50000, 0, 1], "H": "luckydiceHub", "I": 1}
+
+=== Phan hoi lien quan cuoc (betSuccess, betOfAccount, ...) ===
+  << sessionInfo [{"CurrentState": 0, "IsJackpot": false, "Result": {"Dice1": -1, "Dice2": -1, "Dice3": -1}, "SessionID": 2063787, "Ellapsed": 38, "TotalBetTai": 108334000, "TotalBetXiu": 74499000, "TotalTai": 75, "TotalXiu": 66, "Jackpot": 1369330024}]
+  << sessionInfo [{"CurrentState": 0, "IsJackpot": false, "Result": {"Dice1": -1, "Dice2": -1, "Dice3": -1}, "SessionID": 2063787, "Ellapsed": 37, "TotalBetTai": 128203000, "TotalBetXiu": 107597000, "TotalTai": 87, "TotalXiu": 78, "Jackpot": 1369330024}]
+  << sessionInfo [{"CurrentState": 0, "IsJackpot": false, "Result": {"Dice1": -1, "Dice2": -1, "Dice3": -1}, "SessionID": 2063787, "Ellapsed": 36, "TotalBetTai": 140324000, "TotalBetXiu": 127235000, "TotalTai": 91, "TotalXiu": 88, "Jackpot": 1369330024}]
+  << sessionInfo [{"CurrentState": 0, "IsJackpot": false, "Result": {"Dice1": -1, "Dice2": -1, "Dice3": -1}, "SessionID": 2063787, "Ellapsed": 35, "TotalBetTai": 154244000, "TotalBetXiu": 139825000, "TotalTai": 97, "TotalXiu": 97, "Jackpot": 1369330024}]
+  << sessionInfo [{"CurrentState": 0, "IsJackpot": false, "Result": {"Dice1": -1, "Dice2": -1, "Dice3": -1}, "SessionID": 2063787, "Ellapsed": 34, "TotalBetTai": 168944000, "TotalBetXiu": 151984000, "TotalTai": 103, "TotalXiu": 105, "Jackpot": 1369330024}]
+  << sessionInfo [{"CurrentState": 0, "IsJackpot": false, "Result": {"Dice1": -1, "Dice2": -1, "Dice3": -1}, "SessionID": 2063787, "Ellapsed": 33, "TotalBetTai": 169582000, "TotalBetXiu": 160937000, "TotalTai": 106, "TotalXiu": 109, "Jackpot": 1369330024}]
+  << sessionInfo [{"CurrentState": 0, "IsJackpot": false, "Result": {"Dice1": -1, "Dice2": -1, "Dice3": -1}, "SessionID": 2063787, "Ellapsed": 32, "TotalBetTai": 181712000, "TotalBetXiu": 181317000, "TotalTai": 110, "TotalXiu": 112, "Jackpot": 1369330024}]
+  << sessionInfo [{"CurrentState": 0, "IsJackpot": false, "Result": {"Dice1": -1, "Dice2": -1, "Dice3": -1}, "SessionID": 2063787, "Ellapsed": 31, "TotalBetTai": 203768000, "TotalBetXiu": 199850000, "TotalTai": 127, "TotalXiu": 117, "Jackpot": 1369330024}]
+  << sessionInfo [{"CurrentState": 0, "IsJackpot": false, "Result": {"Dice1": -1, "Dice2": -1, "Dice3": -1}, "SessionID": 2063787, "Ellapsed": 30, "TotalBetTai": 228123000, "TotalBetXiu": 206437000, "TotalTai": 138, "TotalXiu": 121, "Jackpot": 1369330024}]
+  << sessionInfo [{"CurrentState": 0, "IsJackpot": false, "Result": {"Dice1": -1, "Dice2": -1, "Dice3": -1}, "SessionID": 2063787, "Ellapsed": 29, "TotalBetTai": 234778000, "TotalBetXiu": 234957000, "TotalTai": 144, "TotalXiu": 127, "Jackpot": 1369330024}]
+  << sessionInfo [{"CurrentState": 0, "IsJackpot": false, "Result": {"Dice1": -1, "Dice2": -1, "Dice3": -1}, "SessionID": 2063787, "Ellapsed": 28, "TotalBetTai": 245623000, "TotalBetXiu": 250902000, "TotalTai": 151, "TotalXiu": 131, "Jackpot": 1369330024}]
+
+Profile: C:\Users\Quang\Documents\LC79\benbet_standalone\capture_logs\bet_profile.json

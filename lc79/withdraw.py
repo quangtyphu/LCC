@@ -214,6 +214,42 @@ def is_withdraw_profile_locked(data: dict, extra_error: str = "") -> bool:
     return any(m in text for m in PROFILE_WITHDRAW_LOCK_MARKERS)
 
 
+def _build_withdraw_status_line(
+    username: str,
+    amount: int,
+    message: str,
+    code,
+) -> str:
+    """Một dòng log/Telegram: số tiền rút + mã code."""
+    if message:
+        for line in str(message).splitlines():
+            if "Số tiền rút" in line:
+                return (
+                    f"💰💰💰💰💰 [{username}] {line.strip()} "
+                    f"💰💰💰💰💰 Mã Code: {code}"
+                )
+    amount_vnd = f"{amount:,}".replace(",", ".") + " ₫"
+    return (
+        f"💰💰💰💰💰 [{username}] Số tiền rút: {amount_vnd} "
+        f"💰💰💰💰💰 Mã Code: {code}"
+    )
+
+
+def notify_withdraw_code_pending(
+    username: str,
+    amount: int,
+    message: str,
+    code,
+) -> None:
+    """Gửi Telegram khi rút trả code 1 (đợi xử lý)."""
+    try:
+        from telegram_notifier import send_telegram
+
+        send_telegram(_build_withdraw_status_line(username, amount, message, code))
+    except Exception as e:
+        print(f"⚠️ [{username}] Không gửi được Telegram rút code 1: {e}", flush=True)
+
+
 def notify_withdraw_profile_locked(
     username: str,
     data: dict,
@@ -347,22 +383,11 @@ def withdraw(
         code_int = _parse_code(code)
         message = withdraw_response_message(data)
         
-        # Chỉ log một dòng theo yêu cầu
-        try:
-            import re
-            amount_line = None
-            if message:
-                for line in str(message).splitlines():
-                    if "Số tiền rút" in line:
-                        amount_line = line.strip()
-                        break
-            if amount_line:
-                print(f"💰💰💰💰💰 [{username}] {amount_line} 💰💰💰💰💰 Mã Code: {code}", flush=True)
-            else:
-                print(f"💰💰💰💰💰 [{username}] Số tiền rút: {amount:,}₫ 💰💰💰💰💰 Mã Code: {code}", flush=True)
-        except Exception:
-            print(f"💰💰💰💰💰 [{username}] Số tiền rút: {amount:,}₫ 💰💰💰💰💰 Mã Code: {code}", flush=True)
-        
+        status_line = _build_withdraw_status_line(username, amount, message, code)
+        print(status_line, flush=True)
+        if code_int == 1:
+            notify_withdraw_code_pending(username, amount, message, code)
+
         # Code 0 và 1 đều là thành công (1 = đợi xử lý, 0 = thành công ngay)
         if code_int in [0, 1]:
             # Thành công

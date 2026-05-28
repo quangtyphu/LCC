@@ -1,0 +1,3 @@
+{"t": 1779391259.2715545, "event": "start", "account_id": "acc21", "username": "gianghomom", "proxy": "14.241.72.253:50427 (socks5, user valentine)", "balance": "350662", "claim": true}
+{"t": 1779391269.2319682, "event": "network", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
+{"t": 1779391275.3135147, "event": "click_once", "x": 700, "y": 450}
