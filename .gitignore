@@ -1,6 +1,7 @@
 # Bỏ qua file biên dịch Python và thư mục cache
 __pycache__/
 *.pyc
+.venv/
 
 # Bỏ qua file cấu hình và cache (lc79/)
 lc79/config.json
@@ -8,6 +9,8 @@ lc79/deposit_pending_cache.json
 lc79/deposit_pending_cache.json.lock
 lc79/deposit_pending_cache.json.tmp
 lc79/queue_state.json
+lc79/deposit_sent_to_banking.json
+lc79/top_bet_daily_state.json
 
 # Bỏ qua database files
 *.db
@@ -17,6 +20,10 @@ qr_outputs/
 processed/
 queue/
 jackpot_notified/
+tmp_adb_inspect/
+tmp_*.py
+photo_base64.txt
+jackpot_night_extend_state.json
 lc79/jackpot_night_extend_state.json
 lc79/jackpot_night_extend_state.json.tmp
 lc79/tai_xiu_skew_stats.json
@@ -29,3 +36,13 @@ slot_client_locks/
 xoso66_standalone/xoso66_sessions.json
 xoso66_standalone/xoso66_config.json
 xoso66_standalone/data/
+xoso66_standalone/logs/
+xoso66_standalone/red_packet_logs/
+xoso66_standalone/register_profiles/
+
+# Capture / session runtime
+*.jsonl
+c168_standalone/capture_logs/
+c168_standalone/c168_vendor_session_*.json
+allgame/allgame_config.json
+allgame/portals/*/logs/

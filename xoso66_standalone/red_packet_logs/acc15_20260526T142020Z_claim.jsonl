@@ -1,9 +1,0 @@
-{"start": true, "user": "chuyenkhoan247", "proxy": "118.70.179.70:58201 (socks5, user valentine)", "balance": "69144"}
-{"t": 1779805246.082421, "step": "network_info", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
-{"t": 1779805250.070336, "step": "click_rain", "x": 700, "y": 450}
-{"t": 1779805266.9126928, "step": "click_duoc_nhan", "selector": "text=Được nhận"}
-{"t": 1779805267.0395634, "step": "network_info", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
-{"t": 1779805271.7048333, "step": "click_open", "selector": "text=Mở bao lì xì"}
-{"t": 1779805273.3063588, "step": "network_grab", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}
-{"t": 1779805280.4289992, "step": "grab_ui", "ok": false, "code": null, "msg": null, "via": "ui", "raw": {}}
-{"t": 1779805284.153254, "step": "getredpacketinfo", "ok": true, "code": 1, "msg": "Hoàn tất", "isNew": 0, "list": [], "red_notify": [], "packet_id": null, "raw": {"code": 1, "msg": "Hoàn tất", "time": 1779805284, "v": null, "data": {"list": [], "isNew": 0, "red_notify": []}}}

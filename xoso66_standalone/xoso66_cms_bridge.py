@@ -27,7 +27,9 @@ configure_stdio_utf8()
 
 
 def _emit(obj: dict) -> None:
-    print(json.dumps(obj, ensure_ascii=False), flush=True)
+    payload = json.dumps(obj, ensure_ascii=False) + "\n"
+    sys.stdout.buffer.write(payload.encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 def _fail(msg: str, **extra) -> None:
@@ -45,26 +47,57 @@ def cmd_deposit(body: dict) -> dict:
         from xoso66_auto_deposit import perform_deposit
 
         return perform_deposit(aid, amt, verbose=False)
-    from xoso66_deposit import create_deposit_order
 
-    return create_deposit_order(aid, amt)
+    from xoso66_auto_deposit import (
+        deposit_order_block_reason,
+        release_deposit_reserve,
+        try_reserve_deposit,
+    )
+    from xoso66_third_party_deposit_handler import create_xoso66_deposit_order
+
+    reason = deposit_order_block_reason(aid)
+    if reason:
+        return {"ok": False, "error": f"Không tạo đơn: {reason}"}
+    if not try_reserve_deposit(aid):
+        return {"ok": False, "error": "Đang có lệnh nạp chưa xong"}
+
+    try:
+        result = create_xoso66_deposit_order(aid, amt)
+    except Exception as e:
+        release_deposit_reserve(aid, clear_cache=True)
+        return {"ok": False, "error": str(e)}
+
+    if not result.get("ok"):
+        release_deposit_reserve(aid, clear_cache=True)
+        return result
+
+    release_deposit_reserve(aid)
+    return result
+
+
+def cmd_send_third_party(body: dict) -> dict:
+    from xoso66_third_party_deposit_handler import send_existing_order_to_third_party
+
+    username = str(body.get("username") or "").strip()
+    if not username:
+        raise ValueError("username bắt buộc")
+    return send_existing_order_to_third_party(username, body)
 
 
 def cmd_withdraw(body: dict) -> dict:
-    from xoso66_withdraw import withdraw_for_account
-    from xoso66_session import ensure_session
+    from xoso66_withdraw import run_withdraw_with_tracking
 
     aid = str(body.get("account_id") or "").strip()
     amt = int(body.get("amount") or 0)
     if not aid or amt <= 0:
         raise ValueError("account_id và amount > 0 bắt buộc")
     fund = str(body.get("fund_password") or "").strip()
-    card_id = body.get("card_id")
-    acc = ensure_session(aid)
-    return withdraw_for_account(
-        acc,
-        amount=amt,
-        fund_password=fund or None,
+    card_id = int(body.get("card_id") or 0)
+    return run_withdraw_with_tracking(
+        aid,
+        amt,
+        fund,
+        use_playwright=bool(body.get("use_browser")),
         card_id=card_id,
     )
 
@@ -83,6 +116,13 @@ def cmd_refresh_balance(body: dict) -> dict:
         raise ValueError("account_id bắt buộc")
     acc = ensure_session(aid, force_login=bool(body.get("force_login")))
     bal = refresh_account_balance_to_db(aid, acc)
+    if isinstance(bal, dict):
+        return {
+            "ok": bool(bal.get("ok", True)),
+            "account_id": aid,
+            "balance": bal.get("balance"),
+            "detail": bal,
+        }
     return {"ok": True, "account_id": aid, "balance": bal}
 
 
@@ -115,6 +155,16 @@ def cmd_refresh_missions(body: dict) -> dict:
         parallel=max(1, min(32, int(body.get("parallel") or 8))),
         force_login=bool(body.get("force_login")),
     )
+
+
+def cmd_auto_mission_claim(body: dict) -> dict:
+    from xoso66_auto_mission_reward import run_manual_auto_mission_claim
+
+    ids = body.get("account_ids") or []
+    aids = [str(x).strip() for x in ids if str(x).strip()]
+    if not aids:
+        raise ValueError("account_ids bắt buộc")
+    return run_manual_auto_mission_claim(aids)
 
 
 def cmd_refresh_vip(body: dict) -> dict:
@@ -173,16 +223,44 @@ def cmd_check_withdraw(body: dict) -> dict:
     )
 
 
+def cmd_release_deposit_order(body: dict) -> dict:
+    from xoso66_auto_deposit import release_deposit_order_tracking
+
+    aid = str(body.get("account_id") or "").strip()
+    if not aid:
+        raise ValueError("account_id bắt buộc")
+    release_deposit_order_tracking(aid)
+    return {"ok": True, "account_id": aid}
+
+
+def cmd_sync_from_chrome(body: dict) -> dict:
+    from xoso66_session import sync_session_from_chrome
+
+    aid = str(body.get("account_id") or "").strip()
+    if not aid:
+        raise ValueError("account_id bắt buộc")
+    return sync_session_from_chrome(
+        aid,
+        device=str(body.get("device") or "").strip(),
+        force_login=bool(body.get("force_login")),
+        timeout_sec=int(body.get("timeout_sec") or 0),
+    )
+
+
 _ACTIONS = {
     "deposit": cmd_deposit,
+    "send_third_party": cmd_send_third_party,
     "withdraw": cmd_withdraw,
     "provision": cmd_provision,
     "refresh_balance": cmd_refresh_balance,
     "sync_payment": cmd_sync_payment,
     "refresh_missions": cmd_refresh_missions,
+    "auto_mission_claim": cmd_auto_mission_claim,
     "refresh_vip": cmd_refresh_vip,
     "minigame_refresh": cmd_minigame_refresh,
     "check_withdraw": cmd_check_withdraw,
+    "release_deposit_order": cmd_release_deposit_order,
+    "sync_from_chrome": cmd_sync_from_chrome,
 }
 
 

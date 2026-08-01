@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -442,10 +443,7 @@ def parse_sign_daily_bets(
 
 
 def _claim_between_delay_sec() -> float:
-    from xoso66_config_util import load_config
-
-    raw = load_config().get("auto_mission_reward") or {}
-    return max(0.0, float(raw.get("claim_between_delay_sec", 3)))
+    return float(os.environ.get("XOSO66_MISSION_CLAIM_DELAY_SEC", "8"))
 
 
 def mission_claim_display_name(lv: dict[str, Any]) -> str:
@@ -462,6 +460,11 @@ def mission_claim_display_name(lv: dict[str, Any]) -> str:
             except ValueError:
                 day = max(1, lid - 113)
         return f"MiniGame Điểm Danh Ngày {day}"
+    title = str(lv.get("title") or "").strip()
+    if title and "cửa" in title.lower():
+        return f"MINI GAME {title}"
+    if title:
+        return f"Nhiệm vụ {title}"
     return f"Nhiệm vụ (level {lid})"
 
 
@@ -507,6 +510,8 @@ def execute_mission_claims(
     auto_log = bool(str(log_prefix or "").strip())
     if not auto_log:
         print(f"  [{u}] nhận thưởng {len(claimable)} mức (status=1) ...", flush=True)
+    if between_delay > 0 and claimable:
+        time.sleep(between_delay)
     for i, lv in enumerate(claimable):
         mid = int(lv["mission_id"])
         lid = int(lv["level_id"])

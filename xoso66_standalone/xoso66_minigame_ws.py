@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -85,6 +86,76 @@ class JackpotState:
 
 _ROUND_START_HANDLERS: list[Any] = []
 _ROUND_RESULT_HANDLERS: list[Any] = []
+
+_ROUND_OPEN_LOCK = threading.Lock()
+_ROUND_OPEN_MONO: dict[tuple[int, str], float] = {}
+_ROUND_OPEN_EVENTS: dict[tuple[int, str], threading.Event] = {}
+
+
+def _ts() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def note_round_bet_open_at(
+    game_id: int, issue: str, open_mono: float, *, only_if_earlier: bool = True
+) -> None:
+    """Ghi monotonic lúc mở cửa dự kiến/thực — giữ mốc sớm nhất."""
+    gid = int(game_id)
+    issue_s = str(issue or "").strip()
+    if not issue_s:
+        return
+    key = (gid, issue_s)
+    with _ROUND_OPEN_LOCK:
+        cur = _ROUND_OPEN_MONO.get(key)
+        if cur is not None and only_if_earlier and open_mono >= cur:
+            return
+        if cur is None or open_mono < cur:
+            _ROUND_OPEN_MONO[key] = open_mono
+        ev = _ROUND_OPEN_EVENTS.get(key)
+        if ev is None:
+            ev = threading.Event()
+            _ROUND_OPEN_EVENTS[key] = ev
+        ev.set()
+        if len(_ROUND_OPEN_MONO) > 200:
+            for old in list(_ROUND_OPEN_MONO.keys())[:-100]:
+                _ROUND_OPEN_MONO.pop(old, None)
+                _ROUND_OPEN_EVENTS.pop(old, None)
+
+
+def note_round_bet_open(game_id: int, issue: str) -> None:
+    """Ghi lúc nhận game_info is_open=1 — không ghi đè mốc sớm hơn từ wait_countdown."""
+    note_round_bet_open_at(game_id, issue, time.monotonic(), only_if_earlier=True)
+
+
+def get_round_open_mono(game_id: int, issue: str) -> float | None:
+    """Monotonic lúc mở cửa (sớm nhất đã biết) hoặc None."""
+    key = (int(game_id), str(issue or "").strip())
+    if not key[1]:
+        return None
+    with _ROUND_OPEN_LOCK:
+        return _ROUND_OPEN_MONO.get(key)
+
+
+def wait_for_round_bet_open(
+    game_id: int, issue: str, timeout_sec: float
+) -> float | None:
+    """Chờ is_open=1; trả monotonic lúc mở cửa hoặc None nếu hết timeout."""
+    gid = int(game_id)
+    issue_s = str(issue or "").strip()
+    if not issue_s:
+        return None
+    key = (gid, issue_s)
+    with _ROUND_OPEN_LOCK:
+        if key in _ROUND_OPEN_MONO:
+            return _ROUND_OPEN_MONO[key]
+        ev = _ROUND_OPEN_EVENTS.get(key)
+        if ev is None:
+            ev = threading.Event()
+            _ROUND_OPEN_EVENTS[key] = ev
+    if ev.wait(timeout=max(0.1, float(timeout_sec))):
+        with _ROUND_OPEN_LOCK:
+            return _ROUND_OPEN_MONO.get(key)
+    return None
 
 
 def register_round_start_handler(
@@ -180,10 +251,6 @@ def parse_watch_game_ids(spec: str) -> frozenset[int]:
 def _game_tag(gid: int, labels: dict[int, str]) -> str:
     name = labels.get(gid) or GAME_ID_LABELS.get(gid) or ""
     return f"game_id={gid} ({name})" if name else f"game_id={gid}"
-
-
-def _ts() -> str:
-    return time.strftime("%H:%M:%S")
 
 
 def _fmt_money(val: Any) -> str:
@@ -294,7 +361,7 @@ def _emit_round_result_log(gid: int, data: dict[str, Any], state: MultiGameWatch
     nums_s = f" ({nums})" if nums else ""
     issue_s = f" issue={issue}" if issue else ""
     print(
-        f"[{_ts()}] KẾT QUẢ PHIÊN - {name} - {wlabel}{nums_s}{issue_s}",
+        f"KẾT QUẢ PHIÊN - {name} - {wlabel}{nums_s}{issue_s}",
         flush=True,
     )
 
@@ -503,6 +570,21 @@ def _print_watch_game_info(data: dict[str, Any], state: MultiGameWatchState) -> 
         return False
     issue = str(data.get("issue") or "")
     open_flag = data.get("is_open")
+    if issue.strip():
+        if open_flag == 1:
+            note_round_bet_open(gid, issue)
+        elif open_flag == 0:
+            wcd = data.get("wait_countdown_second")
+            if wcd is not None:
+                try:
+                    note_round_bet_open_at(
+                        gid,
+                        issue,
+                        time.monotonic() + max(0.0, float(wcd)),
+                        only_if_earlier=True,
+                    )
+                except (TypeError, ValueError):
+                    pass
     cd = data.get("countdown")
     status = "MỞ CƯỢC" if open_flag == 1 else "ĐÓNG CƯỢC"
     if (
@@ -512,7 +594,7 @@ def _print_watch_game_info(data: dict[str, Any], state: MultiGameWatchState) -> 
         and int(cd) in (30, 20, 15, 10, 5, 3, 1)
     ):
         print(
-            f"{state.log_prefix}[{_ts()}] PHIÊN     {_game_tag(gid, state.labels)}  "
+            f"{state.log_prefix} PHIÊN     {_game_tag(gid, state.labels)}  "
             f"issue={issue}  {status}  countdown={cd}s",
             flush=True,
         )
@@ -530,7 +612,7 @@ def handle_game_watch_message(
     t = str(obj.get("type") or "").lower()
 
     if t == "logout":
-        print(f"{state.log_prefix}[{_ts()}] WS logout: {obj.get('msg')}", flush=True)
+        print(f"{state.log_prefix} WS logout: {obj.get('msg')}", flush=True)
         raise ConnectionError(str(obj.get("msg") or "logout"))
 
     if t == "jackpot_money":
@@ -543,7 +625,7 @@ def handle_game_watch_message(
             import json
 
             print(
-                f"[{_ts()}] DEBUG {t} {_game_tag(_watch_gid(data), state.labels)} "
+                f"DEBUG {t} {_game_tag(_watch_gid(data), state.labels)} "
                 f"{json.dumps(data, ensure_ascii=False)[:300]}",
                 flush=True,
             )
@@ -555,7 +637,7 @@ def handle_game_watch_message(
             import json
 
             print(
-                f"[{_ts()}] DEBUG {t} {_game_tag(_watch_gid(data), state.labels)} "
+                f"DEBUG {t} {_game_tag(_watch_gid(data), state.labels)} "
                 f"{json.dumps(data, ensure_ascii=False)[:300]}",
                 flush=True,
             )
@@ -620,6 +702,19 @@ def _cached_ws_token_if_ok(session: dict) -> str | None:
 
 # Tránh vipList + nhận thưởng spam mỗi lần WS reconnect (cùng nick).
 _WS_AFTER_CONNECT_VIP_LAST_TS: dict[str, float] = {}
+
+
+def _maybe_sync_withdraw_before_ws(session: dict, account_id: str, username: str) -> None:
+    """HTTP paymentorderlist rút → DB + device (trước prep token / mở WS)."""
+    try:
+        from xoso66_withdraw_tracking import maybe_sync_withdraw_history_on_ws_open
+
+        rep = maybe_sync_withdraw_history_on_ws_open(session, account_id)
+        if rep and not rep.get("ok"):
+            err = str(rep.get("error") or "?")
+            print(f"[WS-WD] [{username}] bỏ qua sync rút: {err}", flush=True)
+    except Exception as e:
+        print(f"[WS-WD] [{username}] sync rút lỗi: {e}", flush=True)
 
 
 async def _run_vip_check_after_ws_if_configured(
@@ -1204,11 +1299,19 @@ async def listen_minigame_ws(
     from xoso66_accounts_db import username_for_log
 
     aid = account_id or str(session.get("id") or "")
-    await asyncio.to_thread(prep_site_session_before_ws, aid)
+    prep_ok = await asyncio.to_thread(prep_site_session_before_ws, aid)
+    if not prep_ok:
+        raise RuntimeError(
+            "Không mở WS — prep session/balance thất bại hoặc số dư dưới ngưỡng"
+        )
     session = await asyncio.to_thread(ensure_session, aid, force_login=False)
     await asyncio.to_thread(ensure_proxy, session)
 
     username = username_for_log(aid, session)
+
+    await asyncio.to_thread(
+        lambda: _maybe_sync_withdraw_before_ws(session, aid, username),
+    )
 
     if not ws_token_override:
         rep = await asyncio.to_thread(
@@ -1357,6 +1460,14 @@ async def listen_minigame_ws(
                 ws_token_override = None
         except Exception as e:
             need_ws_refresh = True
+            from xoso66_proxy import maybe_report_proxy_dead_from_exception
+
+            maybe_report_proxy_dead_from_exception(
+                aid,
+                e,
+                proxy_str=proxy_str,
+                source="ws_token",
+            )
             print(f"[WS] [{username}] ws_token failed: {e}", flush=True)
             if deadline:
                 await asyncio.sleep(reconnect_delay)
@@ -1515,6 +1626,15 @@ async def listen_minigame_ws(
             raise
         except ConnectionError as e:
             err_s = str(e)
+            if "socks connect" in err_s.lower():
+                from xoso66_proxy import maybe_report_proxy_dead_from_exception
+
+                maybe_report_proxy_dead_from_exception(
+                    aid,
+                    e,
+                    proxy_str=proxy_str,
+                    source="WS connect",
+                )
             full, ws_only = _ws_reconnect_flags_after_logout(err_s)
             if "verification" in err_s.lower():
                 verify_fail_streak += 1
@@ -1532,13 +1652,21 @@ async def listen_minigame_ws(
                 need_minigame_refresh = True
                 need_ws_refresh = False
             print(
-                f"[{_ts()}] Mất kết nối: {e} — đóng WS, reconnect sau {reconnect_delay}s",
+                f"Mất kết nối: {e} — đóng WS, reconnect sau {reconnect_delay}s",
                 flush=True,
             )
             break
         except Exception as e:
             err_s = str(e).lower()
             if _is_transport_ws_error(err_s):
+                from xoso66_proxy import maybe_report_proxy_dead_from_exception
+
+                maybe_report_proxy_dead_from_exception(
+                    aid,
+                    e,
+                    proxy_str=proxy_str,
+                    source="WS transport",
+                )
                 transport_fail_streak += 1
                 need_ws_refresh = False
                 need_minigame_refresh = False
@@ -1704,7 +1832,7 @@ def main() -> int:
     try:
         return asyncio.run(_amain(args))
     except KeyboardInterrupt:
-        print(f"\n[{_ts()}] Dừng.", flush=True)
+        print(f"\nDừng.", flush=True)
         return 0
 
 

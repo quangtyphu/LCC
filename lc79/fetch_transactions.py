@@ -68,27 +68,54 @@ async def fetch_transactions_async(username: str, tx_type: str = "DEPOSIT", limi
             data = data.get("data", [])
         
         saved = []
+        synced_any = False
 
         # 4) Lưu từng giao dịch (kiểm tra trùng qua 409)
         for tx in data:
             transaction_id = tx.get("id")
             amount = float(tx.get("amount", 0))
-            try:
-                tx_time = datetime.strptime(tx.get("dateTime"), "%Y-%m-%d %H:%M:%S").isoformat()
-            except Exception:
-                tx_time = tx.get("dateTime")
-            
+            from check_deposit_history import normalize_tx_time
+
+            tx_time = normalize_tx_time(tx.get("dateTime"))
+
+            if tx_type == "DEPOSIT":
+                try:
+                    from check_deposit_history import save_deposit_transaction_and_sync_order
+
+                    saved_new, synced = save_deposit_transaction_and_sync_order(
+                        username,
+                        transaction_id=transaction_id,
+                        amount=amount,
+                        content=str(tx.get("content") or ""),
+                        time=tx_time,
+                        nickname=nickname,
+                    )
+                    if saved_new:
+                        saved.append({
+                            "username": username,
+                            "transactionId": transaction_id,
+                            "amount": amount,
+                            "time": tx_time,
+                        })
+                    if synced:
+                        synced_any = True
+                except Exception as e:
+                    print(
+                        f"⚠️ [{username}] Lỗi lưu/sync GD nạp: {e}",
+                        flush=True,
+                    )
+                continue
+
             record = {
                 "username": username,
                 "nickname": nickname,
-                "hinhThuc": "Nạp tiền" if tx_type == "DEPOSIT" else "Rút tiền",
+                "hinhThuc": "Rút tiền",
                 "transactionId": transaction_id,
                 "amount": amount,
                 "time": tx_time,
                 "deviceNap": "",
             }
-            
-            # Gửi lưu (nếu 409 = đã tồn tại)
+
             save_resp = await asyncio.to_thread(
                 lambda rec=record: requests.post(
                     f"{NODE_SERVER_URL}/api/transaction-details",
@@ -96,7 +123,7 @@ async def fetch_transactions_async(username: str, tx_type: str = "DEPOSIT", limi
                     timeout=5
                 )
             )
-            
+
             if save_resp.status_code in (200, 201):
                 saved.append(record)
             # 409 = đã tồn tại, bỏ qua

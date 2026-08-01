@@ -12,13 +12,13 @@ import socks
 import websockets
 import requests
 import contextlib
-import uuid
 
 from constants import WS_URL, active_ws
-from token_utils import test_token
 from jwt_manager import refresh_jwt
 from ws_events import handle_event  # import xử lý event
 from game_login import get_access_token, update_access_token_to_db
+from ws_cleanup import close_ws_socks_clean
+from socks_ws_gate import socks_ws_slot
 
 API_BASE = "http://127.0.0.1:3000"  # đổi thành URL server.js của bạn
 
@@ -110,6 +110,7 @@ async def handle_ws(acc, conn_id: str):
     intentional_close = False
     should_fast_reconnect = False
     exit_reason = None
+    connected_at = None
 
     try:
         jwt = acc.get("jwt")
@@ -154,27 +155,17 @@ async def handle_ws(acc, conn_id: str):
         sock = socks.socksocket()
         sock.set_proxy(socks.SOCKS5, host, port, True, puser, ppass)
         sock.setblocking(False)
-        # bỏ sock.settimeout(...) nếu có
         try:
-            # kết nối thử tới host thật để kiểm tra proxy
             sock.connect(("wtx.tele68.com", 443))
-            # print(f"🔐 [{user}] Đã Kết Nối Proxy")
         except Exception:
             print(f"🔐 [{user}] Đã Kết Nối Proxy ( Proxy Lỗi )")
             await update_user_status(user, "Proxy Lỗi")
+            await close_ws_socks_clean(None, sock)
             return
 
-        # ===== 2) Token check & auto-refresh nếu lỗi =====
+        # ===== 2) JWT — bỏ test_token (mở WS 2 lần/user gây 10038); authorize trên WS chính =====
         jwt = acc.get("jwt")
-        
-        # Test token (timeout 3s)
-        try:
-            ok = await asyncio.wait_for(test_token(jwt, proxy_str), timeout=3)
-        except Exception:
-            ok = False
-        
-        if not ok:
-            # Refresh JWT mới (tự động xử lý accessToken nếu cần)
+        if not jwt:
             try:
                 new_jwt = await asyncio.to_thread(lambda: refresh_jwt(user))
                 if new_jwt:
@@ -182,15 +173,16 @@ async def handle_ws(acc, conn_id: str):
                     acc["jwt"] = jwt
                     await _requests_put(f"/api/users/{user}", {"jwt": jwt}, timeout=5)
                 else:
-                    print(f"❌ [{user}] Không refresh được JWT")
+                    print(f"❌ [{user}] Không có JWT")
                     await update_user_status(user, "Token Lỗi")
+                    await close_ws_socks_clean(None, sock)
                     return
             except Exception as e:
                 print(f"❌ [{user}] Lỗi refresh JWT: {e}")
                 await update_user_status(user, "Token Lỗi")
+                await close_ws_socks_clean(None, sock)
                 return
 
-        # JWT OK → connect WS
         print(f"🔐 [{user}] JWT OK, kết nối WS")
 
         # HTTP API (lịch sử / mission / VIP) dùng game_api_helper: mở circuit + full_check sau khi proxy+JWT đã OK
@@ -214,34 +206,57 @@ async def handle_ws(acc, conn_id: str):
             print(f"⚠️ [{user}] Lỗi import hoặc chạy user_full_check_logic: {e}")
 
         # ===== 3) Kết nối WS =====
+        ws = None
         try:
-            async with websockets.connect(WS_URL, sock=sock, ssl=True, ping_interval=None) as ws:
-                connected_ws = True
-                # Handshake/authorize
+            async with socks_ws_slot():
+                ws = await websockets.connect(WS_URL, sock=sock, ssl=True, ping_interval=None)
+            connected_ws = True
+            # Handshake/authorize
+            try:
+                await ws.recv()  # bỏ gói chào nếu server gửi
+            except Exception:
+                pass
+
+            # gửi token (authorize)
+            await ws.send(f"40/tx,{json.dumps({'token': jwt})}")
+
+            connected_at = time.time()
+            entry["ws_connected_at"] = connected_at
+            entry["last_msg_at"] = connected_at
+            try:
+                from ws_manager import notify_ws_connected
+                notify_ws_connected(user)
+            except Exception:
+                pass
+
+            last_msg_time = connected_at
+            last_ping_time = connected_at
+
+            # Reader riêng: KHÔNG hủy ws.recv() mỗi 0.2s (Windows selector + SOCKS → WinError 10038).
+            inbound: asyncio.Queue = asyncio.Queue(maxsize=256)
+
+            async def _ws_reader() -> None:
                 try:
-                    await ws.recv()  # bỏ gói chào nếu server gửi
+                    while True:
+                        msg = await ws.recv()
+                        await inbound.put(msg)
                 except Exception:
                     pass
+                finally:
+                    with contextlib.suppress(Exception):
+                        await inbound.put(None)
 
-                # gửi token (authorize)
-                await ws.send(f"40/tx,{json.dumps({'token': jwt})}")
-                # Không gửi yêu cầu lấy your-info và không cập nhật trạng thái Đang Chơi ở đây nữa
-                # Đã chuyển toàn bộ check thưởng, cập nhật trạng thái vào user_full_check_logic
-                
-                last_msg_time = time.time()
-                last_ping_time = time.time()  # lưu lần cuối nhận "2"
-
+            reader_task = asyncio.create_task(_ws_reader())
+            try:
                 while True:
                     now = time.time()
 
-                    # 🔒 Nếu bị thay thế bởi WS mới → thoát ngay
                     entry_now = active_ws.get(user)
                     if not entry_now or entry_now.get("conn_id") != conn_id:
                         intentional_close = True
                         exit_reason = "replaced"
                         break
 
-                    # 🔎 Nếu /api/force-check yêu cầu cập nhật balance (poke)
                     if entry_now.pop("poke_balance", None):
                         try:
                             await ws.send('42/tx,["your-info"]')
@@ -249,82 +264,68 @@ async def handle_ws(acc, conn_id: str):
                         except Exception as e:
                             print(f"⚠️ [{user}] Poke your-info lỗi: {e}")
 
-                    # 🧭 1. Timeout toàn cục: không có bất kỳ msg nào trong 120s → reconnect
                     if now - last_msg_time > 120:
                         print(f"⏳ [{user}] Timeout 120s → reconnect")
                         exit_reason = "timeout"
                         break
 
-                    # 🧭 2. Nếu 30s không nhận được ping "2" → gửi "3" để giữ kết nối
                     if now - last_ping_time > 30:
                         try:
                             await ws.send("3")
-                            last_ping_time = now  # reset watchdog
+                            last_ping_time = now
                         except Exception as e:
                             print(f"⚠️ [{user}] Gửi pong lỗi: {e} → reconnect")
                             exit_reason = "send_error"
                             break
 
-                    recv_task = None
                     try:
-                        recv_task = asyncio.create_task(ws.recv())
-                        msg = await asyncio.wait_for(recv_task, timeout=0.2)
-                        last_msg_time = now
-
-                        # 🧠 Nếu là ping từ server
-                        if msg == "2":
-                            await ws.send("3")
-                            last_ping_time = now  # reset watchdog
-                            continue
-
-                        # 🧠 Nếu là event
-                        if isinstance(msg, str) and msg.startswith("42/tx,"):
-                            # xử lý event (không block): handle_event có thể là async hoặc sync
-                            try:
-                                # nếu handle_event là coroutine
-                                maybe_coro = handle_event(user, msg)
-                                if asyncio.iscoroutine(maybe_coro):
-                                    # chạy không chặn vòng loop chính
-                                    asyncio.create_task(maybe_coro)
-                                # nếu sync thì hàm đã chạy
-                            except Exception as e:
-                                print(f"⚠️ [{user}] Lỗi khi gọi handle_event: {e}")
-                                import traceback
-                                traceback.print_exc()
-
+                        msg = await asyncio.wait_for(inbound.get(), timeout=0.2)
                     except asyncio.TimeoutError:
-                        # Không sao, 0.2s không nhận được gì thì tiếp tục vòng lặp và đẩy queue ra WS
                         await _drain_outgoing_queue(ws, queue, user)
+                        continue
 
-                    except asyncio.CancelledError:
-                        # Task WS bị hủy chủ động (disconnect_user, hết tiền, thay WS mới)
-                        # -> thoát êm, không in stack trace
-                        raise
-
-                    except Exception as e:
+                    if msg is None:
                         exit_reason = "recv_error"
                         break
 
-                    finally:
-                        # Nếu còn recv_task đang pending -> hủy & chờ kết thúc để không rò rỉ
-                        if recv_task and not recv_task.done():
-                            recv_task.cancel()
-                            with contextlib.suppress(Exception, asyncio.CancelledError):
-                                await recv_task
+                    last_msg_time = now
+                    entry_now["last_msg_at"] = now
+
+                    if msg == "2":
+                        await ws.send("3")
+                        last_ping_time = now
+                        continue
+
+                    if isinstance(msg, str) and msg.startswith("42/tx,"):
+                        try:
+                            maybe_coro = handle_event(user, msg)
+                            if asyncio.iscoroutine(maybe_coro):
+                                asyncio.create_task(maybe_coro)
+                        except Exception as e:
+                            print(f"⚠️ [{user}] Lỗi khi gọi handle_event: {e}")
+                            import traceback
+                            traceback.print_exc()
+            except asyncio.CancelledError:
+                raise
+            finally:
+                reader_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await reader_task
 
         except asyncio.CancelledError:
             intentional_close = True
             raise
         except (ConnectionResetError, OSError) as e:
-            # Khi Ctrl+C/loop dừng, socket có thể bị reset → bỏ qua để tránh trace
-            if isinstance(e, OSError) and getattr(e, "winerror", None) == 995:  # operation aborted
+            winerr = getattr(e, "winerror", None)
+            if winerr in (995, 10038):
                 return
             exit_reason = "connection_error"
         finally:
             if connected_ws and not intentional_close and exit_reason:
                 should_fast_reconnect = True
-            with contextlib.suppress(Exception):
-                sock.close()
+            await close_ws_socks_clean(ws, sock, "tx", sock_handoff=(ws is not None))
+            ws = None
+            sock = None
 
     except asyncio.CancelledError:
         # Bị hủy từ bên ngoài -> thoát êm
@@ -361,19 +362,32 @@ async def handle_ws(acc, conn_id: str):
                 # print(f"🧹 [{user}] Bỏ qua dọn dẹp (đã bị thay thế bởi WS khác).")
             pass
 
-        # ✅ Nếu WS đang kết nối mà bị rớt → reconnect ngay (không chờ 20s)
-        # Guard để tránh lỗi nếu task bị hủy khi đang shutdown
         should_reconnect = locals().get("should_fast_reconnect", False)
         if should_reconnect and user not in active_ws:
-            new_conn_id = uuid.uuid4().hex
-            q = asyncio.Queue()
-            active_ws[user] = {"queue": q, "task": None, "acc": acc, "conn_id": new_conn_id}
-            task = asyncio.create_task(handle_ws(acc, new_conn_id))
-            active_ws[user]["task"] = task
-            print(f"♻️ [{user}] Mất kết nối WS → reconnect ngay")
+            try:
+                from ws_manager import schedule_reconnect_after_drop
+                schedule_reconnect_after_drop(
+                    user,
+                    acc,
+                    exit_reason or "unknown",
+                    connected_at=connected_at,
+                )
+            except Exception as e:
+                print(f"❌ [{user}] Lỗi schedule reconnect: {e}", flush=True)
+        elif intentional_close:
+            try:
+                from ws_manager import cancel_pending_reconnect
+                cancel_pending_reconnect(user)
+            except Exception:
+                pass
 
 # ------------------- Ngắt WS cho 1 user (không pop ngay) -------------------
 async def disconnect_user(user):
+    try:
+        from ws_manager import cancel_pending_reconnect
+        cancel_pending_reconnect(user)
+    except Exception:
+        pass
     entry = active_ws.get(user)
     if entry:
         # cancel task; handle_ws sẽ dọn dẹp entry nếu conn_id khớp

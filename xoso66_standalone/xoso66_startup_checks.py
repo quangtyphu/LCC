@@ -301,6 +301,10 @@ def _check_one_balance(account_id: str, sessions: dict[str, dict], cfg: dict) ->
                 "reason": "không có session trong DB",
             }
         acc = copy.deepcopy(base)
+        from xoso66_session import _session_needs_relogin
+
+        if _session_needs_relogin(acc):
+            acc = ensure_session(account_id, force_login=True)
         bal = _get_bal(acc)
         if bal.get("ok"):
             out = _apply_balance(acc, bal)
@@ -318,6 +322,14 @@ def _check_one_balance(account_id: str, sessions: dict[str, dict], cfg: dict) ->
         out["path"] = "ensure_session+getBalance"
         return out
     except Exception as e:
+        from xoso66_proxy import maybe_report_proxy_dead_from_exception, resolve_proxy
+
+        maybe_report_proxy_dead_from_exception(
+            account_id,
+            e,
+            proxy_str=resolve_proxy(row),
+            source="startup balance",
+        )
         return {
             "account_id": account_id,
             "username": username,
@@ -1106,7 +1118,14 @@ def run_startup_checks(cfg: dict, *, verbose: bool | None = None) -> dict[str, A
         return {"ok": True, "results": []}
 
     quiet = _startup_quiet(cfg)
-    if not quiet:
+    if quiet:
+        from xoso66_config_util import main_progress
+
+        n_acc = len(account_ids_for_startup_checks(cfg, "balance_status"))
+        main_progress(
+            f"[STARTUP] Đang kiểm tra {n_acc} acc «Đang Chơi» (balance + token)…"
+        )
+    elif not quiet:
         if any(n == "startup_combined" for n, _ in checks):
             w = _parallel_count(cfg, "startup_parallel", 64)
             print(

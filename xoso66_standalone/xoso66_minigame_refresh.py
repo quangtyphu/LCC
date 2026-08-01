@@ -265,14 +265,14 @@ def ping_user_token(
     sub_game_code: str | None = None,
 ) -> dict[str, Any]:
     """
-    Kiểm tra nhanh (~1–2s): user-token + cookie CF còn dùng được không.
-    Không refresh — chỉ POST batchRequest.
+    Kiểm tra nhanh (~1–2s): user-token còn dùng được không (POST batchRequest).
+    Không refresh. Thiếu cf_clearance vẫn ping thật — nhiều proxy/IP chạy được
+    chỉ với user-token + __cf_bm (gameurl hay gặp).
     """
     mg = get_minigame(session)
     if not mg.get("user_token"):
         return {"ok": False, "reason": "thiếu user_token trong session"}
-    if not (mg.get("cookies") or {}).get("cf_clearance"):
-        return {"ok": False, "reason": "thiếu cf_clearance — chạy refresh_minigame_cf"}
+    cf_ok = bool((mg.get("cookies") or {}).get("cf_clearance"))
     sub = sub_game_code or mg.get("sub_game_code")
     last: dict[str, Any] = {
         "ok": False,
@@ -280,6 +280,7 @@ def ping_user_token(
         "code": None,
         "msg": "batchRequest fail",
         "auth_error": False,
+        "cf_ok": cf_ok,
     }
     for gn in batch_gamename_candidates(gamename=gamename, sub_game_code=sub):
         status, js = _batch_request_ping(session, game_id=game_id, gamename=gn)
@@ -291,10 +292,13 @@ def ping_user_token(
             "msg": msg or None,
             "gamename": gn,
             "auth_error": _is_auth_error(js) if isinstance(js, dict) else False,
+            "cf_ok": cf_ok,
         }
         if ok:
             mg["gamename"] = gn
             return last
+    if not cf_ok and not last.get("msg"):
+        last["reason"] = "thiếu cf_clearance — batchRequest cũng fail"
     return last
 
 

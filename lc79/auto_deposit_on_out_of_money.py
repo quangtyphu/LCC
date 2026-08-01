@@ -7,7 +7,7 @@ import threading
 from queue import Queue
 from constants import load_config
 from status_utils import update_status
-from user_full_check_service import user_full_check_logic
+from time_windows import get_active_window as _get_active_window
 
 API_BASE = "http://127.0.0.1:3000"  # Node.js server
 THIRD_PARTY_API_BASE = "http://127.0.0.1:5000"  # Third party deposit handler
@@ -23,6 +23,7 @@ import os as _os
 _DEP_DIR = _os.path.dirname(_os.path.abspath(__file__))
 DEPOSIT_CACHE_FILE = _os.path.join(_DEP_DIR, "deposit_pending_cache.json")
 DEPOSIT_CACHE_LOCK_FILE = _os.path.join(_DEP_DIR, "deposit_pending_cache.json.lock")
+DEPOSIT_SENT_FILE = _os.path.join(_DEP_DIR, "deposit_sent_to_banking.json")
 DEPOSIT_CACHE_DELAY_SECONDS = 15 * 60  # 15 phút = 900 giây
 DEPOSIT_QUEUE_INTERVAL_SECONDS = 60  # Khoảng cách giữa 2 lệnh nạp liên tục
 PERIODIC_DEPOSIT_CHECK_SECONDS = 60  # Chu kỳ quét auto nạp (Hết Tiền / MAX_ACTIVE)
@@ -183,15 +184,75 @@ def cleanup_deposit_cache():
         save_deposit_cache(cache)
         print(f"[CACHE] Đã xóa {len(expired)} entry quá 15 phút: {expired}")
 
+def _load_deposit_sent() -> dict:
+    if not os.path.exists(DEPOSIT_SENT_FILE):
+        return {}
+    try:
+        with open(DEPOSIT_SENT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_deposit_sent(data: dict) -> None:
+    try:
+        tmp = DEPOSIT_SENT_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, DEPOSIT_SENT_FILE)
+    except Exception as e:
+        print(f"[WARN] Không lưu được deposit_sent file: {e}")
+
+
+def mark_order_sent_to_banking(order_id) -> None:
+    oid = str(order_id or "").strip()
+    if not oid:
+        return
+    sent = _load_deposit_sent()
+    sent[oid] = time.time()
+    _save_deposit_sent(sent)
+
+
+def was_order_sent_to_banking(order_id) -> bool:
+    oid = str(order_id or "").strip()
+    return bool(oid and oid in _load_deposit_sent())
+
+
+def clear_order_sent_to_banking(order_id) -> None:
+    oid = str(order_id or "").strip()
+    if not oid:
+        return
+    sent = _load_deposit_sent()
+    if oid in sent:
+        del sent[oid]
+        _save_deposit_sent(sent)
+
+
 def can_create_deposit_order(username):
     """
     Check xem có thể tạo lệnh nạp cho username không.
     Return True nếu không có trong cache (cho phép tạo).
     Return False nếu có trong cache (đang có lệnh treo).
     """
+    u = (username or "").strip()
+    if not u:
+        return False
     cleanup_deposit_cache()  # Xóa các entry cũ trước khi check
     cache = load_deposit_cache()
-    return username not in cache
+    if u in cache:
+        return False
+    try:
+        from deposit_api import get_pending_deposit_order
+
+        pending = get_pending_deposit_order(u)
+        if pending:
+            cache[u] = time.time()
+            save_deposit_cache(cache)
+            return False
+    except Exception as e:
+        print(f"[WARN] Không kiểm tra DB lệnh nạp treo ({u}): {e}", flush=True)
+    return True
 
 def _wait_for_deposit_slot():
     """
@@ -286,9 +347,7 @@ def _perform_deposit_request(user, amount):
                 cache = load_deposit_cache()
                 cache[user] = time.time()
                 save_deposit_cache(cache)
-                update_status(user, "Đang Chơi")
-                user_full_check_logic(user)
-                # Bỏ log CACHE lưu
+                # Giữ Hết Tiền / Chờ Nạp — chỉ Đang Chơi sau lệnh Thành Công (refresh_after_deposit_confirm)
             else:
                 error = result.get("error", "Unknown error")
                 # Bỏ log DEPOSIT FAILED
@@ -422,6 +481,81 @@ def is_in_v2_v3(user, config):
     )
 
 
+# PRIORITY_USERS chỉ cược >= 50k — dưới ngưỡng này cần nạp (cố định, không config).
+PRIORITY_USERS_BALANCE_DEPOSIT_THRESHOLD_VND = 50_000
+
+
+def _priority_users_only_from_config(config: dict) -> list[str]:
+    """Danh sách PRIORITY_USERS (khung giờ hiện tại hoặc root), bỏ slot rỗng."""
+    w = _get_active_window(config) or {}
+    raw = w.get("PRIORITY_USERS") or config.get("PRIORITY_USERS") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(x).strip() for x in raw if isinstance(x, str) and str(x).strip()]
+
+
+def is_in_priority_users_only(user, config) -> bool:
+    """True nếu user thuộc PRIORITY_USERS (không tính V2/V3)."""
+    if not config:
+        return False
+    w = _get_active_window(config) or {}
+    v2 = w.get("PRIORITY_USERS_V2") or config.get("PRIORITY_USERS_V2", [])
+    v3 = w.get("PRIORITY_USERS_V3") or config.get("PRIORITY_USERS_V3", [])
+    if _username_matches_list(user, v2) or _username_matches_list(user, v3):
+        return False
+    p1 = w.get("PRIORITY_USERS") or config.get("PRIORITY_USERS", [])
+    return _username_matches_list(user, p1)
+
+
+def maybe_deposit_priority_user_low_balance(user: str, balance: int, config: dict | None = None) -> bool:
+    """
+    PRIORITY_USERS có balance < 50k → xếp hàng nạp (giống hết tiền).
+    Trả True nếu đã enqueue.
+    """
+    cfg = config or load_config()
+    if not cfg or int(cfg.get("AUTO_DEPOSIT_V2_V3", 0) or 0) != 1:
+        return False
+    w = _get_active_window(cfg) or {}
+    if w.get("PAUSE"):
+        return False
+    u = _canonical_priority_username(user, cfg)
+    if not is_in_priority_users_only(u, cfg):
+        return False
+    try:
+        bal = int(balance)
+    except (TypeError, ValueError):
+        return False
+    if bal >= PRIORITY_USERS_BALANCE_DEPOSIT_THRESHOLD_VND:
+        return False
+    if not can_create_deposit_order(u):
+        return False
+    auto_deposit_for_user(
+        u,
+        deposit_reason=(
+            f"PRIORITY_USERS balance < {PRIORITY_USERS_BALANCE_DEPOSIT_THRESHOLD_VND:,}đ "
+            f"(hiện {bal:,}đ)"
+        ),
+    )
+    return True
+
+
+def check_priority_users_low_balance_deposit(config: dict | None = None) -> None:
+    """Quét định kỳ: mọi PRIORITY_USERS có balance < 50k → nạp."""
+    cfg = config or load_config()
+    if not cfg:
+        return
+    for user in _priority_users_only_from_config(cfg):
+        try:
+            canonical = _canonical_priority_username(user, cfg)
+            r = requests.get(f"{API_BASE}/api/users/{canonical}", timeout=5)
+            if r.status_code != 200:
+                continue
+            balance = int(r.json().get("balance") or 0)
+            maybe_deposit_priority_user_low_balance(canonical, balance, cfg)
+        except Exception as e:
+            print(f"[PRIORITY] Lỗi check balance thấp {user}: {e}", flush=True)
+
+
 def _is_priority_v3_user(user, config) -> bool:
     """True nếu user khớp PRIORITY_USERS_V3 (không auto nạp từ luồng /api/accounts/out-of-money)."""
     if not config:
@@ -430,14 +564,22 @@ def _is_priority_v3_user(user, config) -> bool:
     return _username_matches_list(user, v3)
 
 
-from time_windows import get_active_window as _get_active_window
-
-
 def _get_max_active_users_outside_v2_v3(cfg: dict) -> int:
     """
     Lấy MAX_ACTIVE_USERS_OUTSIDE_V2_V3 theo khung giờ hiện tại nếu có,
     nếu không có thì dùng giá trị mặc định trong config.
+
+  TOP_BET_DAILY_MODE ENABLED=1: chỉ phiên V2 ép MAX=0; sau thoát V2 và ngoài phiên theo config/TIME_WINDOWS.
     """
+    try:
+        from top_bet_daily_mode_scheduler import top_bet_daily_mode_resolved_max_outside
+
+        resolved = top_bet_daily_mode_resolved_max_outside(cfg)
+        if resolved is not None:
+            return resolved
+    except ImportError:
+        pass
+
     active_window = _get_active_window(cfg) or {}
     if isinstance(active_window, dict) and "MAX_ACTIVE_USERS_OUTSIDE_V2_V3" in active_window:
         value = active_window.get("MAX_ACTIVE_USERS_OUTSIDE_V2_V3")
@@ -654,12 +796,13 @@ def periodic_check_all_users():
     """
     Check định kỳ (mặc định mỗi 5 phút):
     - V2/V3/PRIORITY: vẫn gọi auto_deposit khi cần.
+    - PRIORITY_USERS: balance < 50k → nạp (không cần trạng thái Hết Tiền).
     - Outside: chỉ khi PERIODIC_OUTSIDE_DEPOSIT=1 (mặc định 0). Nạp ngoài V2/V3 đã có luồng
       schedule_het_tien / delayed; periodic outside dễ gọi trùng lần 2.
 
     Mỗi lần chạy đều gọi load_config() lại (file config.json trên đĩa).
     """
-    
+
     try:
         config = load_config()
         tick_log = _periodic_tick_log_enabled()
@@ -669,94 +812,77 @@ def periodic_check_all_users():
             r = requests.get(f"{API_BASE}/api/accounts/out-of-money", timeout=5)
             if r.status_code != 200:
                 print(f"[PERIODIC] Không thể lấy danh sách user hết tiền: status {r.status_code}")
-                return
-            
-            data = r.json()
-            accounts = data if isinstance(data, list) else data.get("data", [])
-            
-            if not accounts:
-                if tick_log:
-                    print(
-                        "[PERIODIC] tick — /api/accounts/out-of-money rỗng (không ai Hết Tiền), bỏ qua",
-                        flush=True,
-                    )
-                return
-            
-            
-            # Phân loại user: V2/V3/PRIORITY và outside (lấy TẤT CẢ user từ API, không filter theo config)
-            v2_v3_users = []
-            outside_users = []
-            
-            for acc in accounts:
-                # Parse account name: có thể là string hoặc dict
-                if isinstance(acc, dict):
-                    acc_name = acc.get("username") or acc.get("user") or str(acc.get("id", ""))
+            else:
+                data = r.json()
+                accounts = data if isinstance(data, list) else data.get("data", [])
+
+                if not accounts:
+                    if tick_log:
+                        print(
+                            "[PERIODIC] tick — /api/accounts/out-of-money rỗng (không ai Hết Tiền), bỏ qua",
+                            flush=True,
+                        )
                 else:
-                    acc_name = str(acc).strip()
-                
-                if not acc_name:
-                    continue
-                
-                # Phân loại V2/V3/PRIORITY hoặc outside
-                if is_in_v2_v3(acc_name, config):
-                    v2_v3_users.append(_canonical_priority_username(acc_name, config))
-                else:
-                    # Tất cả user không phải V2/V3/PRIORITY đều là outside
-                    outside_users.append(acc_name)
-            
-            # ========== Xử lý V2/V3/PRIORITY ==========
-            if v2_v3_users:
-                if config.get("AUTO_DEPOSIT_V2_V3", 0) == 1:
-                    for user in v2_v3_users:
-                        try:
-                            # Check cache: nếu có trong cache (đang có lệnh treo) → bỏ qua, đợi lần check tiếp theo
-                            if not can_create_deposit_order(user):
-                                continue
-                            
-                            # Nếu không có trong cache → gọi auto_deposit_for_user
-                            auto_deposit_for_user(
-                                user,
-                                deposit_reason="PERIODIC: V2/V3/PRIORITY trong /api/accounts/out-of-money (quét 60s)",
-                            )
-                        except Exception as e:
-                            print(f"[PERIODIC] Lỗi khi nạp tiền cho {user} (V2/V3/PRIORITY): {e}")
-            
-            # ========== Outside (tắt mặc định — tránh trùng luồng hết tiền) ==========
-            if outside_users:
-                if (
-                    config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) == 1
-                    and int(config.get("PERIODIC_OUTSIDE_DEPOSIT", 0) or 0) == 1
-                ):
-                    # 1. Kiểm tra số user đang active ngoài V2/V3
-                    active_outside_users = get_active_users_outside_v2_v3(config)
-                    active_count = len(active_outside_users)
+                    v2_v3_users = []
+                    outside_users = []
 
-                    # 2. Lấy MAX_ACTIVE_USERS_OUTSIDE_V2_V3 từ TIME_WINDOWS nếu có, nếu không thì dùng giá trị mặc định
-                    max_limit = _get_max_active_users_outside_v2_v3(config)
+                    for acc in accounts:
+                        if isinstance(acc, dict):
+                            acc_name = acc.get("username") or acc.get("user") or str(acc.get("id", ""))
+                        else:
+                            acc_name = str(acc).strip()
 
-                    # 3. Nếu đã đủ limit → skip
-                    if active_count < max_limit:
-                        # 4. Tính số user cần nạp
-                        need_deposit = max_limit - active_count
+                        if not acc_name:
+                            continue
 
-                        # 5. Random trong 5 user outside đầu (đủ cache mới nạp)
-                        pool5 = outside_users[:OUTSIDE_DEPOSIT_PICK_POOL_SIZE]
-                        eligible = [u for u in pool5 if can_create_deposit_order(u)]
-                        pick = random.choice(eligible) if eligible else None
+                        if is_in_v2_v3(acc_name, config):
+                            v2_v3_users.append(_canonical_priority_username(acc_name, config))
+                        else:
+                            outside_users.append(acc_name)
 
-                        if pick:
+                    if v2_v3_users and config.get("AUTO_DEPOSIT_V2_V3", 0) == 1:
+                        for user in v2_v3_users:
                             try:
+                                if not can_create_deposit_order(user):
+                                    continue
                                 auto_deposit_for_user(
-                                    pick,
-                                    prioritize_outside_trigger=False,
-                                    deposit_reason="PERIODIC: outside hết tiền — lấp MAX_ACTIVE_USERS_OUTSIDE_V2_V3",
+                                    user,
+                                    deposit_reason="PERIODIC: V2/V3/PRIORITY trong /api/accounts/out-of-money (quét 60s)",
                                 )
                             except Exception as e:
-                                print(f"[PERIODIC] Lỗi khi nạp tiền outside (batch): {e}")
-            
+                                print(f"[PERIODIC] Lỗi khi nạp tiền cho {user} (V2/V3/PRIORITY): {e}")
+
+                    if outside_users and (
+                        config.get("AUTO_DEPOSIT_OUTSIDE_V2_V3", 0) == 1
+                        and int(config.get("PERIODIC_OUTSIDE_DEPOSIT", 0) or 0) == 1
+                    ):
+                        active_outside_users = get_active_users_outside_v2_v3(config)
+                        active_count = len(active_outside_users)
+                        max_limit = _get_max_active_users_outside_v2_v3(config)
+
+                        if active_count < max_limit:
+                            pool5 = outside_users[:OUTSIDE_DEPOSIT_PICK_POOL_SIZE]
+                            eligible = [u for u in pool5 if can_create_deposit_order(u)]
+                            pick = random.choice(eligible) if eligible else None
+
+                            if pick:
+                                try:
+                                    auto_deposit_for_user(
+                                        pick,
+                                        prioritize_outside_trigger=False,
+                                        deposit_reason="PERIODIC: outside hết tiền — lấp MAX_ACTIVE_USERS_OUTSIDE_V2_V3",
+                                    )
+                                except Exception as e:
+                                    print(f"[PERIODIC] Lỗi khi nạp tiền outside (batch): {e}")
+
         except Exception as e:
             print(f"[PERIODIC] Lỗi khi gọi API out-of-money: {e}")
-        
+
+        try:
+            check_priority_users_low_balance_deposit(config)
+        except Exception as e:
+            print(f"[PERIODIC] Lỗi check PRIORITY_USERS balance < 50k: {e}", flush=True)
+
     except Exception as e:
         print(f"[PERIODIC] Lỗi trong periodic_check_all_users: {e}")
 

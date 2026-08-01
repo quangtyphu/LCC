@@ -1,0 +1,4 @@
+﻿# Exclude from Cursor index/search
+.venv/
+__pycache__/
+xoso66_standalone/register_profiles/

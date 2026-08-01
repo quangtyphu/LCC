@@ -415,7 +415,10 @@ def withdraw(
             # Chạy check_withdraw_history ở background để không chặn luồng chính
             def _check_withdraw_history_async():
                 try:
-                    from check_withdraw_history import check_withdraw_history
+                    from check_withdraw_history import (
+                        check_withdraw_history,
+                        effective_withdraw_status,
+                    )
                     latest_tx_id = None
                     latest_status = None
                     time.sleep(2)
@@ -430,7 +433,7 @@ def withdraw(
                     if transactions:
                         latest_tx = transactions[0]
                         latest_tx_id = latest_tx.get("id")
-                        latest_status = latest_tx.get("status")
+                        latest_status = effective_withdraw_status(latest_tx)
 
                     # Định kỳ như cũ để check lại trạng thái giao dịch
                     intervals = [40, 30,30,30,30, 30,30,60, 60,60,120,120,120]
@@ -450,7 +453,7 @@ def withdraw(
                         )
                         matched = result.get("matched_tx")
                         if matched:
-                            current_status = matched.get("status")
+                            current_status = effective_withdraw_status(matched)
                             if current_status != latest_status:
                                 latest_status = current_status
                         if result.get("saved_count", 0) > 0:

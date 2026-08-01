@@ -18,10 +18,6 @@ from xoso66_minigame_catalog import game_by_key, play_id_for_side
 from xoso66_minigame_http import PLACE_ORDER_PATH, minigame_request
 
 
-def _ts() -> str:
-    return time.strftime("%H:%M:%S")
-
-
 def fmt_money(val: Any) -> str:
     if val is None:
         return "—"
@@ -219,7 +215,7 @@ def log_http_bet(result: BetResult, *, signal_issue: str = "") -> None:
     tag = "OK" if result.ok else "FAIL"
     sig = f"  (tín hiệu WS issue={signal_issue})" if signal_issue else ""
     print(
-        f"[{_ts()}] HTTP CƯỢC {tag}{sig}  "
+        f"HTTP CƯỢC {tag}{sig}  "
         f"{result.game_key} game_id={result.game_id}  "
         f"{result.side.upper()} play_id={result.play_id}  price={result.amount}",
         flush=True,
@@ -322,7 +318,7 @@ class CompactRoundLogger:
         self._pending_settle: dict[str, Any] | None = None
 
     def _print(self, label: str, msg: str) -> None:
-        print(f"[{_ts()}] {label}  {msg}", flush=True)
+        print(f"{label}  {msg}", flush=True)
 
     def on_round_start(
         self,
@@ -488,7 +484,7 @@ def log_ws_bet_message(
 
     if t == "bet_data":
         print(
-            f"[{_ts()}] WS CƯỢC  bet_data  game_id={gid}  "
+            f"WS CƯỢC  bet_data  game_id={gid}  "
             f"{json.dumps(data, ensure_ascii=False)[:600]}",
             flush=True,
         )
@@ -510,7 +506,7 @@ def log_ws_bet_message(
                 ours += f"  → {'THẮNG' if won else 'THUA'}"
         jp = " | HŨ" if res.get("is_jackpot") else ""
         print(
-            f"[{_ts()}] WS TRẢ THƯỞNG  issue={issue}  game_id={gid}  "
+            f"WS TRẢ THƯỞNG  issue={issue}  game_id={gid}  "
             f"{data.get('open_numbers')}  → {res.get('name') or res.get('result')} "
             f"(sum={res.get('sum')}){jp}{ours}",
             flush=True,
@@ -519,7 +515,7 @@ def log_ws_bet_message(
 
     if any(x in t for x in ("order", "win", "settle", "prize", "payout", "reward")):
         print(
-            f"[{_ts()}] WS $  {t}  {json.dumps(data or obj, ensure_ascii=False)[:500]}",
+            f"WS $  {t}  {json.dumps(data or obj, ensure_ascii=False)[:500]}",
             flush=True,
         )
         return True
@@ -529,6 +525,6 @@ def log_ws_bet_message(
             continue
         for k, v in src.items():
             if str(k).lower() in ("money", "balance", "win_money", "prize") and v is not None:
-                print(f"[{_ts()}] WS $  {t}  {k}={fmt_money(v)}", flush=True)
+                print(f"WS $  {t}  {k}={fmt_money(v)}", flush=True)
                 return True
     return False

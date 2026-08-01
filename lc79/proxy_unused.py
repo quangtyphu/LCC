@@ -17,7 +17,7 @@ if sys.platform == "win32":
 
 # --- Config ---
 BASE_URL = "https://proxy.vn"
-PROXY_LIST_URL = f"{BASE_URL}/?home=donhangproxy"
+PROXY_LIST_URL = f"{BASE_URL}/?home=donhangcombo"
 COOKIES_FILE = "proxy_vn_cookies.txt"
 PROXY_LIST_FILE = "proxy_list.txt"
 CMS_API = "http://127.0.0.1:3000"
@@ -87,7 +87,7 @@ def login_http(username: str, password: str) -> dict | None:
             login_ok = str(data.get("status", "")).lower() == "ok"
         except Exception:
             # Một số cấu hình có thể trả HTML thay vì JSON.
-            login_ok = ("Đăng xuất" in r.text) or ("Thành công" in r.text) or ("donhangproxy" in r.url)
+            login_ok = ("Đăng xuất" in r.text) or ("Thành công" in r.text) or ("donhangcombo" in r.url) or ("donhangproxy" in r.url)
 
         if login_ok:
             cookies = {c.name: c.value for c in session.cookies}

@@ -1,7 +1,0 @@
-{"t": 1779392076.78838, "event": "start", "account_id": "acc12", "log_path": "C:\\Users\\Quang\\Documents\\LC79\\xoso66_standalone\\red_packet_logs\\acc12_20260521T193433Z_slow_claim.jsonl", "username": "canmanhlinh", "proxy": "113.160.166.31:34939 (socks5, user valentine)", "balance_before": "386936", "balance": "386936"}
-{"t": 1779392083.445281, "event": "network", "path": "/server/user/getBalance", "status": 200, "parsed": {"code": 1, "msg": "Hoàn tất", "time": 1779392083, "v": null, "data": {"money": "386936", "frozen": "0", "total_money": "386936", "credit_money": 0, "total_credit": 0, "bet_money": 386936, "total_asset": 386936, "user_trigger": [{"type": "type_deposit_withdraw_amount", "time": 1779392083, "data": {"id": 116837486, "amount": "100000", "orderType": "deposit", "serial_no": "1779175198443352343520"}}, {"type": "type_deposit_withdraw_amount", "time": 1779392083, "data": {"id": 116846499, "amount": "100000", "orderType": "deposit", "serial_no": "1779179866443352347486"}}], "event": []}}}
-{"t": 1779392087.3392203, "event": "click_once", "x": 700, "y": 450}
-{"t": 1779392090.1950629, "event": "network", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
-{"t": 1779392092.72369, "event": "network", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
-{"t": 1779392097.7049782, "event": "open_click_via_sidebar", "selector": "text=Mở bao lì xì"}
-{"t": 1779392097.8414097, "event": "network", "path": "/server/user/grabredpacket", "status": 200, "parsed": null}

@@ -1,8 +1,0 @@
-{"ts": "2026-05-25T22:33:40.250198+00:00", "dir": "recv", "messageType": "GameInfo", "handler": 4, "eventType": "GP_NEW_GAME_START", "tableID": 1006, "gameRound": 26, "gameShoe": 20034, "winner": -1}
-{"ts": "2026-05-25T22:34:19.302103+00:00", "dir": "recv", "messageType": "GameInfo", "handler": 4, "eventType": "GP_WINNER", "tableID": 1006, "gameRound": 26, "gameShoe": 20034, "winner": 1}
-{"ts": "2026-05-25T22:34:29.065210+00:00", "dir": "recv", "messageType": "GameInfo", "handler": 4, "eventType": "GP_NEW_GAME_START", "tableID": 1006, "gameRound": 27, "gameShoe": 20034, "winner": -1}
-{"ts": "2026-05-25T22:35:09.740657+00:00", "dir": "recv", "messageType": "GameInfo", "handler": 4, "eventType": "GP_WINNER", "tableID": 1006, "gameRound": 27, "gameShoe": 20034, "winner": 1}
-{"ts": "2026-05-25T22:35:20.315915+00:00", "dir": "recv", "messageType": "GameInfo", "handler": 4, "eventType": "GP_NEW_GAME_START", "tableID": 1006, "gameRound": 28, "gameShoe": 20034, "winner": -1}
-{"ts": "2026-05-25T22:35:54.504802+00:00", "dir": "recv", "messageType": "GameInfo", "handler": 4, "eventType": "GP_WINNER", "tableID": 1006, "gameRound": 28, "gameShoe": 20034, "winner": 2}
-{"ts": "2026-05-25T22:36:03.451250+00:00", "dir": "recv", "messageType": "GameInfo", "handler": 4, "eventType": "GP_NEW_GAME_START", "tableID": 1006, "gameRound": 29, "gameShoe": 20034, "winner": -1}
-{"ts": "2026-05-25T22:36:44.928024+00:00", "dir": "recv", "messageType": "GameInfo", "handler": 4, "eventType": "GP_WINNER", "tableID": 1006, "gameRound": 29, "gameShoe": 20034, "winner": 1}

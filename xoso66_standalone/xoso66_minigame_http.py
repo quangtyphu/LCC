@@ -76,13 +76,13 @@ def build_minigame_headers(
     return h
 
 
-def minigame_requests_session(session: dict) -> requests.Session:
-    from xoso66_proxy import apply_requests_proxy, ensure_proxy
+def minigame_requests_session(session: dict):
+    from xoso66_proxy import apply_requests_proxy, ensure_proxy, wrap_requests_session
 
     ensure_proxy(session)
     s = requests.Session()
     apply_requests_proxy(s, session["proxy"])
-    return s
+    return wrap_requests_session(s, session, source="minigame-HTTP")
 
 
 def _merge_cffi_cookies(mg: dict, resp: Any) -> None:
@@ -150,6 +150,7 @@ def minigame_request(
     except ImportError:
         pass
     except Exception:
+        # curl_cffi fail → fallback requests (ProxyAwareSession: retry + báo Lỗi proxy).
         pass
 
     http = minigame_requests_session(session)

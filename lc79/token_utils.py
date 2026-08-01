@@ -1,7 +1,9 @@
 # Kiểm tra & refresh token
-import asyncio, json, requests
+import asyncio, contextlib, json, requests
 import socks, websockets
 from constants import WS_URL
+from ws_cleanup import close_ws_socks_clean
+from socks_ws_gate import socks_ws_slot
 
 API_BASE = "http://127.0.0.1:3000"  # URL server.js của bạn
 
@@ -50,34 +52,37 @@ async def test_token(jwt, proxy_str=None, user=None):
         return False
 
     ws = None
+    sock = None
     ok = False
-    try:
-        host, port, puser, ppass = proxy.split(":")
-        port = int(port)
-        sock = socks.socksocket()
-        sock.set_proxy(socks.SOCKS5, host, port, True, puser, ppass)
-        sock.settimeout(10)
-        sock.connect(("wtx.tele68.com", 443))
-        ws = await websockets.connect(WS_URL, sock=sock, ssl=True, ping_interval=None)
+    async with socks_ws_slot():
+        try:
+            host, port, puser, ppass = proxy.split(":")
+            port = int(port)
+            sock = socks.socksocket()
+            sock.set_proxy(socks.SOCKS5, host, port, True, puser, ppass)
+            sock.setblocking(False)
+            sock.connect(("wtx.tele68.com", 443))
+            ws = await websockets.connect(WS_URL, sock=sock, ssl=True, ping_interval=None)
 
-        await ws.recv()  # bỏ handshake
-        await ws.send(f"40/tx,{json.dumps({'token': jwt})}")
+            await ws.recv()  # bỏ handshake
+            await ws.send(f"40/tx,{json.dumps({'token': jwt})}")
 
-        for _ in range(10):
-            try:
-                msg = await asyncio.wait_for(ws.recv(), timeout=3)
-                if msg.startswith("42/tx,"):
-                    arr = json.loads(msg[len("42/tx,"):])
-                    if arr[0] == "your-info":
-                        ok = True
-                        break
-            except asyncio.TimeoutError:
-                break
-    except Exception:
-        ok = False
-    finally:
-        if ws:
-            await ws.close()
+            for _ in range(10):
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=3)
+                    if msg.startswith("42/tx,"):
+                        arr = json.loads(msg[len("42/tx,"):])
+                        if arr[0] == "your-info":
+                            ok = True
+                            break
+                except asyncio.TimeoutError:
+                    break
+        except Exception:
+            ok = False
+        finally:
+            await close_ws_socks_clean(ws, sock, "tx", sock_handoff=(ws is not None))
+            ws = None
+            sock = None
 
     # Đồng bộ trạng thái user nếu có
     if user:

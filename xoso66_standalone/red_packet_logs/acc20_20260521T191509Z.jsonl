@@ -1,6 +1,0 @@
-{"t": 1779390912.1027625, "event": "start", "account_id": "acc20", "username": "dungxikel4"}
-{"t": 1779390921.7094982, "event": "network_passive", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
-{"t": 1779390927.7709517, "event": "load_wait_done", "sec": 10.0}
-{"t": 1779390927.9741452, "event": "click_once", "x": 700, "y": 450}
-{"t": 1779390977.9935806, "event": "idle_done", "sec": 50}
-{"t": 1779390978.9187918, "event": "screenshot", "path": "C:\\Users\\Quang\\Documents\\LC79\\xoso66_standalone\\red_packet_logs\\acc20_20260521T191617Z.png", "sec_after_click": 50}

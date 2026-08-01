@@ -10,15 +10,30 @@ def _parse_datetime(dt_str):
     except Exception:
         return None
 
+
+def effective_withdraw_status(tx) -> str:
+    """
+    Game có thể trả status='Đang xử lý' nhưng reason='Thành công'.
+    Ưu tiên reason làm trạng thái thực tế khi lưu/cập nhật CMS.
+    """
+    reason = (tx.get("reason") or "").strip()
+    if reason:
+        return reason
+    status = (tx.get("status") or "").strip()
+    return status or "pending"
+
+
 def _build_record(username, tx):
+    from check_deposit_history import normalize_tx_time
+
     return {
         "username": username,
         "nickname": username,  # Nếu có nickname thực thì truyền vào
         "hinhThuc": "Rút tiền",
         "transactionId": tx.get("id"),
         "amount": float(tx.get("amount", 0)),
-        "time": tx.get("dateTime"),
-        "status": tx.get("status"),
+        "time": normalize_tx_time(tx.get("dateTime")),
+        "status": effective_withdraw_status(tx),
         "reason": tx.get("reason"),
         "content": tx.get("content"),
         "deviceNap": "",
@@ -106,14 +121,16 @@ def check_withdraw_history(
         transactions_raw = resp.json()
         transactions = []
         for tx in transactions_raw:
-            transactions.append({
+            parsed = {
                 "id": tx.get("id"),
                 "amount": int(tx.get("amount", 0)),
                 "content": tx.get("content"),
                 "status": tx.get("status"),
                 "dateTime": tx.get("dateTime"),
-                "reason": tx.get("reason")
-            })
+                "reason": tx.get("reason"),
+            }
+            parsed["effectiveStatus"] = effective_withdraw_status(parsed)
+            transactions.append(parsed)
     except Exception as e:
         error_message = f"Lỗi parse lịch sử: {e}"
         print(f"❌ [{username}] {error_message}", flush=True)
@@ -175,7 +192,7 @@ def check_withdraw_history(
         if target_tx_id and tx.get("id") == target_tx_id:
             matched_tx = tx
             if update_if_changed and previous_status is not None:
-                current_status = tx.get("status")
+                current_status = effective_withdraw_status(tx)
                 if current_status != previous_status:
                     try:
                         resp3 = _update_record(record)
@@ -198,7 +215,7 @@ def check_withdraw_history(
                     flush=True,
                 )
 
-    if updated and updated_tx and updated_tx.get("status") == "Thành công":
+    if updated and updated_tx and effective_withdraw_status(updated_tx) == "Thành công":
         print(
             f"💰💰💰💰💰 [{username}] Đã cập nhật trạng thái Thành công cho giao dịch rút {int(updated_tx.get('amount', 0)):,} ",
             flush=True,

@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Chia tiền một bên Tài/Xỉu — bội step_vnd, tổng = side_total_vnd.
+Chia tiền một bên Tài/Xỉu — logic random chiaTien_Tho (LC79), không cố định số acc.
 
-  - Acc 1: random 10k .. 100k (hoặc hết phần còn lại) — có thể 1 acc ăn cả 100k
-  - Acc 2+: random 10k .. còn lại
-  - Acc 6 (mặc định): dồn hết phần còn lại (nếu còn)
-
-Hai bên Tài/Xỉu mỗi bên tổng = side_total_vnd (cân nhau).
+Mỗi lần: random step .. min(max_per, còn lại); lặp đến hết tổng.
+Số acc/bên tự nhiên (1 acc ăn 50k, hoặc 2–5 acc tùy random).
 """
 
 from __future__ import annotations
@@ -16,52 +13,47 @@ import random
 
 def split_side_total(
     side_total_vnd: int,
-    n_players: int,
     step_vnd: int,
     *,
-    dump_at_player: int = 6,
+    max_per_user_vnd: int = 0,
+    n_players: int = 0,
+    dump_at_player: int = 0,
 ) -> list[int]:
     """
-    Chia một bên; số acc thực đánh có thể 1..dump_at_player (không bắt buộc đủ 6).
+    Chia một bên Tài/Xỉu (tổng = side_total_vnd).
+    n_players / dump_at_player: bỏ qua (giữ tham số cũ cho tương thích).
     """
-    total = int(side_total_vnd)
-    n = max(1, int(n_players))
-    step = int(step_vnd)
-    dump_at = max(1, int(dump_at_player))
-    n_active = min(n, dump_at)
+    del n_players, dump_at_player
 
-    if step < 1 or total < step:
+    total = int(side_total_vnd)
+    step = max(1, int(step_vnd))
+    max_per = int(max_per_user_vnd or 0)
+    if max_per <= 0:
+        max_per = total
+
+    if total < step:
         raise ValueError(f"Tổng bên phải ≥ {step:,} VND")
     if total % step != 0:
         raise ValueError("side_total_vnd phải chia hết cho bet_step_vnd")
 
-    remain = total
     parts: list[int] = []
+    remain = total
 
-    for i in range(n_active):
-        if remain <= 0:
-            break
-
-        player_no = i + 1
-        if player_no == dump_at:
+    while remain > 0:
+        if remain <= step:
             parts.append(remain)
-            remain = 0
             break
 
-        if remain < step:
-            parts.append(remain)
-            remain = 0
+        max_allowed = min(remain, max_per)
+
+        if max_allowed < step:
+            if max_allowed > 0:
+                parts.append(max_allowed)
             break
 
-        pick = random.choice(list(range(step, remain + 1, step)))
+        pick = random.choice(range(step, max_allowed + 1, step))
         parts.append(int(pick))
         remain -= pick
-
-    if remain > 0:
-        if parts:
-            parts[-1] += remain
-        else:
-            parts.append(remain)
 
     if sum(parts) != total:
         raise RuntimeError(f"split lỗi: {parts} tổng {sum(parts):,} != {total:,}")

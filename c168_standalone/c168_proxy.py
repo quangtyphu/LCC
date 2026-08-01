@@ -226,6 +226,53 @@ def verify_proxy_chain(
         return False, f"{detail}; relay lại: {e}"
 
 
+def relay_pid_for(proxy_str: str) -> int | None:
+    """PID tiến trình pproxy đang phục vụ ``proxy_str`` (None nếu không có)."""
+    proc = _relays.get((proxy_str or "").strip())
+    if proc is not None and proc.poll() is None:
+        return proc.pid
+    return None
+
+
+def _python_no_console() -> str:
+    if sys.platform != "win32":
+        return sys.executable
+    pw = Path(sys.executable).with_name("pythonw.exe")
+    return str(pw) if pw.is_file() else sys.executable
+
+
+def spawn_relay_guardian(*, chrome_pid: int, relay_pid: int) -> None:
+    """Guardian detached: Chrome thoát -> kill relay pproxy tương ứng."""
+    if not chrome_pid or not relay_pid:
+        return
+    guardian = Path(__file__).resolve().parent / "relay_guardian.py"
+    if not guardian.is_file():
+        return
+    kw: dict[str, Any] = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "stdin": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+            subprocess, "DETACHED_PROCESS", 0x00000008
+        )
+    try:
+        subprocess.Popen(
+            [
+                _python_no_console(),
+                str(guardian),
+                "--chrome-pid",
+                str(int(chrome_pid)),
+                "--relay-pid",
+                str(int(relay_pid)),
+            ],
+            **kw,
+        )
+    except Exception:
+        pass
+
+
 def stop_all_relays() -> None:
     for proc in list(_relays.values()):
         if proc.poll() is None:

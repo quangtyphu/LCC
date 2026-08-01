@@ -22,6 +22,7 @@ from xoso66_register import (
     prepare_register_payload,
     register_account_playwright,
     register_failure_message,
+    _resolve_cms_register_context,
 )
 from xoso66_session import login_account
 from xoso66_sessions_io import merge_account
@@ -117,8 +118,21 @@ def _provision_register(p: dict[str, Any]) -> dict[str, Any]:
         truename=p["account_holder"],
     )
 
+    cms_device = str(p.get("device") or "").strip()
     try:
-        reg = register_account_playwright(plain, proxy=p["proxy"])
+        proxy, cms_row = _resolve_cms_register_context(cms_device=cms_device, proxy=p["proxy"])
+        if cms_row and cms_row.get("proxy"):
+            p["proxy"] = proxy
+    except ValueError as e:
+        return {
+            "ok": False,
+            "step": "register",
+            "steps": [_step("register", False, msg=str(e))],
+            "saved_to_db": False,
+        }
+
+    try:
+        reg = register_account_playwright(plain, proxy=p["proxy"], cms_device=cms_device)
     except ProxyRequiredError as e:
         return {
             "ok": False,

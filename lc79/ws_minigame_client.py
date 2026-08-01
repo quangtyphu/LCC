@@ -2,13 +2,14 @@ import os
 import sys
 import asyncio
 import json
-import time
 import contextlib
 import socks
 import websockets
 import requests
 
 from jwt_manager import refresh_jwt
+from ws_cleanup import close_ws_socks_clean
+from socks_ws_gate import socks_ws_slot
 
 API_BASE = "http://127.0.0.1:3000"
 WS_URL = "wss://wlb.tele68.com/minigame/?EIO=4&transport=websocket"
@@ -89,65 +90,84 @@ async def connect_minigame(username: str, keep_alive: bool = False):
 
     ws = None
     try:
-        # Tránh additional_headers + sock= → lỗi create_connection (websockets 14+).
-        ws = await websockets.connect(
-            WS_URL,
-            sock=sock,
-            ssl=True,
-            ping_interval=None,
-            origin=EXTRA_HEADERS.get("Origin", "https://play.lc79.bet"),
-            user_agent_header=EXTRA_HEADERS.get(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            ),
-        )
+        async with socks_ws_slot():
+            ws = await websockets.connect(
+                WS_URL,
+                sock=sock,
+                ssl=True,
+                ping_interval=None,
+                origin=EXTRA_HEADERS.get("Origin", "https://play.lc79.bet"),
+                user_agent_header=EXTRA_HEADERS.get(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                ),
+            )
 
-        ping_interval_ms = 25000
-        ping_timeout_ms = 20000
-        recv_timeout = 45
-        try:
-            handshake = await asyncio.wait_for(ws.recv(), timeout=5)
-            if isinstance(handshake, str) and handshake.startswith("0"):
-                payload = json.loads(handshake[1:])
-                ping_interval_ms = int(payload.get("pingInterval", ping_interval_ms))
-                ping_timeout_ms = int(payload.get("pingTimeout", ping_timeout_ms))
-                recv_timeout = ping_interval_ms / 1000 + ping_timeout_ms / 1000 + 5
-        except Exception:
+            ping_interval_ms = 25000
+            ping_timeout_ms = 20000
             recv_timeout = 45
-
-        auth_payload = f"40/minigame,{json.dumps({'token': jwt_token})}"
-        await ws.send(auth_payload)
-
-        while True:
             try:
-                msg = await asyncio.wait_for(ws.recv(), timeout=recv_timeout)
+                handshake = await asyncio.wait_for(ws.recv(), timeout=5)
+                if isinstance(handshake, str) and handshake.startswith("0"):
+                    payload = json.loads(handshake[1:])
+                    ping_interval_ms = int(payload.get("pingInterval", ping_interval_ms))
+                    ping_timeout_ms = int(payload.get("pingTimeout", ping_timeout_ms))
+                    recv_timeout = ping_interval_ms / 1000 + ping_timeout_ms / 1000 + 5
             except Exception:
-                break
+                recv_timeout = 45
 
-            if msg == "2":
-                with contextlib.suppress(Exception):
-                    await ws.send("3")
-                continue
+            auth_payload = f"40/minigame,{json.dumps({'token': jwt_token})}"
+            await ws.send(auth_payload)
 
-            if msg.startswith("42/minigame,"):
+            inbound: asyncio.Queue = asyncio.Queue(maxsize=64)
+
+            async def _ws_reader() -> None:
                 try:
-                    event_data = json.loads(msg[len("42/minigame,"):])
-                    if isinstance(event_data, list) and event_data and event_data[0] == "DEPOSIT_DONE":
-                        pass
+                    while True:
+                        msg = await ws.recv()
+                        await inbound.put(msg)
                 except Exception:
                     pass
+                finally:
+                    with contextlib.suppress(Exception):
+                        await inbound.put(None)
+
+            reader_task = asyncio.create_task(_ws_reader())
+            try:
+                while True:
+                    try:
+                        msg = await asyncio.wait_for(inbound.get(), timeout=recv_timeout)
+                    except asyncio.TimeoutError:
+                        break
+
+                    if msg is None:
+                        break
+
+                    if msg == "2":
+                        with contextlib.suppress(Exception):
+                            await ws.send("3")
+                        continue
+
+                    if msg.startswith("42/minigame,"):
+                        try:
+                            event_data = json.loads(msg[len("42/minigame,"):])
+                            if (
+                                isinstance(event_data, list)
+                                and event_data
+                                and event_data[0] == "DEPOSIT_DONE"
+                            ):
+                                pass
+                        except Exception:
+                            pass
+            finally:
+                reader_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await reader_task
 
     except Exception:
         pass
     finally:
-        if ws is not None:
-            with contextlib.suppress(Exception):
-                if ws.open:
-                    await ws.send("41/minigame")
-                    await asyncio.sleep(0.5)
-                    await asyncio.wait_for(ws.close(), timeout=2.0)
-        with contextlib.suppress(Exception):
-            sock.close()
+        await close_ws_socks_clean(ws, sock, "minigame", sock_handoff=(ws is not None))
 
     return
 

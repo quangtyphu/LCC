@@ -5,13 +5,15 @@ Gán acc + số tiền Tài/Xỉu theo chiến lược + trần cược ngày.
 Chiến lược 1: acc tổng cược ngày cao nhất (trong số acc còn chỗ cap) → mức cao nhất
   vừa cap; còn lại random. Acc đầu bảng hết room vẫn đánh phiên bằng acc khác.
   daily >= cap-step → ngắt WS, thay nick.
-Chiến lược 2: acc cược ngày thấp → cao; mỗi acc một lệnh — trong mức còn lại
-  duyệt to → nhỏ, khớp mức đầu tiên vừa cap + số dư; sang acc kế tiếp.
+Chiến lược 2: acc cược ngày thấp → cao (bằng nhau: balance cao trước); mỗi acc một lệnh —
+  trong mức còn lại duyệt to → nhỏ, khớp mức đầu tiên vừa cap + số dư; sang acc kế tiếp.
+Chiến lược 3: mỗi phiên 1 cặp — acc #1 vs #2 (số dư thấp→cao), cùng mức Tài/Xỉu (dồn tiền).
 """
 
 from __future__ import annotations
 
 import random
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,6 +36,14 @@ class BetSlot:
     amount_vnd: int
 
 
+def sort_slots_by_amount_desc(slots: list[BetSlot]) -> list[BetSlot]:
+    """Sắp xếp lệnh cược mức cao → thấp (bằng nhau: username ổn định)."""
+    return sorted(
+        slots,
+        key=lambda s: (-int(s.amount_vnd), str(s.username or s.account_id)),
+    )
+
+
 def _auto_bet_cfg(cfg: dict) -> dict:
     raw = cfg.get("auto_bet")
     return raw if isinstance(raw, dict) else {}
@@ -50,10 +60,22 @@ def _daily_cap_vnd(acfg: dict) -> int:
     return int(acfg.get("daily_bet_cap_vnd") or 890_000)
 
 
+def _max_bet_per_user_vnd(acfg: dict) -> int:
+    """Mỗi acc tối đa một lệnh (0 = không giới hạn)."""
+    try:
+        return int(acfg.get("max_bet_per_user_vnd") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 STRATEGY_LABELS: dict[int, str] = {
     1: "cược ngày cao (còn chỗ cap) → mức lớn nhất vừa cap; còn lại random; đủ cap đổi WS",
-    2: "cược ngày thấp→cao (bằng nhau: balance thấp trước); mỗi acc 1 mức còn lại (to→nhỏ)",
+    2: "cược ngày thấp→cao (bằng nhau: balance cao trước); mỗi acc 1 mức còn lại (to→nhỏ)",
+    3: "1 cặp/phiên — duyệt số dư cao→thấp, ghép liền kề floor gap≤XXX, cùng mức Tài/Xỉu (dồn tiền)",
 }
+
+CONSOLIDATE_WITHDRAW_REASON = "đạt ngưỡng rút strategy 3"
+CONSOLIDATE_LOSE_REASON = "strategy 3 thua hết tiền"
 
 
 def _check_balance_enabled(acfg: dict) -> bool:
@@ -61,7 +83,93 @@ def _check_balance_enabled(acfg: dict) -> bool:
 
 
 def _assign_ws_pool_only(acfg: dict) -> bool:
+    """
+    Chiến lược 2: gán trên mọi acc «Đang Chơi» đủ proxy (HTTP placeOrder),
+    không giới hạn nick đang mở WS — tránh bỏ sót acc cược ngày thấp.
+    Chiến lược 1 / 3: mặc định chỉ pool WS (assign_ws_pool_only=true).
+    """
+    if int(acfg.get("assign_strategy") or 1) == 2:
+        return False
     return bool(acfg.get("assign_ws_pool_only", True))
+
+
+def is_assign_strategy_3(acfg: dict | None = None) -> bool:
+    if acfg is None:
+        acfg = {}
+    return int(acfg.get("assign_strategy") or 1) == 3
+
+
+def consolidate_min_withdraw_vnd(acfg: dict | None = None) -> int:
+    """Ngưỡng dừng cược + hẹn rút (mặc định 300k, fallback auto_mission_reward)."""
+    if acfg is None:
+        acfg = {}
+    explicit = int(acfg.get("consolidate_min_withdraw_vnd") or 0)
+    if explicit > 0:
+        return explicit
+    try:
+        from xoso66_config_util import load_config
+
+        mr = load_config().get("auto_mission_reward")
+        if isinstance(mr, dict) and mr.get("min_withdraw_vnd"):
+            return int(mr.get("min_withdraw_vnd") or 300_000)
+    except Exception:
+        pass
+    return 300_000
+
+
+def consolidate_no_deposit_enabled(acfg: dict | None = None) -> bool:
+    """Strategy 3: mặc định không nạp (mọi acc)."""
+    if acfg is None:
+        acfg = {}
+    if not is_assign_strategy_3(acfg):
+        return False
+    if "consolidate_no_deposit" in acfg:
+        return bool(acfg.get("consolidate_no_deposit"))
+    return True
+
+
+def consolidate_pair_max_gap_vnd(acfg: dict | None = None) -> int:
+    """Strategy 3: chênh tối đa giữa floor(bet_step) của 2 acc liền kề (0 = floor phải bằng)."""
+    if acfg is None:
+        acfg = {}
+    return max(0, int(acfg.get("consolidate_pair_max_gap_vnd") or 0))
+
+
+def consolidate_withdraw_delay_sec(acfg: dict | None = None) -> float:
+    """Strategy 3: chờ trước khi rút sau Đủ ngày (mặc định 420s = 7p)."""
+    if acfg is None:
+        acfg = {}
+    try:
+        sec = float(acfg.get("consolidate_withdraw_delay_sec") or 420)
+    except (TypeError, ValueError):
+        sec = 420.0
+    return max(60.0, sec)
+
+
+def consolidate_min_ws_balance_vnd(acfg: dict | None = None) -> int:
+    """Strategy 3: sàn mở WS / fill slot (0 = dùng bet_step như cũ)."""
+    if acfg is None:
+        acfg = {}
+    if not is_assign_strategy_3(acfg):
+        return 0
+    try:
+        return max(0, int(acfg.get("consolidate_min_ws_balance_vnd") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def consolidate_blocks_deposit(account_id: str) -> bool:
+    """True nếu strategy 3 đang chặn mọi lệnh nạp."""
+    _ = account_id
+    from xoso66_config_util import load_config
+
+    acfg = _auto_bet_cfg(load_config())
+    return consolidate_no_deposit_enabled(acfg)
+
+
+def consolidate_skips_underfunded_ws(acfg: dict | None = None) -> bool:
+    """Strategy 3: không mở WS và không lên lịch nạp acc < sàn WS (min_balance_for_ws)."""
+    return is_assign_strategy_3(acfg)
 
 
 def assign_match_mode(acfg: dict | None = None) -> int:
@@ -257,6 +365,13 @@ def _pick_candidate(
     strategy: int,
     daily: dict[str, float],
 ) -> dict[str, Any]:
+    key = lambda r: (  # noqa: E731
+        _daily_for_cap(r, daily),
+        -_balance_vnd(r),
+        str(r.get("username") or r["id"]),
+    )
+    if strategy == 2:
+        return min(candidates, key=key)
     return max(
         candidates,
         key=lambda r: (
@@ -272,14 +387,14 @@ def _pool_sorted_by_daily_asc(
 ) -> list[dict[str, Any]]:
     """
     Chiến lược 2: cược ngày thấp → cao.
-    Bằng nhau → balance thấp hơn trước (nick chỉ gánh được 10k ưu tiên).
+    Bằng nhau → balance cao hơn trước.
     Vẫn bằng → username (ổn định).
     """
     return sorted(
         pool,
         key=lambda r: (
             _daily_for_cap(r, daily),
-            _balance_vnd(r),
+            -_balance_vnd(r),
             str(r.get("username") or r["id"]),
         ),
     )
@@ -329,7 +444,7 @@ def _pool_priority_then_random(
 ) -> list[dict[str, Any]]:
     """
     Sắp xếp pool: PRIORITY_USERS (theo thứ tự config) trước,
-    còn lại shuffle random.
+    còn lại shuffle random (chỉ dùng khi không có thứ tự chiến lược).
     """
     prio_set = set(priority_users)
     prio_order = {u: i for i, u in enumerate(priority_users)}
@@ -339,6 +454,31 @@ def _pool_priority_then_random(
     )
     rest = [r for r in pool if str(r.get("username") or r["id"]) not in prio_set]
     random.shuffle(rest)
+    return priority_pool + rest
+
+
+def _pool_priority_then_by_strategy(
+    pool: list[dict[str, Any]],
+    priority_users: list[str],
+    daily: dict[str, float],
+    *,
+    strategy: int,
+) -> list[dict[str, Any]]:
+    """
+    PRIORITY_USERS trước (theo thứ tự config); phần còn lại theo chiến lược:
+    2 = cược ngày thấp→cao; 1 = cược ngày cao→thấp (bằng nhau: balance cao).
+    """
+    prio_set = set(priority_users)
+    prio_order = {u: i for i, u in enumerate(priority_users)}
+    priority_pool = sorted(
+        [r for r in pool if str(r.get("username") or r["id"]) in prio_set],
+        key=lambda r: prio_order.get(str(r.get("username") or r["id"]), 9999),
+    )
+    rest = [r for r in pool if str(r.get("username") or r["id"]) not in prio_set]
+    if strategy == 2:
+        rest = _pool_sorted_by_daily_asc(rest, daily)
+    else:
+        rest = _pool_sorted_by_daily_desc(rest, daily)
     return priority_pool + rest
 
 
@@ -375,8 +515,8 @@ def _assign_strategy_2(
     priority_users: list[str] | None = None,
 ) -> tuple[list[BetSlot], str, str]:
     """
-    Nếu có PRIORITY_USERS: ưu tiên các acc đó trước (theo thứ tự config), còn lại random.
-    Không có PRIORITY_USERS: acc cược ngày thấp → cao như cũ.
+    PRIORITY_USERS: thử acc đó trước (theo thứ tự config).
+    Phần còn lại: cược ngày thấp → cao (không random).
     Mỗi acc tối đa một lệnh/phiên: trong các mức còn lại, duyệt to → nhỏ, khớp mức đầu tiên
     vừa cap + số dư; acc không khớp mức nào thì bỏ qua, sang acc kế.
     """
@@ -387,7 +527,9 @@ def _assign_strategy_2(
     slots: list[BetSlot] = []
 
     if priority_users:
-        ordered_pool = _pool_priority_then_random(pool, priority_users)
+        ordered_pool = _pool_priority_then_by_strategy(
+            pool, priority_users, daily, strategy=2
+        )
     else:
         ordered_pool = _pool_sorted_by_daily_asc(pool, daily)
 
@@ -565,6 +707,252 @@ def _assign_side_orders(
     return slots, "", ""
 
 
+def _pool_sorted_by_balance_desc(pool: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        pool,
+        key=lambda r: (
+            -_balance_vnd(r),
+            str(r.get("username") or r["id"]),
+        ),
+    )
+
+
+def _pool_sorted_by_balance_asc(pool: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        pool,
+        key=lambda r: (
+            _balance_vnd(r),
+            str(r.get("username") or r["id"]),
+        ),
+    )
+
+
+def _floor_balance(balance_vnd: int, step: int) -> int:
+    """Làm tròn xuống bội bet_step — dùng trước khi so gap và tính mức cược."""
+    if step <= 0:
+        return int(balance_vnd)
+    return (int(balance_vnd) // step) * step
+
+
+def _consolidate_pair_amount(
+    row_a: dict[str, Any],
+    row_b: dict[str, Any],
+    daily: dict[str, float],
+    *,
+    step: int,
+    cap_vnd: int,
+    max_per_user: int,
+    ignore_daily_cap: bool = False,
+) -> int | None:
+    """Mức cược chung: floor(min balance / step) * step; strategy 3 bỏ qua cap ngày."""
+    bal = min(_balance_vnd(row_a), _balance_vnd(row_b))
+    if bal < step:
+        return None
+    amount = (int(bal) // step) * step
+    if max_per_user > 0:
+        amount = min(amount, max_per_user)
+        amount = (amount // step) * step
+    if amount < step:
+        return None
+    for row in (row_a, row_b):
+        if not ignore_daily_cap and not _bet_fits_daily_cap(
+            _daily_for_cap(row, daily), amount, cap_vnd
+        ):
+            return None
+        if not _balance_fits_bet(_balance_vnd(row), amount, 0):
+            return None
+    return int(amount)
+
+
+def _pick_strategy_3_gap_pair(
+    eligible: list[dict[str, Any]],
+    *,
+    step: int,
+    max_gap_vnd: int,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, int | None]:
+    """
+    Sort số dư cao→thấp; duyệt cặp liền kề.
+    Floor xuống bội step trước khi so gap; gap <= max_gap_vnd thì cược min(floor).
+    """
+    ordered = _pool_sorted_by_balance_desc(eligible)
+    if len(ordered) < 2:
+        return None, None, None
+    for i in range(len(ordered) - 1):
+        row_high = ordered[i]
+        row_low = ordered[i + 1]
+        floor_high = _floor_balance(_balance_vnd(row_high), step)
+        floor_low = _floor_balance(_balance_vnd(row_low), step)
+        gap = abs(floor_high - floor_low)
+        if gap > max_gap_vnd:
+            continue
+        amount = min(floor_high, floor_low)
+        if amount < step:
+            continue
+        if not _balance_fits_bet(_balance_vnd(row_high), amount, 0):
+            continue
+        if not _balance_fits_bet(_balance_vnd(row_low), amount, 0):
+            continue
+        return row_high, row_low, int(amount)
+    return None, None, None
+
+
+def _assign_strategy_3_pair(
+    pool: list[dict[str, Any]],
+    daily: dict[str, float],
+    *,
+    step: int,
+    min_withdraw_vnd: int,
+    max_gap_vnd: int = 0,
+) -> tuple[list[BetSlot], str, str]:
+    """
+    Mỗi phiên: duyệt số dư cao→thấp, ghép cặp liền kề có floor gap ≤ max_gap_vnd.
+    """
+    _ = daily
+    eligible = [
+        r
+        for r in pool
+        if _balance_vnd(r) >= step and _balance_vnd(r) <= min_withdraw_vnd
+    ]
+    if len(eligible) < 2:
+        return (
+            [],
+            f"hủy phiên — strategy 3 cần ≥2 acc (số dư {step:,}–{min_withdraw_vnd:,}; "
+            f"pool {len(pool)} acc, đủ điều kiện {len(eligible)})",
+            "",
+        )
+
+    row_high, row_low, amount = _pick_strategy_3_gap_pair(
+        eligible,
+        step=step,
+        max_gap_vnd=max_gap_vnd,
+    )
+
+    if row_high is None or row_low is None or amount is None:
+        return (
+            [],
+            f"hủy phiên — strategy 3 không tìm được cặp liền kề (floor gap ≤ {max_gap_vnd:,}; "
+            f"pool {len(pool)} acc, đủ điều kiện {len(eligible)})",
+            "",
+        )
+
+    bal_high = _balance_vnd(row_high)
+    bal_low = _balance_vnd(row_low)
+    floor_high = _floor_balance(bal_high, step)
+    floor_low = _floor_balance(bal_low, step)
+    gap = abs(floor_high - floor_low)
+    user_high = str(row_high.get("username") or row_high["id"])
+    user_low = str(row_low.get("username") or row_low["id"])
+    print(
+        f"[STRAT3] {user_high} ({bal_high:,.0f}) vs {user_low} ({bal_low:,.0f}) "
+        f"(floor {floor_high:,}/{floor_low:,}, gap={gap:,} ≤ {max_gap_vnd:,}) "
+        f"— mức {amount:,} Tài/Xỉu",
+        flush=True,
+    )
+    slots = [
+        BetSlot(
+            account_id=str(row_low["id"]),
+            username=user_low,
+            side="tai",
+            amount_vnd=int(amount),
+        ),
+        BetSlot(
+            account_id=str(row_high["id"]),
+            username=user_high,
+            side="xiu",
+            amount_vnd=int(amount),
+        ),
+    ]
+    return slots, "", ""
+
+
+def verify_pair_balanced(slots: list[BetSlot]) -> str | None:
+    """Strategy 3: Tài và Xỉu cùng tổng, đúng 1 acc mỗi bên."""
+    if len(slots) != 2:
+        return f"strategy 3 cần đúng 2 lệnh, có {len(slots)}"
+    tai = [s for s in slots if s.side == "tai"]
+    xiu = [s for s in slots if s.side == "xiu"]
+    if len(tai) != 1 or len(xiu) != 1:
+        return "strategy 3 cần 1 acc Tài và 1 acc Xỉu"
+    if int(tai[0].amount_vnd) != int(xiu[0].amount_vnd):
+        return (
+            f"strategy 3 mức không cân: Tài {tai[0].amount_vnd:,} "
+            f"≠ Xỉu {xiu[0].amount_vnd:,}"
+        )
+    return None
+
+
+def _apply_consolidate_round_aftermath(account_ids: list[str], cfg: dict) -> None:
+    from xoso66_accounts_db import (
+        STATUS_DU_NGAY,
+        STATUS_HET_TIEN,
+        get_account,
+        set_account_status,
+    )
+    from xoso66_sessions_io import load_sessions
+    from xoso66_session import refresh_account_balance_to_db
+    from xoso66_ws_pool import min_balance_for_ws, request_ws_evict_and_resync
+
+    acfg = _auto_bet_cfg(cfg)
+    min_ws = min_balance_for_ws(cfg)
+    min_withdraw = consolidate_min_withdraw_vnd(acfg)
+    sessions = load_sessions()
+    evict: list[str] = []
+
+    for aid in account_ids:
+        aid = str(aid).strip()
+        if not aid:
+            continue
+        row = get_account(aid) or {}
+        bal = _balance_vnd(row)
+        sess = sessions.get(aid)
+        if sess:
+            try:
+                rep = refresh_account_balance_to_db(aid, sess, refresh=True)
+                if rep.get("ok") and rep.get("balance") is not None:
+                    bal = float(rep["balance"])
+            except Exception as e:
+                print(f"[STRAT3] {aid}: refresh balance: {e}", flush=True)
+
+        if bal < min_ws:
+            if set_account_status(aid, STATUS_HET_TIEN, reason=CONSOLIDATE_LOSE_REASON):
+                evict.append(aid)
+        elif bal > min_withdraw:
+            if set_account_status(
+                aid, STATUS_DU_NGAY, reason=CONSOLIDATE_WITHDRAW_REASON
+            ):
+                evict.append(aid)
+
+    if evict:
+        request_ws_evict_and_resync(evict)
+
+
+def schedule_consolidate_round_aftermath(slots: list[BetSlot], cfg: dict) -> None:
+    """Sau KQ phiên strategy 3: chờ balance sync rồi Hết Tiền / Đủ ngày."""
+    acfg = _auto_bet_cfg(cfg)
+    if not is_assign_strategy_3(acfg):
+        return
+    aids = [str(s.account_id).strip() for s in slots if str(s.account_id).strip()]
+    if not aids:
+        return
+    delay = float(acfg.get("result_balance_wait_sec") or 12)
+
+    def _worker() -> None:
+        from xoso66_shutdown import sleep_interruptible, stopping
+
+        if not sleep_interruptible(delay) or stopping():
+            return
+        try:
+            _apply_consolidate_round_aftermath(aids, cfg)
+        except Exception as e:
+            print(f"[STRAT3] aftermath: {e}", flush=True)
+
+    threading.Thread(
+        target=_worker,
+        name="strat3-aftermath",
+        daemon=True,
+    ).start()
+
+
 def _assign_by_strategy(
     pool: list[dict[str, Any]],
     daily: dict[str, float],
@@ -584,6 +972,9 @@ def _assign_by_strategy(
     Nếu có PRIORITY_USERS: thử acc đó trước cho slot mức lớn; không khớp → fallback
     như không có priority (acc cược ngày cao nhất), giống LC79 chiaTien_Acc strategy 1.
     """
+    if strategy == 3:
+        return [], "strategy 3 dùng _assign_strategy_3_pair riêng", ""
+
     if strategy == 2 or match_mode == 0:
         return _assign_strategy_2(
             pool,
@@ -731,48 +1122,36 @@ def print_assign_plan(
 
 
 def assign_session_bets(
-    cfg: dict, *, jackpot_vnd: float | None = None
+    cfg: dict,
+    *,
+    jackpot_vnd: float | None = None,
+    game_id: int | None = None,
 ) -> tuple[list[BetSlot], str, str]:
     """
-    1) Chia mức Tài / Xỉu (tối đa 6 acc/bên; acc thứ 6 nhận phần còn lại).
+    1) Chia mức Tài / Xỉu (random số acc, không cố định).
     2) Gán acc từ pool WS — kiểm tra balance + cap từng mức theo chiến lược.
     assign_match_mode=1: dư mức → hủy phiên. 0: trả slot đã gán + partial_note.
   Returns: (slots, err, partial_note)
     """
     acfg = _auto_bet_cfg(cfg)
-    side_total = resolve_side_total_vnd(cfg, jackpot_vnd)
     step = int(acfg.get("bet_step_vnd") or 10_000)
-    per_side = min(6, max(1, int(acfg.get("players_per_side") or 6)))
-    dump_at = min(6, max(1, int(acfg.get("split_dump_at_player") or 6)))
-    n_split = min(per_side, dump_at)
+    max_per_user = _max_bet_per_user_vnd(acfg)
     strategy = int(acfg.get("assign_strategy") or 1)
-    if strategy not in (1, 2):
+    if strategy not in (1, 2, 3):
         strategy = 1
     cap_vnd = _daily_cap_vnd(acfg)
-
-    try:
-        amounts_tai = split_side_total(
-            side_total, n_split, step, dump_at_player=dump_at
-        )
-        amounts_xiu = split_side_total(
-            side_total, n_split, step, dump_at_player=dump_at
-        )
-    except ValueError as e:
-        return [], str(e), ""
-
-    match_mode = assign_match_mode(acfg)
 
     pool, pool_err = _build_assign_pool(cfg, acfg)
     if pool_err or not pool:
         from xoso66_ws_pool import _maybe_auto_switch_assign_strategy_when_no_ws_tasks
 
-        if _maybe_auto_switch_assign_strategy_when_no_ws_tasks(cfg):
+        if strategy in (1, 2) and _maybe_auto_switch_assign_strategy_when_no_ws_tasks(cfg):
             from xoso66_config_util import load_config
 
             cfg = load_config()
             acfg = _auto_bet_cfg(cfg)
             strategy = int(acfg.get("assign_strategy") or 1)
-            if strategy not in (1, 2):
+            if strategy not in (1, 2, 3):
                 strategy = 1
             pool, pool_err = _build_assign_pool(cfg, acfg)
         if pool_err:
@@ -781,9 +1160,45 @@ def assign_session_bets(
             return [], "hủy phiên — không có acc trong pool WS", ""
 
     daily = resolve_daily_bets(pool, acfg)
-    pool = _evict_ws_if_daily_exhausted(cfg, pool, daily, acfg)
-    if not pool:
-        return [], "hủy phiên — không còn acc WS sau lọc cap cược ngày", ""
+    if strategy != 3:
+        pool = _evict_ws_if_daily_exhausted(cfg, pool, daily, acfg)
+        if not pool:
+            return [], "hủy phiên — không còn acc WS sau lọc cap cược ngày", ""
+
+    if strategy == 3:
+        slots, err, partial_note = _assign_strategy_3_pair(
+            pool,
+            daily,
+            step=step,
+            min_withdraw_vnd=consolidate_min_withdraw_vnd(acfg),
+            max_gap_vnd=consolidate_pair_max_gap_vnd(acfg),
+        )
+        if err:
+            return [], err, ""
+        if not slots:
+            return [], "hủy phiên — không gán được lệnh nào", ""
+        pair_err = verify_pair_balanced(slots)
+        if pair_err:
+            return [], pair_err, ""
+        return sort_slots_by_amount_desc(slots), "", partial_note
+
+    side_total = resolve_side_total_vnd(cfg, jackpot_vnd, game_id=game_id)
+
+    try:
+        amounts_tai = split_side_total(
+            side_total,
+            step,
+            max_per_user_vnd=max_per_user,
+        )
+        amounts_xiu = split_side_total(
+            side_total,
+            step,
+            max_per_user_vnd=max_per_user,
+        )
+    except ValueError as e:
+        return [], str(e), ""
+
+    match_mode = assign_match_mode(acfg)
 
     check_bal = _check_balance_enabled(acfg)
     remainder = _assign_min_remainder_vnd(cfg, acfg) if check_bal else 0
@@ -808,7 +1223,7 @@ def assign_session_bets(
         tot_err = verify_side_totals(slots, side_total)
         if tot_err:
             return [], tot_err, ""
-    return slots, "", partial_note
+    return sort_slots_by_amount_desc(slots), "", partial_note
 
 
 def verify_side_totals(
@@ -856,6 +1271,8 @@ def _main() -> int:
     cfg["auto_bet"] = acfg
 
     strat = int(acfg.get("assign_strategy") or 1)
+    if strat not in (1, 2, 3):
+        strat = 1
     cap = _daily_cap_vnd(acfg)
     print(
         f"Chiến lược {strat} ({STRATEGY_LABELS.get(strat, '?')}) | "

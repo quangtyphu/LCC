@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS payment_orders (
     rebate TEXT NOT NULL DEFAULT '',
     total_promo_amount TEXT NOT NULL DEFAULT '',
     raw_json TEXT NOT NULL DEFAULT '{}',
-    synced_at TEXT NOT NULL
+    synced_at TEXT NOT NULL,
+    submitted_at_ms INTEGER NOT NULL DEFAULT 0,
+    confirm_duration_sec INTEGER
 )
 """
 
@@ -126,6 +128,43 @@ def _migrate_payment_orders_username_conn(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_payment_orders_time "
         "ON payment_orders(account_id, create_time_ms DESC)"
     )
+    cols = _payment_orders_columns(conn)
+    if "submitted_at_ms" not in cols:
+        conn.execute(
+            "ALTER TABLE payment_orders ADD COLUMN submitted_at_ms "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+    if "confirm_duration_sec" not in cols:
+        conn.execute(
+            "ALTER TABLE payment_orders ADD COLUMN confirm_duration_sec INTEGER"
+        )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS withdraw_submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id TEXT NOT NULL,
+            amount INTEGER NOT NULL DEFAULT 0,
+            serial_no TEXT NOT NULL DEFAULT '',
+            submitted_at_ms INTEGER NOT NULL,
+            resolved INTEGER NOT NULL DEFAULT 0,
+            payment_serial_no TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_withdraw_submissions_open "
+        "ON withdraw_submissions(account_id, resolved, submitted_at_ms DESC)"
+    )
+    ws_cols = {
+        str(r[1])
+        for r in conn.execute("PRAGMA table_info(withdraw_submissions)").fetchall()
+    }
+    if "poll_count" not in ws_cols:
+        conn.execute(
+            "ALTER TABLE withdraw_submissions "
+            "ADD COLUMN poll_count INTEGER NOT NULL DEFAULT 0"
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS device_withdraw_credits (
@@ -137,6 +176,33 @@ def _migrate_payment_orders_username_conn(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    _repair_stuck_withdraw_submissions_conn(conn)
+
+
+def _repair_stuck_withdraw_submissions_conn(conn: sqlite3.Connection) -> int:
+    """resolved=0 nhưng payment_orders đã Hoàn tất (status=1) → đánh resolved.
+
+    Xảy ra khi sync Hoàn tất thấy payment_orders.submitted_at_ms đã có
+    (ghi lúc gửi lệnh) nên bỏ qua _resolve_withdraw_submission.
+    """
+    cur = conn.execute(
+        """
+        UPDATE withdraw_submissions
+        SET resolved = 1,
+            payment_serial_no = CASE
+                WHEN COALESCE(payment_serial_no, '') = '' THEN serial_no
+                ELSE payment_serial_no
+            END
+        WHERE resolved = 0
+          AND serial_no != ''
+          AND EXISTS (
+            SELECT 1 FROM payment_orders po
+            WHERE po.serial_no = withdraw_submissions.serial_no
+              AND po.status = 1
+          )
+        """
+    )
+    return int(cur.rowcount or 0)
 
 
 def init_payment_history_tables(conn: sqlite3.Connection | None = None) -> None:
@@ -161,7 +227,8 @@ def _item_to_row(account_id: str, item: dict[str, Any], order_type: int) -> dict
     if not serial:
         raise ValueError("thiếu serial_no")
     create_time = str(item.get("create_time") or "")
-    return {
+    duration_extra = _withdraw_duration_fields(account_id, item, order_type)
+    row = {
         "serial_no": serial,
         "account_id": str(account_id),
         "username": _username_for_payment_row(account_id, item),
@@ -187,7 +254,284 @@ def _item_to_row(account_id: str, item: dict[str, Any], order_type: int) -> dict
         "total_promo_amount": str(item.get("total_promo_amount") or ""),
         "raw_json": json.dumps(item, ensure_ascii=False),
         "synced_at": _now_iso(),
+        "submitted_at_ms": int(duration_extra.get("submitted_at_ms") or 0),
+        "confirm_duration_sec": duration_extra.get("confirm_duration_sec"),
     }
+    return row
+
+
+def register_withdraw_submission(
+    account_id: str,
+    amount_vnd: int,
+    submitted_at_ms: int,
+    *,
+    serial_no: str | None = None,
+) -> None:
+    """Ghi mốc gửi lệnh rút — API rút OK (dùng ghép withdraw_submissions)."""
+    aid = str(account_id).strip()
+    if not aid:
+        return
+    sn = str(serial_no or "").strip()
+    try:
+        amt = int(amount_vnd)
+        start_ms = int(submitted_at_ms)
+    except (TypeError, ValueError):
+        return
+    if start_ms <= 0:
+        from xoso66_confirm_duration import now_ms
+
+        start_ms = now_ms()
+    init_payment_history_tables()
+    with db_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO withdraw_submissions (
+                account_id, amount, serial_no, submitted_at_ms, resolved,
+                payment_serial_no, created_at
+            ) VALUES (?, ?, ?, ?, 0, '', ?)
+            """,
+            (aid, amt, sn, start_ms, _now_iso()),
+        )
+        if sn:
+            conn.execute(
+                """
+                UPDATE payment_orders
+                SET submitted_at_ms = ?
+                WHERE serial_no = ? AND order_type = ? AND submitted_at_ms = 0
+                """,
+                (start_ms, sn, ORDER_TYPE_WITHDRAW),
+            )
+
+
+def has_unresolved_withdraw_submission(account_id: str) -> bool:
+    """True nếu acc còn lệnh rút đã gửi API nhưng chưa Hoàn tất trên site."""
+    aid = str(account_id or "").strip()
+    if not aid:
+        return False
+    init_payment_history_tables()
+    with db_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM withdraw_submissions
+            WHERE account_id = ? AND resolved = 0
+            LIMIT 1
+            """,
+            (aid,),
+        ).fetchone()
+    return row is not None
+
+
+def latest_unresolved_withdraw_submission(account_id: str) -> dict[str, Any] | None:
+    """Lệnh rút chưa resolve gần nhất (serial, amount) — phục vụ log."""
+    aid = str(account_id or "").strip()
+    if not aid:
+        return None
+    init_payment_history_tables()
+    with db_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT serial_no, amount, submitted_at_ms
+            FROM withdraw_submissions
+            WHERE account_id = ? AND resolved = 0
+            ORDER BY submitted_at_ms DESC
+            LIMIT 1
+            """,
+            (aid,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _open_withdraw_submission_row(
+    conn: sqlite3.Connection,
+    account_id: str,
+    serial_no: str | None = None,
+) -> sqlite3.Row | None:
+    aid = str(account_id or "").strip()
+    if not aid:
+        return None
+    sn = str(serial_no or "").strip()
+    if sn:
+        return conn.execute(
+            """
+            SELECT id, poll_count FROM withdraw_submissions
+            WHERE account_id = ? AND serial_no = ? AND resolved = 0
+            ORDER BY submitted_at_ms DESC LIMIT 1
+            """,
+            (aid, sn),
+        ).fetchone()
+    return conn.execute(
+        """
+        SELECT id, poll_count FROM withdraw_submissions
+        WHERE account_id = ? AND resolved = 0
+        ORDER BY submitted_at_ms DESC LIMIT 1
+        """,
+        (aid,),
+    ).fetchone()
+
+
+def peek_withdraw_poll_count(
+    account_id: str,
+    serial_no: str | None = None,
+) -> int:
+    """Số lần poll đã check (chưa tăng) — 0 nếu không có submission mở."""
+    aid = str(account_id or "").strip()
+    if not aid:
+        return 0
+    init_payment_history_tables()
+    with db_conn() as conn:
+        row = _open_withdraw_submission_row(conn, aid, serial_no)
+    return int(row["poll_count"] or 0) if row else 0
+
+
+def increment_withdraw_poll_count(
+    account_id: str,
+    serial_no: str | None = None,
+) -> int:
+    """
+    Tăng bộ đếm poll tích lũy trên withdraw_submissions (một dãy 1→max).
+    Trả số lần check hiện tại (1-based), 0 nếu không có submission mở.
+    """
+    aid = str(account_id or "").strip()
+    if not aid:
+        return 0
+    init_payment_history_tables()
+    with db_conn() as conn:
+        row = _open_withdraw_submission_row(conn, aid, serial_no)
+        if not row:
+            return 0
+        new_count = int(row["poll_count"] or 0) + 1
+        conn.execute(
+            "UPDATE withdraw_submissions SET poll_count = ? WHERE id = ?",
+            (new_count, int(row["id"])),
+        )
+    return new_count
+
+
+def _resolve_withdraw_submission(
+    conn: sqlite3.Connection,
+    *,
+    account_id: str,
+    amount_vnd: int,
+    payment_serial: str,
+    end_ms: int,
+) -> int:
+    """Tìm submission chưa resolve → trả submitted_at_ms (0 nếu không có)."""
+    sn = str(payment_serial or "").strip()
+    try:
+        amt = int(amount_vnd)
+    except (TypeError, ValueError):
+        return 0
+    aid = str(account_id).strip()
+    if sn:
+        row = conn.execute(
+            """
+            SELECT id, submitted_at_ms FROM withdraw_submissions
+            WHERE resolved = 0 AND serial_no = ? AND account_id = ?
+            ORDER BY submitted_at_ms DESC LIMIT 1
+            """,
+            (sn, aid),
+        ).fetchone()
+        if row:
+            conn.execute(
+                """
+                UPDATE withdraw_submissions
+                SET resolved = 1, payment_serial_no = ?
+                WHERE id = ?
+                """,
+                (sn, int(row["id"])),
+            )
+            return int(row["submitted_at_ms"] or 0)
+    row = conn.execute(
+        """
+        SELECT id, submitted_at_ms FROM withdraw_submissions
+        WHERE resolved = 0 AND account_id = ? AND amount = ?
+          AND submitted_at_ms <= ?
+        ORDER BY submitted_at_ms DESC LIMIT 1
+        """,
+        (aid, amt, int(end_ms) + 5000),
+    ).fetchone()
+    if not row:
+        return 0
+    conn.execute(
+        """
+        UPDATE withdraw_submissions
+        SET resolved = 1, payment_serial_no = ?
+        WHERE id = ?
+        """,
+        (sn, int(row["id"])),
+    )
+    return int(row["submitted_at_ms"] or 0)
+
+
+def _withdraw_duration_fields(
+    account_id: str,
+    item: dict[str, Any],
+    order_type: int,
+) -> dict[str, int]:
+    """Gắn submitted_at_ms cho rút Hoàn tất. confirm_duration_sec = số lần poll (ghi riêng)."""
+    if int(order_type) != ORDER_TYPE_WITHDRAW:
+        return {}
+    if int(item.get("status") or 0) != SITE_STATUS_SUCCESS:
+        return {}
+    from xoso66_confirm_duration import game_item_end_ms
+
+    serial = str(item.get("serial_no") or "").strip()
+    end_ms = game_item_end_ms(item)
+    if end_ms <= 0:
+        return {}
+    try:
+        amt = int(float(item.get("true_amount") or item.get("amount") or 0))
+    except (TypeError, ValueError):
+        amt = 0
+    with db_conn() as conn:
+        migrate_payment_orders_username(conn)
+        start_ms = 0
+        if serial:
+            prev = conn.execute(
+                "SELECT submitted_at_ms FROM payment_orders WHERE serial_no = ? LIMIT 1",
+                (serial,),
+            ).fetchone()
+            if prev and int(prev["submitted_at_ms"] or 0) > 0:
+                start_ms = int(prev["submitted_at_ms"])
+        # Luôn resolve submission khi đã Hoàn tất — kể cả khi payment_orders
+        # đã có submitted_at_ms (register lúc gửi lệnh). Trước đây skip → kẹt
+        # resolved=0 mãi, AUTO-MISSION bỏ nhận thưởng dù site đã xong.
+        resolved_ms = _resolve_withdraw_submission(
+            conn,
+            account_id=str(account_id),
+            amount_vnd=amt,
+            payment_serial=serial,
+            end_ms=end_ms,
+        )
+        if start_ms <= 0:
+            start_ms = resolved_ms
+    if start_ms <= 0:
+        return {}
+    return {"submitted_at_ms": start_ms}
+
+
+def save_withdraw_confirm_poll_attempt(serial_no: str, poll_attempt: int) -> bool:
+    """Lưu số lần poll xác nhận rút Hoàn tất (cột confirm_duration_sec)."""
+    sn = str(serial_no or "").strip()
+    try:
+        att = int(poll_attempt)
+    except (TypeError, ValueError):
+        return False
+    if not sn or att <= 0:
+        return False
+    init_payment_history_tables()
+    with db_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE payment_orders
+            SET confirm_duration_sec = ?
+            WHERE serial_no = ?
+              AND order_type = ?
+              AND (confirm_duration_sec IS NULL OR confirm_duration_sec = 0)
+            """,
+            (att, sn, ORDER_TYPE_WITHDRAW),
+        )
+    return bool(cur.rowcount)
 
 
 SITE_STATUS_SUCCESS = 1
@@ -383,14 +727,16 @@ def upsert_payment_order(account_id: str, item: dict[str, Any], order_type: int)
                 channel_formatted, create_time, create_time_ms, remark, note,
                 currency, currency_formatted, bank_name_formatted,
                 account_formatted, truename_formatted, usdt_amount, rebate,
-                total_promo_amount, raw_json, synced_at
+                total_promo_amount, raw_json, synced_at,
+                submitted_at_ms, confirm_duration_sec
             ) VALUES (
                 :serial_no, :account_id, :username, :order_type, :amount, :true_amount,
                 :status, :status_formatted, :type_formatted, :category_formatted,
                 :channel_formatted, :create_time, :create_time_ms, :remark, :note,
                 :currency, :currency_formatted, :bank_name_formatted,
                 :account_formatted, :truename_formatted, :usdt_amount, :rebate,
-                :total_promo_amount, :raw_json, :synced_at
+                :total_promo_amount, :raw_json, :synced_at,
+                :submitted_at_ms, :confirm_duration_sec
             )
             ON CONFLICT(serial_no) DO UPDATE SET
                 account_id=excluded.account_id,
@@ -416,7 +762,17 @@ def upsert_payment_order(account_id: str, item: dict[str, Any], order_type: int)
                 rebate=excluded.rebate,
                 total_promo_amount=excluded.total_promo_amount,
                 raw_json=excluded.raw_json,
-                synced_at=excluded.synced_at
+                synced_at=excluded.synced_at,
+                submitted_at_ms=CASE
+                    WHEN excluded.submitted_at_ms > 0 THEN excluded.submitted_at_ms
+                    ELSE payment_orders.submitted_at_ms
+                END,
+                confirm_duration_sec=CASE
+                    WHEN excluded.confirm_duration_sec IS NOT NULL
+                         AND excluded.confirm_duration_sec > 0
+                    THEN excluded.confirm_duration_sec
+                    ELSE payment_orders.confirm_duration_sec
+                END
             """,
             row,
         )

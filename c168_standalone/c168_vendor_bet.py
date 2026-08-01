@@ -40,11 +40,11 @@ from c168_capture_game_b import CDP_URL
 
 BET_PATH = "/player/update/addMyTransaction"
 
-# HTTP categoryIdx → tên hiển thị (đã xác nhận Player=1 từ capture)
+# HTTP categoryIdx: 1=Player, 2=Tie, 3=Banker
 BET_SIDE: dict[str, tuple[int, str]] = {
     "player": (1, "Player"),
-    "banker": (2, "Banker"),
-    "tie": (3, "Tie"),
+    "tie": (2, "Tie"),
+    "banker": (3, "Banker"),
 }
 
 
@@ -258,8 +258,8 @@ _BET_JS = """
 async (arg) => {
   const sides = {
     player: { idx: 1, name: 'Player' },
-    banker: { idx: 2, name: 'Banker' },
-    tie: { idx: 3, name: 'Tie' }
+    tie: { idx: 2, name: 'Tie' },
+    banker: { idx: 3, name: 'Banker' }
   };
   const side = sides[arg.side] || sides.player;
   const data = JSON.stringify([{

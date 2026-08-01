@@ -1,7 +1,15 @@
 """
 Chế độ Cược tuần: mỗi 60 giây (khi ENABLED=1) gọi CMS
 GET /api/users/lc79-playing-or-out, lọc Đang Chơi / Hết Tiền, sắp xếp total_week giảm dần,
-chỉ lấy user có THRESHOLD_MIN <= total_week <= THRESHOLD (trần/sàn), tối đa USER_COUNT → ghi PRIORITY_USERS_V2.
+lấy user có THRESHOLD_MIN <= total_week < THRESHOLD (sàn/trần) → ghi PRIORITY_USERS_V2.
+
+Config WEEKLY_BET_MODE:
+  ENABLED: 0 tắt, 1 bật (chiaTien_Acc ép strategy 6)
+  THRESHOLD: trần cược tuần (exclusive — user đạt đúng ngưỡng không được chọn)
+  THRESHOLD_MIN: sàn cược tuần (vd. 15_000_000 = 15tr)
+  USER_COUNT: 0 = lấy tất cả user trong khoảng; >0 = giới hạn tối đa
+
+Khi mọi user trong PRIORITY_USERS_V2 có total_week > THRESHOLD → ENABLED=0, xóa V2.
 
 API Node.js nên trả JSON dạng:
   { "data": [ { "username": "...", "status": "Đang Chơi"|"Hết Tiền", "total_week": 19000000 }, ... ] }
@@ -26,7 +34,7 @@ _config_lock = threading.Lock()
 
 
 def weekly_bet_mode_forces_strategy(cfg: dict) -> bool:
-    """ENABLED=1 trong WEEKLY_BET_MODE → chiaTien_Acc dùng strategy 6."""
+    """ENABLED=1 trong WEEKLY_BET_MODE → chiaTien_Acc dùng strategy 6 (PRIORITY → V2)."""
     block = cfg.get("WEEKLY_BET_MODE")
     if not isinstance(block, dict):
         return False
@@ -70,17 +78,27 @@ def _total_week_from_row(row: dict) -> int:
     )
 
 
+def _total_week_by_username(rows: List[dict]) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for row in rows:
+        u = _username_from_row(row)
+        if not u:
+            continue
+        tw = _total_week_from_row(row)
+        if u not in out or tw > out[u]:
+            out[u] = tw
+    return out
+
+
 def compute_weekly_v2_users(
     rows: List[dict],
     week_max: int,
     week_min: int,
     user_count: int,
 ) -> List[str]:
-    """Lọc status + week_min <= total_week <= week_max, sort total_week giảm dần, tối đa user_count (unique)."""
+    """Lọc status + week_min <= total_week < week_max, sort total_week giảm dần; user_count<=0 = không giới hạn."""
     lo = max(0, int(week_min))
     hi = max(0, int(week_max))
-    if lo > hi:
-        lo, hi = hi, lo
     acc: Dict[str, int] = {}
     for row in rows:
         status = str(row.get("status") or "").strip()
@@ -90,12 +108,15 @@ def compute_weekly_v2_users(
         if not u:
             continue
         tw = _total_week_from_row(row)
-        if tw < lo or tw > hi:
+        if tw < lo or tw >= hi:
             continue
         if u not in acc or tw > acc[u]:
             acc[u] = tw
     ordered = sorted(acc.items(), key=lambda x: (-x[1], x[0]))
-    return [u for u, _ in ordered[: max(0, user_count)]]
+    usernames = [u for u, _ in ordered]
+    if user_count > 0:
+        return usernames[:user_count]
+    return usernames
 
 
 def _normalize_v2_slots(lst: List[Any], nslots: int) -> List[str]:
@@ -106,6 +127,49 @@ def _normalize_v2_slots(lst: List[Any], nslots: int) -> List[str]:
         else:
             out.append("")
     return out
+
+
+def _v2_usernames_from_cfg(cfg: dict) -> List[str]:
+    lst = cfg.get("PRIORITY_USERS_V2")
+    if not isinstance(lst, list):
+        return []
+    return [str(u or "").strip() for u in lst if str(u or "").strip()]
+
+
+def _all_v2_users_exceeded_threshold(
+    rows: List[dict],
+    v2_users: List[str],
+    threshold: int,
+) -> bool:
+    """True khi mọi user V2 có total_week > threshold (thiếu trong API → chưa vượt)."""
+    if not v2_users:
+        return False
+    by_name = _total_week_by_username(rows)
+    for u in v2_users:
+        tw = by_name.get(u)
+        if tw is None or tw <= threshold:
+            return False
+    return True
+
+
+def _disable_weekly_bet_mode(cfg: dict) -> bool:
+    """Tắt ENABLED, xóa PRIORITY_USERS_V2 (giữ số slot), lưu config."""
+    block = cfg.get("WEEKLY_BET_MODE")
+    if not isinstance(block, dict):
+        block = {}
+        cfg["WEEKLY_BET_MODE"] = block
+    block["ENABLED"] = 0
+
+    v2_old = cfg.get("PRIORITY_USERS_V2")
+    if not isinstance(v2_old, list):
+        v2_old = []
+    slots = len(v2_old) if v2_old else 0
+    if slots > 0:
+        cfg["PRIORITY_USERS_V2"] = [""] * slots
+    elif isinstance(cfg.get("PRIORITY_USERS_V2"), list):
+        cfg["PRIORITY_USERS_V2"] = []
+
+    return save_config(cfg)
 
 
 def weekly_bet_mode_tick() -> None:
@@ -125,9 +189,9 @@ def weekly_bet_mode_tick() -> None:
 
         week_max = _to_int(block.get("THRESHOLD", 0), 0)
         week_min = _to_int(block.get("THRESHOLD_MIN", 0), 0)
-        user_count = _to_int(block.get("USER_COUNT", 10), 10)
-        if week_max <= 0 or user_count <= 0:
-            print("[CUOC-TUAN] ⚠️ THRESHOLD (trần) hoặc USER_COUNT không hợp lệ, bỏ qua tick", flush=True)
+        user_count = _to_int(block.get("USER_COUNT", 0), 0)
+        if week_max <= 0:
+            print("[CUOC-TUAN] ⚠️ THRESHOLD (trần) không hợp lệ, bỏ qua tick", flush=True)
             return
 
         try:
@@ -145,12 +209,27 @@ def weekly_bet_mode_tick() -> None:
             return
 
         rows = _parse_users_payload(payload)
+
+        v2_users = _v2_usernames_from_cfg(cfg)
+        if v2_users and _all_v2_users_exceeded_threshold(rows, v2_users, week_max):
+            by_name = _total_week_by_username(rows)
+            summary = ", ".join(f"{u}({by_name.get(u, 0):,})" for u in v2_users)
+            if _disable_weekly_bet_mode(cfg):
+                print(
+                    f"[CUOC-TUAN] 🏁 Hoàn thành — mọi user V2 vượt {week_max:,}: {summary}. "
+                    f"ENABLED=0, đã xóa PRIORITY_USERS_V2",
+                    flush=True,
+                )
+            else:
+                print("[CUOC-TUAN] ❌ Không lưu được config.json khi tắt chế độ", flush=True)
+            return
+
         selected = compute_weekly_v2_users(rows, week_max, week_min, user_count)
 
         v2_old = cfg.get("PRIORITY_USERS_V2")
         if not isinstance(v2_old, list):
             v2_old = []
-        slots = max(len(v2_old), user_count)
+        slots = max(len(v2_old), len(selected), user_count if user_count > 0 else 0)
         new_v2 = selected + [""] * (slots - len(selected))
         new_v2 = new_v2[:slots]
 
@@ -161,10 +240,9 @@ def weekly_bet_mode_tick() -> None:
         if save_config(cfg):
             lo = max(0, week_min)
             hi = max(0, week_max)
-            if lo > hi:
-                lo, hi = hi, lo
+            cap_label = f"{len(selected)}/{user_count}" if user_count > 0 else str(len(selected))
             print(
-                f"[CUOC-TUAN] ✅ Đã cập nhật V2 ({len(selected)}/{user_count} user, tuần [{lo:,} .. {hi:,}]): "
+                f"[CUOC-TUAN] ✅ Đã cập nhật V2 ({cap_label} user, tuần [{lo:,} .. {hi:,})): "
                 f"{', '.join(selected) or '(trống)'}",
                 flush=True,
             )

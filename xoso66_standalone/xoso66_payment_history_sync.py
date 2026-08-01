@@ -89,6 +89,124 @@ def _proxy_line(session: dict, account_id: str) -> str:
     return proxy_source_label(session, account_proxy=str(row.get("proxy") or ""))
 
 
+def backfill_deposit_successes_for_account(
+    account_id: str,
+    *,
+    days: int = 7,
+    session: dict | None = None,
+    page_limit: int = 50,
+    max_pages: int = 20,
+    verbose: bool = False,
+) -> dict[str, Any]:
+    """
+    Lấy toàn bộ lịch sử nạp từ site (phân trang) → ghi đơn Hoàn tất (status=1)
+    chưa có serial_no vào payment_orders.
+    """
+    aid = str(account_id).strip()
+    row = get_account(aid)
+    if not row:
+        return {"ok": False, "account_id": aid, "error": "không tìm thấy account"}
+
+    u = username_for_log(aid, row)
+    if session is None:
+        try:
+            session = ensure_session(aid, force_login=False)
+        except Exception as e:
+            return {"ok": False, "account_id": aid, "username": u, "error": str(e)}
+
+    items, err = fetch_payment_orders_paged(
+        session,
+        order_type=ORDER_TYPE_DEPOSIT,
+        days=max(1, int(days)),
+        page_limit=max(1, min(50, int(page_limit))),
+        max_pages=max(1, int(max_pages)),
+    )
+    sync = (
+        sync_deposit_successes_from_list(aid, items)
+        if items
+        else {"new_serials": [], "updated_serials": [], "count_new": 0}
+    )
+    from xoso66_deposit_tracking import finalize_da_nap_deposit_orders_from_list
+
+    dep_finalize = finalize_da_nap_deposit_orders_from_list(aid, items or [])
+    new_n = int(sync.get("count_new") or 0)
+    finalized_n = int(dep_finalize.get("finalized") or 0)
+    if verbose and new_n:
+        print(
+            f"  [{u}] backfill nạp: +{new_n} serial mới vào payment_orders",
+            flush=True,
+        )
+        for s in (sync.get("new_serials") or [])[:5]:
+            print(f"      + {s}", flush=True)
+    if verbose and finalized_n:
+        print(
+            f"  [{u}] deposit_orders: {finalized_n} lệnh Đã Nạp → Thành Công",
+            flush=True,
+        )
+        for s in (dep_finalize.get("serials") or [])[:5]:
+            print(f"      ✓ {s}", flush=True)
+
+    return {
+        "ok": not err or bool(items),
+        "account_id": aid,
+        "username": u,
+        "days": int(days),
+        "items": items,
+        "items_count": len(items),
+        "error": err or "",
+        "sync": sync,
+        "deposit_new": new_n,
+        "new_serials": list(sync.get("new_serials") or []),
+        "deposit_orders_finalized": finalized_n,
+        "deposit_orders_finalized_serials": list(dep_finalize.get("serials") or []),
+        "deposit_orders_finalized_ids": list(dep_finalize.get("order_ids") or []),
+    }
+
+
+def backfill_all_accounts_deposit_successes(
+    *,
+    days: int = 7,
+    account_status: str | None = None,
+    page_limit: int = 50,
+    max_pages: int = 20,
+    delay_between_accounts_sec: float = 1.0,
+    verbose: bool = True,
+) -> dict[str, Any]:
+    """Bù mọi đơn nạp Hoàn tất còn thiếu trong payment_orders (tất cả acc)."""
+    rows = list_accounts()
+    if account_status:
+        st = str(account_status).strip()
+        rows = [r for r in rows if str(r.get("status") or "") == st]
+    results: list[dict[str, Any]] = []
+    total_new = 0
+    for i, row in enumerate(rows, 1):
+        aid = str(row.get("id") or "").strip()
+        if not aid:
+            continue
+        u = username_for_log(aid, row)
+        if verbose:
+            print(f"\n[BACKFILL-DEP {i}/{len(rows)}] {u}", flush=True)
+        rep = backfill_deposit_successes_for_account(
+            aid,
+            days=days,
+            page_limit=page_limit,
+            max_pages=max_pages,
+            verbose=verbose,
+        )
+        results.append(rep)
+        total_new += int(rep.get("deposit_new") or 0)
+        if i < len(rows) and delay_between_accounts_sec > 0:
+            time.sleep(delay_between_accounts_sec)
+    ok = sum(1 for r in results if r.get("ok"))
+    return {
+        "ok": ok == len(results) if results else True,
+        "accounts": len(results),
+        "accounts_ok": ok,
+        "deposit_new_total": total_new,
+        "results": results,
+    }
+
+
 def sync_account_payment_history(
     account_id: str,
     *,
@@ -120,9 +238,11 @@ def sync_account_payment_history(
         "deposit": 0,
         "withdraw": 0,
         "deposit_new": 0,
+        "deposit_orders_finalized": 0,
         "withdraw_new": 0,
         "withdraw_status_changed": 0,
         "deposit_new_serials": [],
+        "deposit_orders_finalized_serials": [],
         "withdraw_new_serials": [],
         "has_new": False,
         "errors": [],
@@ -137,23 +257,36 @@ def sync_account_payment_history(
     if do_dep:
         if verbose:
             print(f"  [{u}] nạp — paymentorderlist ({days} ngày)…", flush=True)
-        items, err = fetch_payment_orders_paged(
-            session, order_type=ORDER_TYPE_DEPOSIT, days=days
+        dep_rep = backfill_deposit_successes_for_account(
+            aid,
+            days=days,
+            session=session,
+            verbose=verbose,
         )
+        items = dep_rep.get("items") or []
+        err = str(dep_rep.get("error") or "")
+        dep_sync = dep_rep.get("sync") or {}
         if err and not items:
             out["errors"].append(f"deposit: {err}")
         else:
-            dep_sync = sync_deposit_successes_from_list(aid, items)
             out["deposit_sync"] = dep_sync
-            out["deposit_new"] = int(dep_sync.get("count_new") or 0)
-            out["deposit_new_serials"] = list(dep_sync.get("new_serials") or [])
+            out["deposit_new"] = int(dep_rep.get("deposit_new") or 0)
+            out["deposit_new_serials"] = list(dep_rep.get("new_serials") or [])
+            out["deposit_orders_finalized"] = int(
+                dep_rep.get("deposit_orders_finalized") or 0
+            )
+            out["deposit_orders_finalized_serials"] = list(
+                dep_rep.get("deposit_orders_finalized_serials") or []
+            )
             out["deposit"] = len(items)
             if err:
                 out["errors"].append(f"deposit (một phần): {err}")
             if verbose:
+                fin = out["deposit_orders_finalized"]
                 print(
                     f"  [{u}] nạp: {len(items)} dòng site, "
-                    f"+{out['deposit_new']} mới DB",
+                    f"+{out['deposit_new']} mới payment_orders"
+                    + (f", {fin} deposit_orders → Thành Công" if fin else ""),
                     flush=True,
                 )
 
@@ -195,6 +328,7 @@ def sync_account_payment_history(
 
     out["has_new"] = (
         out["deposit_new"] > 0
+        or out["deposit_orders_finalized"] > 0
         or len(out["withdraw_new_serials"]) > 0
         or out["withdraw_status_changed"] > 0
     )
@@ -256,10 +390,13 @@ def print_new_accounts_summary(results: list[dict[str, Any]]) -> None:
             u = r.get("username") or r.get("account_id")
             parts = []
             dn = int(r.get("deposit_new") or 0)
+            df = int(r.get("deposit_orders_finalized") or 0)
             wn = len(r.get("withdraw_new_serials") or [])
             sc = int(r.get("withdraw_status_changed") or 0)
             if dn:
                 parts.append(f"nạp +{dn}")
+            if df:
+                parts.append(f"deposit_orders {df} Thành Công")
             if wn:
                 parts.append(f"rút +{wn} mới")
             if sc:

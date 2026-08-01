@@ -3,10 +3,28 @@
   "chrome_max_concurrent": 10,
   "daily_bet_cap_vnd": 890000,
   "watcher_enabled": true,
+  "portal_home_urls": {
+    "c168": "https://c168b2.cc/",
+    "f168": "https://f1686s.com/",
+    "fly88": "https://m.fly88t.vip/",
+    "sc88": "https://www.sc881.net/"
+  },
+  "portal_hall_origins": {
+    "c168": "https://af861c.c168f.com",
+    "f168": "https://ah861f.f1sau8.com",
+    "fly88": "https://ok.fly88b.cc"
+  },
   "vendor": {
     "platform_id": 1012,
     "category_id": 4,
     "table_name": "C06",
-    "table_id": 1006
+    "table_id": 1006,
+    "auto_bet_enabled": false,
+    "stake_min": 10,
+    "stake_max": 20,
+    "stake_unit": "k",
+    "stake_step": 10,
+    "bet_limit_id": 851101,
+    "max_bet_rounds": 0
   }
 }

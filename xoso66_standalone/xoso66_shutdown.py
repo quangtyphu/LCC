@@ -15,6 +15,18 @@ _lock = threading.Lock()
 
 def request_stop() -> None:
     _stop.set()
+    try:
+        from xoso66_minigame_ws_worker import cancel_ws_pool_pending_work
+
+        cancel_ws_pool_pending_work()
+    except Exception:
+        pass
+    try:
+        from xoso66_playwright_ctx import shutdown_playwright_pool
+
+        shutdown_playwright_pool(wait=False)
+    except Exception:
+        pass
     with _lock:
         api_srv = _api_server
         dep_srv = _deposit_handler

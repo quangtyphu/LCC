@@ -60,7 +60,7 @@ def main() -> int:
         return 0
 
     cfg = load_config()
-    if cfg.get("watcher_enabled", True):
+    if True:
         t = threading.Thread(target=run_watcher, daemon=True, name="allgame-watcher")
         t.start()
         print("[ALLGAME] Watcher started (Ctrl+C to stop)", flush=True)

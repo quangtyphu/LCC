@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Số dư thiết bị ngân hàng — DB LC79/CMS (game_data.db → device_balances).
+Số dư thiết bị ngân hàng — giống CMS `creditDeviceBalance` (LC79).
 
-- App VPBank / CMS form: PUT ghi **toàn bộ** số dư trên máy (update_device_balance).
-- Rút Hoàn tất ghi `payment_orders` (`upsert_payment_order`) → tự **cộng** số tiền rút vào device.
+- Rút Hoàn tất (`upsert_payment_order`) → cộng số tiền rút vào device.
+- Device **XMSB*** → POST Banking `:3010/api/msb-accounts/by-device/{device}/credit`
+  (msb_api / PG), không ghi `device_balances`.
+- Device khác → cộng `device_balances` (SQLite CMS hoặc HTTP PUT).
+- App VPBank / CMS form: PUT ghi **toàn bộ** số dư (`update_device_balance`).
 """
 
 from __future__ import annotations
@@ -18,6 +21,19 @@ import requests
 
 _ROOT = Path(__file__).resolve().parent
 _LC79_ROOT = _ROOT.parent
+_BANKING_ROOT = _LC79_ROOT.parent / "Banking"
+
+_WEAK_INTERNAL_DB_TOKENS = frozenset(
+    {
+        "local_banking_internal_token_change_me",
+        "changeme",
+        "change_me",
+        "change-me",
+        "secret",
+        "password",
+    }
+)
+_banking_env_loaded = False
 
 
 def default_game_data_db_path() -> Path:
@@ -48,6 +64,39 @@ def _cfg() -> dict[str, Any]:
     return {}
 
 
+def _load_banking_env_fallback() -> None:
+    """Nạp APP_API_TOKEN / INTERNAL_DB_TOKEN từ Banking/.env (giống CMS)."""
+    global _banking_env_loaded
+    if _banking_env_loaded:
+        return
+    _banking_env_loaded = True
+    allow = {"APP_API_TOKEN", "INTERNAL_DB_TOKEN", "ADMIN_API_TOKEN", "BANKING_CREDIT_URL"}
+    env_path = Path(
+        str(os.environ.get("BANKING_ENV_PATH") or "").strip()
+        or (_BANKING_ROOT / ".env")
+    )
+    if not env_path.is_file():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            if key not in allow:
+                continue
+            val = val.strip()
+            if (val.startswith('"') and val.endswith('"')) or (
+                val.startswith("'") and val.endswith("'")
+            ):
+                val = val[1:-1]
+            if key and not str(os.environ.get(key) or "").strip():
+                os.environ[key] = val
+    except OSError:
+        pass
+
+
 def _banking_base_url() -> str:
     block = _cfg()
     url = str(
@@ -61,6 +110,22 @@ def _banking_base_url() -> str:
     return "http://127.0.0.1:8888"
 
 
+def _banking_credit_base_url() -> str:
+    """banking-db Node (MSBAPI credit) — mặc định :3010 như CMS."""
+    _load_banking_env_fallback()
+    block = _cfg()
+    url = str(
+        block.get("banking_credit_url")
+        or block.get("banking_db_url")
+        or os.environ.get("BANKING_CREDIT_URL")
+        or os.environ.get("XOSO66_BANKING_CREDIT_URL")
+        or ""
+    ).strip()
+    if url:
+        return url.rstrip("/")
+    return "http://127.0.0.1:3010"
+
+
 def _cms_base_url() -> str:
     block = _cfg()
     return str(
@@ -69,6 +134,96 @@ def _cms_base_url() -> str:
         or os.environ.get("CMS_PROXY_URL")
         or "http://127.0.0.1:3000"
     ).rstrip("/")
+
+
+def is_xmsb_device_name(device: str) -> bool:
+    """Giống CMS `isXmsbDeviceName` — XMSB* → MSBAPI, không ghi device_balances."""
+    return str(device or "").strip().upper().startswith("XMSB")
+
+
+def _banking_credit_headers() -> dict[str, str]:
+    _load_banking_env_fallback()
+    headers = {"Content-Type": "application/json"}
+    app_token = str(os.environ.get("APP_API_TOKEN") or "").strip()
+    if app_token:
+        headers["X-App-Token"] = app_token
+    internal = str(os.environ.get("INTERNAL_DB_TOKEN") or "").strip()
+    if internal and internal not in _WEAK_INTERNAL_DB_TOKENS:
+        headers["X-Internal-Token"] = internal
+    return headers
+
+
+def credit_xmsb_via_msbapi(
+    device: str,
+    amount_vnd: int,
+    *,
+    log_prefix: str = "[DEVICE-BAL]",
+) -> dict[str, Any]:
+    """
+    POST /api/msb-accounts/by-device/{device}/credit — giống CMS creditDeviceBalance (XMSB*).
+    """
+    dev = str(device or "").strip()
+    if not dev:
+        return {"ok": False, "skipped": True, "reason": "thiếu tên thiết bị"}
+    try:
+        amt = int(amount_vnd)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "số tiền không hợp lệ"}
+    if amt <= 0:
+        return {"ok": False, "error": "số tiền phải > 0"}
+
+    base = _banking_credit_base_url()
+    url = f"{base}/api/msb-accounts/by-device/{quote(dev, safe='')}/credit"
+    try:
+        r = requests.post(
+            url,
+            json={"amount": amt},
+            headers=_banking_credit_headers(),
+            timeout=20,
+        )
+    except Exception as e:
+        print(f"{log_prefix} {dev}: ❌ MSBAPI credit lỗi: {e}", flush=True)
+        return {"ok": False, "error": str(e), "url": url, "device": dev, "via": "msbapi"}
+
+    try:
+        body = r.json()
+    except Exception:
+        body = {"raw": (r.text or "")[:300]}
+
+    if r.status_code not in (200, 201) or (
+        isinstance(body, dict) and body.get("success") is False
+    ):
+        err = (
+            (body.get("error") if isinstance(body, dict) else None)
+            or f"HTTP {r.status_code}"
+        )
+        print(f"{log_prefix} {dev}: ❌ MSBAPI credit failed: {err}", flush=True)
+        return {
+            "ok": False,
+            "error": str(err),
+            "detail": body,
+            "url": url,
+            "device": dev,
+            "via": "msbapi",
+        }
+
+    bal = None
+    if isinstance(body, dict):
+        bal = body.get("balance")
+    bal_s = f"{int(bal):,}đ" if bal is not None else "—"
+    print(
+        f"{log_prefix} {dev}: ✅ MSBAPI credit +{amt:,}đ → balance={bal_s}",
+        flush=True,
+    )
+    return {
+        "ok": True,
+        "via": "msbapi",
+        "device": dev,
+        "added": amt,
+        "balance": int(bal) if bal is not None else None,
+        "url": url,
+        "response": body,
+    }
 
 
 def device_name_for_account(account_id: str) -> str:
@@ -341,7 +496,11 @@ def add_to_device_balance(
     *,
     log_prefix: str = "[DEVICE-BAL]",
 ) -> dict[str, Any]:
-    """Cộng tiền rút (hoặc tiền về TK) vào số dư thiết bị ngân hàng."""
+    """
+    Cộng tiền rút vào số dư thiết bị — giống CMS `creditDeviceBalance`.
+
+    XMSB* → MSBAPI credit; còn lại → device_balances (SQLite / HTTP).
+    """
     dev = str(device or "").strip()
     if not dev:
         return {"ok": False, "skipped": True, "reason": "thiếu tên thiết bị"}
@@ -351,6 +510,10 @@ def add_to_device_balance(
         return {"ok": False, "error": "số tiền không hợp lệ"}
     if amt <= 0:
         return {"ok": False, "error": "số tiền phải > 0"}
+
+    # Giống CMS: XMSB* không ghi Quản lý thiết bị — credit MSBAPI
+    if is_xmsb_device_name(dev):
+        return credit_xmsb_via_msbapi(dev, amt, log_prefix=log_prefix)
 
     db_path = default_game_data_db_path()
     if db_path.is_file():
@@ -402,7 +565,7 @@ def credit_device_for_account_withdraw(
     *,
     log_prefix: str = "[DEVICE-BAL]",
 ) -> dict[str, Any]:
-    """accounts.device → cộng số tiền rút vào device_balances."""
+    """accounts.device → cộng số tiền rút (XMSB→MSBAPI, còn lại→device_balances)."""
     aid = str(account_id or "").strip()
     dev = device_name_for_account(aid)
     if not dev:

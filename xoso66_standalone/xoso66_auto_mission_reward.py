@@ -5,13 +5,23 @@ Tự động nhận thưởng nhiệm vụ sau khi acc «Đủ ngày».
 Luồng (mỗi acc / ngày VN):
   1. Khi WS ép status → «Đủ ngày» (ngắt WS / đủ cap): hẹn check sau initial_delay_sec.
      Không quét lại toàn bộ acc Đủ ngày lúc khởi động main.
-  2. mission/list + lưu DB; nếu có level status=1 (MINI 17 + điểm danh 22/161):
-       balance ≥ min_withdraw_vnd → rút bội withdraw_step_vnd (vd. 300k/400k/500k), poll Hoàn tất, POST reward.
-       balance < min → chỉ nhận thưởng (không rút).
-  3. Chưa claim được: poll chỉ khi done_bet < 888888 VÀ done_bet < tổng cược ngày,
-     tối đa poll_max_attempts; nhận được thì dừng. Trong lúc poll: không ghi đè
-     accounts.daily_bet_total bằng 161 (giữ tổng cược thật trên DB).
+  2. mission/list + lưu DB; nếu có level status=1:
+       - sign_list: MINI 17 + điểm danh 22/161
+       - mission_list: Cửa MINI GAME (bet_target ≤ daily_bet_cap; Cửa 1 = 2.688.000)
+       hold_reward_above_min_balance=0 (mặc định):
+         balance ≥ min_withdraw_vnd → rút bội withdraw_step_vnd, tối đa max_withdraw_vnd,
+         số dư sau rút ≥ min_balance_after_withdraw_vnd (mặc định 50k), mức rút ≥ min_withdraw_vnd,
+         poll Hoàn tất, POST reward.
+         balance < min → chỉ nhận thưởng (không rút).
+       hold_reward_above_min_balance=1:
+         balance > min_withdraw_vnd → chỉ refresh số dư + mission/list (không rút, không nhận), xong.
+         balance ≤ min_withdraw_vnd → chỉ nhận thưởng (không rút).
+  3. Chưa claim được: poll khi (a) done_bet < 888888 VÀ done_bet < tổng cược ngày,
+     hoặc (b) đủ cược cửa ≤ cap nhưng cửa vẫn status=0; tối đa poll_max_attempts.
+     Trong lúc poll: không ghi đè accounts.daily_bet_total bằng 161.
   4. Hết poll (15/15): sync done_bet_money = tổng cược ngày (accounts + mission) → thử rút + nhận lại.
+  5. Nâng daily_bet_cap sau khi queue done: cho schedule lại (claimed_cap < cap mới);
+     ws_pool đưa Đủ ngày còn room về Đang Chơi.
 """
 
 from __future__ import annotations
@@ -36,12 +46,21 @@ _QUEUE_LOCK = threading.Lock()
 _QUEUE_FILE = Path(cms_game_data_dir()) / "mission_auto_claim_queue.json"
 _MIN_WITHDRAW_VND = 300_000
 _WITHDRAW_STEP_VND = 100_000
+_MAX_WITHDRAW_VND = 500_000
+_MIN_BALANCE_AFTER_WITHDRAW_VND = 50_000
 
 
 def _now_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
+
+
+_CONSOLIDATE_WITHDRAW_REASON = "đạt ngưỡng rút strategy 3"
+
+
+def _is_consolidate_withdraw_reason(reason: str) -> bool:
+    return str(reason or "").strip() == _CONSOLIDATE_WITHDRAW_REASON
 
 
 def _normalize_queue_item(account_id: str, item: dict[str, Any]) -> dict[str, Any]:
@@ -54,6 +73,8 @@ def _normalize_queue_item(account_id: str, item: dict[str, Any]) -> dict[str, An
         "reward_retry_count": int(item.get("reward_retry_count") or 0),
         "pending_claims_json": str(item.get("pending_claims_json") or "")[:4000],
         "last_error": str(item.get("last_error") or "")[:500],
+        "reason": str(item.get("reason") or "")[:200],
+        "claimed_cap_vnd": int(item.get("claimed_cap_vnd") or 0),
         "updated_at": str(item.get("updated_at") or _now_iso()),
     }
 
@@ -123,11 +144,25 @@ def _withdraw_step_vnd() -> int:
     return max(1, int(_cfg().get("withdraw_step_vnd", _WITHDRAW_STEP_VND)))
 
 
+def _max_withdraw_vnd() -> int:
+    return max(0, int(_cfg().get("max_withdraw_vnd", _MAX_WITHDRAW_VND)))
+
+
+def _min_balance_after_withdraw_vnd() -> int:
+    return max(0, int(_cfg().get("min_balance_after_withdraw_vnd", _MIN_BALANCE_AFTER_WITHDRAW_VND)))
+
+
+def hold_reward_above_min_balance() -> bool:
+    """1 = số dư > min_withdraw_vnd thì không rút, không nhận thưởng; ≤ min thì nhận thưởng."""
+    return int(_cfg().get("hold_reward_above_min_balance", 0)) == 1
+
+
 def _sync_balance_to_db(
     account_id: str,
     session: dict,
     *,
     label: str = "",
+    force_relogin: bool = False,
 ) -> float | None:
     from xoso66_session import refresh_account_balance_to_db
 
@@ -135,29 +170,12 @@ def _sync_balance_to_db(
         pass  # ngữ cảnh (trước/sau rút, v.v.) — dòng log chính từ get_user_balance
 
     aid = str(account_id).strip()
-    rep = refresh_account_balance_to_db(aid, session, refresh=True)
+    rep = refresh_account_balance_to_db(
+        aid, session, refresh=True, force_relogin=force_relogin
+    )
     if rep.get("ok") and rep.get("balance") is not None:
         return float(rep["balance"])
     return None
-
-
-def _start_withdraw_confirm_watch(
-    account_id: str,
-    *,
-    amount_vnd: int,
-    since_ms: int,
-    serial_no: str | None = None,
-) -> None:
-    from xoso66_withdraw_tracking import start_withdraw_confirm_watch
-
-    start_withdraw_confirm_watch(
-        account_id,
-        amount_vnd=amount_vnd,
-        since_ms=since_ms,
-        serial_no=serial_no,
-        log_prefix="[AUTO-MISSION]",
-        notify_on_fail=True,
-    )
 
 
 def _reward_retry_delay_sec() -> float:
@@ -221,13 +239,21 @@ def floor_withdraw_amount_vnd(
     *,
     min_vnd: int | None = None,
     step_vnd: int | None = None,
+    max_vnd: int | None = None,
+    min_remain_vnd: int | None = None,
 ) -> int:
     """
-    Số tiền rút tự động: bội step_vnd (mặc định 100k), không vượt số dư.
-    Trả 0 nếu balance < min_vnd hoặc không đủ một bội ≥ min (vd. 250k → 0).
+    Số tiền rút tự động: bội step_vnd, không vượt số dư / max_withdraw_vnd.
+    min_vnd = ngưỡng số dư (balance ≥ mới rút) và mức rút tối thiểu mỗi lần.
+    Số dư sau rút phải ≥ min_balance_after_withdraw_vnd (mặc định 50k).
+    Trả 0 nếu balance < min_vnd, không rút được ≥ min_vnd, hoặc sau rút còn < min_remain.
     """
     min_v = int(min_vnd if min_vnd is not None else _min_withdraw_vnd())
     step = max(1, int(step_vnd if step_vnd is not None else _withdraw_step_vnd()))
+    max_v = int(max_vnd if max_vnd is not None else _max_withdraw_vnd())
+    min_remain = int(
+        min_remain_vnd if min_remain_vnd is not None else _min_balance_after_withdraw_vnd()
+    )
     try:
         b = float(balance)
     except (TypeError, ValueError):
@@ -238,12 +264,32 @@ def floor_withdraw_amount_vnd(
     if avail < 0:
         return 0
     amt = (avail // step) * step
-    return amt if amt >= min_v else 0
+    if max_v > 0:
+        amt = min(amt, (max_v // step) * step)
+    if min_remain > 0 and avail - amt < min_remain:
+        amt = ((avail - min_remain) // step) * step
+    if amt < min_v or amt <= 0:
+        return 0
+    if min_remain > 0 and avail - amt < min_remain:
+        return 0
+    return amt
+
+
+def _consolidate_withdraw_delay_sec() -> float:
+    """Strategy 3 Đủ ngày → chờ trước khi rút (mặc định 420s)."""
+    try:
+        from xoso66_bet_assign import _auto_bet_cfg, consolidate_withdraw_delay_sec
+
+        return consolidate_withdraw_delay_sec(_auto_bet_cfg(load_config()))
+    except Exception:
+        return 420.0
 
 
 def schedule_mission_claim(account_id: str, *, reason: str = "") -> bool:
     """
-    Hẹn nhận thưởng cho acc (sau initial_delay_sec). Trả False nếu tắt auto hoặc đã có hàng đợi hôm nay.
+    Hẹn nhận thưởng / rút (sau delay).
+    Strategy 3 (đạt ngưỡng rút): delay consolidate_withdraw_delay_sec; cho hẹn lại nếu phase done/failed.
+    Cap cao hơn claimed_cap_vnd: cho hẹn lại dù phase=done (nâng daily_bet_cap trong ngày).
     """
     if not auto_mission_reward_enabled():
         return False
@@ -253,15 +299,31 @@ def schedule_mission_claim(account_id: str, *, reason: str = "") -> bool:
     row = get_account(aid)
     if not row:
         return False
+    reason_s = str(reason or "").strip()
+    is_s3 = _is_consolidate_withdraw_reason(reason_s)
+    delay = _consolidate_withdraw_delay_sec() if is_s3 else _initial_delay_sec()
     vn_day = today_vn_str()
-    at = time.time() + _initial_delay_sec()
-    tag = f" ({reason})" if reason else ""
+    at = time.time() + delay
+    current_cap = _daily_bet_cap_vnd()
     with _QUEUE_LOCK:
         items = _load_queue_map()
         cur = items.get(aid) or {}
         phase = str(cur.get("phase") or "")
-        if str(cur.get("vn_day") or "") == vn_day and phase in ("scheduled", "polling", "done"):
-            return False
+        same_day = str(cur.get("vn_day") or "") == vn_day
+        claimed_cap = int(cur.get("claimed_cap_vnd") or 0)
+        if same_day:
+            if is_s3:
+                # Đang chạy → không double; done/failed → cho hẹn lại để rút.
+                if phase in ("scheduled", "polling", "reward_retry"):
+                    return False
+            elif phase in ("scheduled", "polling", "reward_retry"):
+                return False
+            elif phase == "done":
+                # Legacy (chưa ghi claimed_cap): coi như đã xong mốc ~900k (điểm danh).
+                # Nâng cap lên Cửa 1 (~2695k) → cho hẹn lại; giữ 895k → không spam.
+                effective_claimed = claimed_cap if claimed_cap > 0 else 900_000
+                if current_cap <= effective_claimed:
+                    return False
         items[aid] = _normalize_queue_item(
             aid,
             {
@@ -272,15 +334,12 @@ def schedule_mission_claim(account_id: str, *, reason: str = "") -> bool:
                 "reward_retry_count": 0,
                 "pending_claims_json": "",
                 "last_error": "",
+                "reason": reason_s,
+                "claimed_cap_vnd": claimed_cap,
                 "updated_at": _now_iso(),
             },
         )
         _save_queue_map(items)
-    u = username_for_log(aid, row)
-    print(
-        f"[AUTO-MISSION] Hẹn {u}: check nhận thưởng sau {_initial_delay_sec():.0f}s{tag}",
-        flush=True,
-    )
     return True
 
 
@@ -320,6 +379,17 @@ def cancel_mission_claim_queue(
     return deleted
 
 
+def _daily_bet_cap_vnd() -> int:
+    cfg = load_config()
+    ab = cfg.get("auto_bet")
+    if isinstance(ab, dict) and ab.get("daily_bet_cap_vnd") is not None:
+        return int(ab.get("daily_bet_cap_vnd") or 890_000)
+    gw = cfg.get("game_worker")
+    if isinstance(gw, dict) and gw.get("daily_bet_cap_vnd") is not None:
+        return int(gw.get("daily_bet_cap_vnd") or 890_000)
+    return 890_000
+
+
 def _queue_update(
     account_id: str,
     *,
@@ -330,6 +400,7 @@ def _queue_update(
     pending_claims_json: str | None = None,
     last_error: str | None = None,
     vn_day: str | None = None,
+    claimed_cap_vnd: int | None = None,
 ) -> None:
     aid = str(account_id).strip()
     with _QUEUE_LOCK:
@@ -353,6 +424,8 @@ def _queue_update(
             nxt["last_error"] = str(last_error)[:500]
         if vn_day is not None:
             nxt["vn_day"] = vn_day
+        if claimed_cap_vnd is not None:
+            nxt["claimed_cap_vnd"] = int(claimed_cap_vnd)
         items[aid] = _normalize_queue_item(aid, nxt)
         _save_queue_map(items)
 
@@ -374,7 +447,9 @@ def _due_queue_rows() -> list[dict[str, Any]]:
 
 
 def _account_balance_vnd(account_id: str, session: dict) -> float:
-    bal = _sync_balance_to_db(account_id, session, label="trước rút")
+    bal = _sync_balance_to_db(
+        account_id, session, label="trước rút", force_relogin=False
+    )
     if bal is not None:
         return bal
     row = get_account(account_id) or {}
@@ -441,19 +516,27 @@ def _maybe_withdraw_before_claim(
             _sync_balance_to_db(account_id, session, label="sau API rút")
             from xoso66_withdraw_tracking import (
                 extract_withdraw_serial,
+                hold_reward_poll_threshold,
                 poll_withdraw_until_confirmed,
-                disable_auto_bet_on_withdraw_timeout,
                 withdraw_confirm_poll_interval_sec,
                 withdraw_confirm_poll_max,
             )
+            from xoso66_payment_history_db import register_withdraw_submission
 
             serial = extract_withdraw_serial(wr)
+            register_withdraw_submission(
+                account_id,
+                amt,
+                since_ms,
+                serial_no=serial,
+            )
             out["withdraw_serial"] = serial
             interval = withdraw_confirm_poll_interval_sec()
             max_attempts = withdraw_confirm_poll_max()
+            hold_at = min(hold_reward_poll_threshold(), max_attempts)
             print(
                 f"[AUTO-MISSION] {u}: chờ rút Hoàn tất trên site — "
-                f"poll {interval:.0f}s × {max_attempts}"
+                f"poll 1/{max_attempts} (mỗi {interval:.0f}s, hold tại {hold_at}/{max_attempts})"
                 + (f" (serial {serial})" if serial else ""),
                 flush=True,
             )
@@ -466,7 +549,6 @@ def _maybe_withdraw_before_claim(
                 max_attempts=max_attempts,
                 serial_no=serial,
                 log_prefix="[AUTO-MISSION]",
-                stop_program_on_exhausted=disable_auto_bet_on_withdraw_timeout(),
             )
             out["withdraw_poll"] = poll_rep
             confirmed = bool(poll_rep.get("confirmed") and poll_rep.get("success"))
@@ -486,16 +568,6 @@ def _maybe_withdraw_before_claim(
                     f"[AUTO-MISSION] {u}: chưa xác nhận Hoàn tất — bỏ nhận thưởng ({err})",
                     flush=True,
                 )
-                from xoso66_config_util import load_config
-
-                ab = load_config().get("auto_bet")
-                if isinstance(ab, dict) and ab.get("enabled"):
-                    _start_withdraw_confirm_watch(
-                        account_id,
-                        amount_vnd=amt,
-                        since_ms=since_ms,
-                        serial_no=serial,
-                    )
     except Exception as e:
         out["withdraw_ok"] = False
         out["withdraw_msg"] = str(e)
@@ -503,18 +575,52 @@ def _maybe_withdraw_before_claim(
     return out
 
 
-def _can_claim_after_withdraw(withdraw_info: dict[str, Any] | None) -> bool:
+def _is_withdraw_turnover_block(msg: str) -> bool:
+    """Rút bị chặn vì chưa đủ cược turnover — bỏ rút, vẫn nhận thưởng."""
+    m = str(msg or "").strip().lower()
+    if not m:
+        return False
+    return (
+        "cần cược thêm" in m
+        or "chưa hoàn thành số tiền cần cược" in m
+        or "chua hoan thanh so tien can cuoc" in m
+    )
+
+
+def _can_claim_after_withdraw(
+    account_id: str,
+    withdraw_info: dict[str, Any] | None,
+) -> bool:
     """
     True nếu được phép nhận thưởng:
-    - Không bước rút (retry sau khi đã rút + nhận).
-    - Bỏ rút vì balance < min_withdraw_vnd.
+    - Không còn lệnh rút unresolved (đã gửi API, chưa Hoàn tất site).
+    - Không bước rút lần này (reward_retry) và không có rút pending.
+    - Bỏ rút vì balance < min_withdraw_vnd (và không có rút pending).
+    - Rút fail vì chưa đủ cược turnover → bỏ rút, nhận thưởng.
     - Đã rút và lịch sử site xác nhận Hoàn tất (withdraw_confirmed).
     """
+    from xoso66_payment_history_db import has_unresolved_withdraw_submission
+
+    if has_unresolved_withdraw_submission(account_id):
+        return False
     if withdraw_info is None:
         return True
     if withdraw_info.get("skipped"):
         reason = str(withdraw_info.get("reason") or "")
         return "balance" in reason and "<" in reason
+    if not withdraw_info.get("withdraw_ok"):
+        detail = str(
+            withdraw_info.get("withdraw_msg")
+            or withdraw_info.get("reason")
+            or ""
+        )
+        if _is_withdraw_turnover_block(detail):
+            u = username_for_log(account_id)
+            print(
+                f"[AUTO-MISSION] {u}: bỏ rút — {detail} → nhận thưởng không rút",
+                flush=True,
+            )
+            return True
     return bool(withdraw_info.get("withdraw_ok"))
 
 
@@ -534,6 +640,9 @@ def _run_claim_flow(
     withdraw_before: bool = True,
     only_level_keys: set[tuple[int, int]] | None = None,
     sync_accounts_daily_bet: bool | None = None,
+    force_login: bool = False,
+    ignore_session_ttl: bool = False,
+    reason: str = "",
 ) -> dict[str, Any]:
     """mission/list → (rút) → reward → list + DB."""
     from xoso66_daily_mission_check import (
@@ -544,6 +653,11 @@ def _run_claim_flow(
     )
     from xoso66_mission_db import persist_mission_state
     from xoso66_session import ensure_session, persist_session
+    from xoso66_task_mission_reward import (
+        collect_claimable_task_levels_for_cap,
+        collect_task_levels_from_data,
+        needs_task_cua_bet_poll,
+    )
 
     aid = str(account_id).strip()
     row = get_account(aid)
@@ -551,9 +665,15 @@ def _run_claim_flow(
         return {"ok": False, "error": "account not found"}
     u = str(row.get("username") or aid)
     row_proxy = str(row.get("proxy") or "").strip()
+    consolidate_withdraw = _is_consolidate_withdraw_reason(reason)
+    cap_vnd = _daily_bet_cap_vnd()
 
     try:
-        session = ensure_session(aid, force_login=False)
+        session = ensure_session(
+            aid,
+            force_login=force_login,
+            ignore_session_ttl=ignore_session_ttl,
+        )
     except Exception as e:
         return {"ok": False, "username": u, "account_id": aid, "error": str(e)}
 
@@ -577,60 +697,123 @@ def _run_claim_flow(
         u, aid, levels, phase="list", sync_accounts_daily_bet=sync_accounts_daily_bet
     )
 
+    task_levels = collect_task_levels_from_data(data)
     claimable = [x for x in levels if x.get("status") == REWARD_CLAIM_STATUS]
+    claimable.extend(collect_claimable_task_levels_for_cap(data, cap_vnd))
     if only_level_keys:
         claimable = [
             x
             for x in claimable
             if (int(x["mission_id"]), int(x["level_id"])) in only_level_keys
         ]
+    # Deduplicate by (mission_id, level_id)
+    seen_keys: set[tuple[int, int]] = set()
+    deduped: list[dict[str, Any]] = []
+    for x in claimable:
+        key = (int(x["mission_id"]), int(x["level_id"]))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(x)
+    claimable = deduped
+
     withdraw_info: dict[str, Any] | None = None
     claims: list[dict[str, Any]] = []
     claim_blocked_by_withdraw = False
+    high_balance_skip = False
+    min_v = _min_withdraw_vnd()
+
+    # Strategy 3: luôn thử rút kể cả không có mission claimable.
+    if consolidate_withdraw and withdraw_before and not (claimable and do_claim):
+        if hold_reward_above_min_balance():
+            bal = _account_balance_vnd(aid, session)
+            if bal > min_v:
+                high_balance_skip = True
+                print(
+                    f"[AUTO-MISSION] {u}: hold mode — số dư {int(bal):,} > {min_v:,}, "
+                    "bỏ rút (strategy 3)",
+                    flush=True,
+                )
+        if not high_balance_skip:
+            withdraw_info = _maybe_withdraw_before_claim(
+                aid, session, row, min_vnd=min_v
+            )
 
     if claimable and do_claim:
-        if withdraw_before:
-            withdraw_info = _maybe_withdraw_before_claim(
-                aid, session, row, min_vnd=_min_withdraw_vnd()
-            )
-        if _can_claim_after_withdraw(withdraw_info):
-            claims = execute_mission_claims(
-                session,
-                aid,
-                u,
-                claimable,
-                account_proxy=row_proxy,
-                log_prefix="[AUTO-MISSION]",
-            )
-            if sum(1 for c in claims if c.get("ok")) > 0:
-                _sync_balance_to_db(aid, session, label="sau nhận thưởng")
-            rep2 = fetch_mission_list(session)
-            persist_session(aid, session)
-            if rep2.get("ok"):
-                data = rep2.get("data") or {}
-                levels = collect_tracked_levels(data)
-                persist_mission_state(
-                    u,
-                    aid,
-                    levels,
-                    phase="after_claim",
-                    sync_accounts_daily_bet=sync_accounts_daily_bet,
+        do_withdraw = withdraw_before
+        if hold_reward_above_min_balance() and withdraw_before:
+            bal = _account_balance_vnd(aid, session)
+            if bal > min_v:
+                high_balance_skip = True
+                print(
+                    f"[AUTO-MISSION] {u}: hold mode — số dư {int(bal):,} > {min_v:,}, "
+                    "bỏ rút và bỏ nhận thưởng",
+                    flush=True,
                 )
-        else:
-            claim_blocked_by_withdraw = True
-            detail = (
-                withdraw_info.get("withdraw_msg")
-                or withdraw_info.get("reason")
-                or "rút thất bại"
-            )
-            print(
-                f"[AUTO-MISSION] {u}: bỏ nhận thưởng — chưa đủ điều kiện rút ({detail})",
-                flush=True,
-            )
+            else:
+                do_withdraw = False
+        if not high_balance_skip:
+            if do_withdraw:
+                withdraw_info = _maybe_withdraw_before_claim(
+                    aid, session, row, min_vnd=min_v
+                )
+            if _can_claim_after_withdraw(aid, withdraw_info):
+                claims = execute_mission_claims(
+                    session,
+                    aid,
+                    u,
+                    claimable,
+                    account_proxy=row_proxy,
+                    log_prefix="[AUTO-MISSION]",
+                )
+                if sum(1 for c in claims if c.get("ok")) > 0:
+                    _sync_balance_to_db(aid, session, label="sau nhận thưởng")
+                rep2 = fetch_mission_list(session)
+                persist_session(aid, session)
+                if rep2.get("ok"):
+                    data = rep2.get("data") or {}
+                    levels = collect_tracked_levels(data)
+                    task_levels = collect_task_levels_from_data(data)
+                    persist_mission_state(
+                        u,
+                        aid,
+                        levels,
+                        phase="after_claim",
+                        sync_accounts_daily_bet=sync_accounts_daily_bet,
+                    )
+            else:
+                claim_blocked_by_withdraw = True
+                from xoso66_payment_history_db import latest_unresolved_withdraw_submission
+
+                pending = latest_unresolved_withdraw_submission(aid)
+                if pending:
+                    sn = str(pending.get("serial_no") or "").strip()
+                    amt = int(pending.get("amount") or 0)
+                    print(
+                        f"[AUTO-MISSION] {u}: bỏ nhận thưởng — "
+                        f"đang chờ rút Hoàn tất"
+                        + (f" {amt:,}đ" if amt > 0 else "")
+                        + (f" (serial {sn})" if sn else ""),
+                        flush=True,
+                    )
+                else:
+                    detail = (
+                        (withdraw_info or {}).get("withdraw_msg")
+                        or (withdraw_info or {}).get("reason")
+                        or "rút thất bại"
+                    )
+                    print(
+                        f"[AUTO-MISSION] {u}: bỏ nhận thưởng — "
+                        f"chưa đủ điều kiện rút ({detail})",
+                        flush=True,
+                    )
 
     done_bet = _daily_done_bet_from_levels(levels)
     daily_total = int(
         mission_snap.get("accounts_daily_bet_total") or daily_bet_today_vnd(row)
+    )
+    task_need_poll, task_poll_detail = needs_task_cua_bet_poll(
+        task_levels, daily_total, cap_vnd
     )
 
     return {
@@ -647,7 +830,194 @@ def _run_claim_flow(
         "had_claimable": bool(claimable),
         "only_retry_levels": bool(only_level_keys),
         "claim_blocked_by_withdraw": claim_blocked_by_withdraw,
+        "high_balance_skip": high_balance_skip,
+        "consolidate_withdraw": consolidate_withdraw,
+        "cap_vnd": cap_vnd,
+        "task_need_poll": task_need_poll,
+        "task_poll_detail": task_poll_detail,
     }
+
+
+def _manual_poll_max() -> int:
+    raw = _cfg().get("manual_poll_max")
+    if raw is not None:
+        return max(1, int(raw))
+    return min(5, _poll_max_attempts())
+
+
+def _manual_poll_interval_sec() -> float:
+    raw = _cfg().get("manual_poll_interval_sec")
+    if raw is not None:
+        return max(2.0, float(raw))
+    return min(10.0, _poll_interval_sec())
+
+
+def _manual_claim_should_stop(result: dict[str, Any]) -> bool:
+    if not result.get("ok"):
+        return True
+    if int(result.get("claims_ok") or 0) > 0:
+        return True
+    if result.get("high_balance_skip") or result.get("claim_blocked_by_withdraw"):
+        return True
+    if int(result.get("claimable_count") or 0) > 0:
+        return True
+    return False
+
+
+def _enrich_manual_claim_result(
+    result: dict[str, Any],
+    *,
+    poll_attempts: int = 0,
+    needs_poll: bool = False,
+    force_synced: bool = False,
+) -> dict[str, Any]:
+    out = dict(result)
+    snap = out.get("mission_db") or {}
+    out["poll_attempts"] = int(poll_attempts)
+    out["needs_poll"] = bool(needs_poll)
+    out["force_synced"] = bool(force_synced)
+    out["daily_status"] = snap.get("daily_status")
+    out["mini_current_status"] = snap.get("mini_current_status")
+    out["mini_current_day"] = snap.get("mini_current_day")
+    return out
+
+
+def _should_retry_stale_mission_session(result: dict[str, Any]) -> bool:
+    if not result.get("ok"):
+        return False
+    if int(result.get("claimable_count") or 0) > 0:
+        return False
+    if int(result.get("claims_ok") or 0) > 0:
+        return False
+    from xoso66_daily_mission_check import (
+        DAILY_161_DONE_BET_COMPLETE,
+        needs_daily_161_bet_poll,
+    )
+
+    done_bet = int(result.get("done_bet_money") or 0)
+    daily_total = int(result.get("daily_bet_total") or 0)
+    if not needs_daily_161_bet_poll(done_bet, daily_total):
+        return False
+    return daily_total >= DAILY_161_DONE_BET_COMPLETE
+
+
+def _retry_stale_mission_session_if_needed(
+    account_id: str,
+    result: dict[str, Any],
+    *,
+    do_claim: bool = True,
+    withdraw_before: bool = True,
+    only_level_keys: set[tuple[int, int]] | None = None,
+    sync_accounts_daily_bet: bool | None = None,
+    reason: str = "",
+) -> dict[str, Any]:
+    if not _should_retry_stale_mission_session(result):
+        return result
+    aid = str(account_id).strip()
+    u = username_for_log(aid)
+    done_bet = int(result.get("done_bet_money") or 0)
+    daily_total = int(result.get("daily_bet_total") or 0)
+    print(
+        f"[AUTO-MISSION] {u}: session cache lệch — login mới "
+        f"(done_bet={done_bet:,}, cược ngày={daily_total:,})",
+        flush=True,
+    )
+    return _run_claim_flow(
+        aid,
+        do_claim=do_claim,
+        withdraw_before=withdraw_before,
+        only_level_keys=only_level_keys,
+        sync_accounts_daily_bet=sync_accounts_daily_bet,
+        force_login=True,
+        ignore_session_ttl=True,
+        reason=reason,
+    )
+
+
+def _manual_claim_with_poll(
+    account_id: str,
+    *,
+    do_claim: bool = True,
+    withdraw_before: bool = True,
+    force_login: bool = True,
+) -> dict[str, Any]:
+    """
+    CMS nút Ck — poll done_bet 161 (giống worker) rồi force sync nếu cần.
+    """
+    from xoso66_daily_mission_check import needs_daily_161_bet_poll
+    from xoso66_mission_db import force_daily_done_bet_to_account_total
+
+    aid = str(account_id).strip()
+    u = username_for_log(aid)
+    poll_attempts = 0
+    needs_poll = False
+    force_synced = False
+
+    if force_login:
+        print(
+            f"[AUTO-MISSION] {u}: session trước mission/list (Ck)",
+            flush=True,
+        )
+
+    result = _run_claim_flow(
+        aid,
+        do_claim=do_claim,
+        withdraw_before=withdraw_before,
+        force_login=False,
+    )
+    if _manual_claim_should_stop(result):
+        return _enrich_manual_claim_result(result, poll_attempts=poll_attempts)
+
+    done_bet = int(result.get("done_bet_money") or 0)
+    daily_total = int(result.get("daily_bet_total") or 0)
+    if not needs_daily_161_bet_poll(done_bet, daily_total):
+        return _enrich_manual_claim_result(result, poll_attempts=poll_attempts)
+
+    needs_poll = True
+    max_poll = _manual_poll_max()
+    interval = _manual_poll_interval_sec()
+    print(
+        f"[AUTO-MISSION] {u}: Ck poll — done_bet {done_bet:,} < cược ngày {daily_total:,} "
+        f"({max_poll} lần, mỗi {interval:.0f}s)",
+        flush=True,
+    )
+
+    while poll_attempts < max_poll:
+        if stopping():
+            break
+        poll_attempts += 1
+        time.sleep(interval)
+        result = _run_claim_flow(aid, do_claim=do_claim, withdraw_before=withdraw_before)
+        if _manual_claim_should_stop(result):
+            return _enrich_manual_claim_result(
+                result,
+                poll_attempts=poll_attempts,
+                needs_poll=needs_poll,
+                force_synced=force_synced,
+            )
+        done_bet = int(result.get("done_bet_money") or 0)
+        daily_total = int(result.get("daily_bet_total") or 0)
+        if not needs_daily_161_bet_poll(done_bet, daily_total):
+            break
+
+    synced = force_daily_done_bet_to_account_total(aid)
+    force_synced = True
+    print(
+        f"[AUTO-MISSION] {u}: Ck hết poll — sync done_bet 161 = {synced:,} → thử nhận lại",
+        flush=True,
+    )
+    result = _run_claim_flow(
+        aid,
+        do_claim=do_claim,
+        withdraw_before=withdraw_before,
+        sync_accounts_daily_bet=False,
+    )
+    return _enrich_manual_claim_result(
+        result,
+        poll_attempts=poll_attempts,
+        needs_poll=needs_poll,
+        force_synced=force_synced,
+    )
 
 
 def _schedule_reward_retry(
@@ -677,6 +1047,22 @@ def _schedule_reward_retry(
     )
 
 
+def _mark_queue_done(
+    aid: str,
+    *,
+    last_error: str = "",
+    claimed_cap_vnd: int | None = None,
+) -> None:
+    cap = int(claimed_cap_vnd) if claimed_cap_vnd is not None else _daily_bet_cap_vnd()
+    _queue_update(
+        aid,
+        phase="done",
+        pending_claims_json="",
+        last_error=last_error,
+        claimed_cap_vnd=cap,
+    )
+
+
 def _try_finish_after_claims(
     aid: str,
     u: str,
@@ -694,6 +1080,9 @@ def _try_finish_after_claims(
     done_bet = int(result.get("done_bet_money") or 0)
     daily_total = int(result.get("daily_bet_total") or 0)
     only_retry = bool(result.get("only_retry_levels"))
+    cap_vnd = int(result.get("cap_vnd") or _daily_bet_cap_vnd())
+    task_need_poll = bool(result.get("task_need_poll"))
+    task_poll_detail = str(result.get("task_poll_detail") or "")
 
     for c in claims:
         if not c.get("ok"):
@@ -702,11 +1091,10 @@ def _try_finish_after_claims(
             if maybe_mark_account_loi(
                 aid, str(c.get("msg") or ""), source="mission/reward"
             ):
-                _queue_update(
+                _mark_queue_done(
                     aid,
-                    phase="done",
-                    pending_claims_json="",
                     last_error=str(c.get("msg") or "")[:500],
+                    claimed_cap_vnd=cap_vnd,
                 )
                 return True
 
@@ -736,26 +1124,39 @@ def _try_finish_after_claims(
             f"vẫn lỗi rate-limit ({levels})",
             flush=True,
         )
-        _queue_update(
+        _mark_queue_done(
             aid,
-            phase="done",
-            pending_claims_json="",
             last_error=f"bỏ qua rate-limit: {levels}",
+            claimed_cap_vnd=cap_vnd,
         )
         return True
 
     if only_retry:
-        _queue_update(aid, phase="done", pending_claims_json="", last_error="")
+        _mark_queue_done(aid, claimed_cap_vnd=cap_vnd)
         return True
 
-    if had_claimable and claims_ok > 0:
-        _queue_update(aid, phase="done", pending_claims_json="", last_error="")
+    if had_claimable and claims_ok > 0 and not task_need_poll:
+        _mark_queue_done(aid, claimed_cap_vnd=cap_vnd)
         return True
 
     if result.get("claim_blocked_by_withdraw"):
         w = result.get("withdraw") or {}
         detail = w.get("withdraw_msg") or w.get("reason") or "chưa rút OK"
         _reschedule_poll(aid, poll_count, f"chờ rút OK — {detail}")
+        return True
+
+    if result.get("high_balance_skip"):
+        min_v = _min_withdraw_vnd()
+        print(
+            f"[AUTO-MISSION] {u}: xong — hold mode, số dư > {min_v:,} "
+            "(không rút, không nhận thưởng)",
+            flush=True,
+        )
+        _mark_queue_done(
+            aid,
+            last_error=f"hold mode: số dư > {min_v:,}",
+            claimed_cap_vnd=cap_vnd,
+        )
         return True
 
     if had_claimable and claims_ok == 0:
@@ -768,11 +1169,10 @@ def _try_finish_after_claims(
                 "không poll lại",
                 flush=True,
             )
-            _queue_update(
+            _mark_queue_done(
                 aid,
-                phase="done",
-                pending_claims_json="",
                 last_error=msgs or "IP đã nhận thưởng",
+                claimed_cap_vnd=cap_vnd,
             )
             return True
 
@@ -821,16 +1221,75 @@ def _try_finish_after_claims(
         )
         return True
 
-    if not had_claimable:
-        _queue_update(aid, phase="done", pending_claims_json="", last_error="")
-        print(
-            f"[AUTO-MISSION] {u}: không có mức status=1 — coi xong "
-            f"(done_bet={done_bet:,}, cược ngày={daily_total:,})",
-            flush=True,
+    if task_need_poll:
+        if poll_count >= _poll_max_attempts():
+            print(
+                f"[AUTO-MISSION] {u}: hết {poll_count}/{_poll_max_attempts()} lần poll cửa — "
+                f"{task_poll_detail or 'chờ status=1'} → thử nhận lại",
+                flush=True,
+            )
+            retry = _run_claim_flow(
+                aid,
+                do_claim=True,
+                withdraw_before=True,
+                sync_accounts_daily_bet=False,
+            )
+            if retry.get("ok"):
+                return _try_finish_after_claims(
+                    aid,
+                    u,
+                    retry,
+                    poll_count=poll_count,
+                    reward_retry_count=reward_retry_count,
+                )
+            _queue_update(
+                aid,
+                phase="failed",
+                last_error=str(retry.get("error") or "poll cửa xong, vẫn chưa nhận được"),
+            )
+            return True
+
+        _reschedule_poll(
+            aid,
+            poll_count,
+            task_poll_detail or f"chờ cửa status=1 (cược ngày {daily_total:,}, cap {cap_vnd:,})",
         )
         return True
 
-    _queue_update(aid, phase="done", pending_claims_json="", last_error="")
+    if not had_claimable:
+        w = result.get("withdraw") or {}
+        if result.get("consolidate_withdraw"):
+            if (
+                w
+                and not w.get("skipped")
+                and w.get("withdraw_ok") is False
+                and not result.get("high_balance_skip")
+            ):
+                detail = w.get("withdraw_msg") or w.get("reason") or "chưa rút OK"
+                _reschedule_poll(aid, poll_count, f"strategy 3 chờ rút OK — {detail}")
+                return True
+            detail = ""
+            if w.get("withdraw_ok"):
+                detail = f" — đã rút {int(w.get('withdraw_amount') or 0):,}đ"
+            elif w:
+                detail = (
+                    f" — rút: {w.get('withdraw_msg') or w.get('reason') or 'không rút'}"
+                )
+            print(
+                f"[AUTO-MISSION] {u}: strategy 3 — không có mission claimable"
+                f"{detail} (done_bet={done_bet:,}, cược ngày={daily_total:,})",
+                flush=True,
+            )
+        else:
+            print(
+                f"[AUTO-MISSION] {u}: không có mức status=1 — coi xong "
+                f"(done_bet={done_bet:,}, cược ngày={daily_total:,}, cap={cap_vnd:,})",
+                flush=True,
+            )
+        _mark_queue_done(aid, claimed_cap_vnd=cap_vnd)
+        return True
+
+    _mark_queue_done(aid, claimed_cap_vnd=cap_vnd)
     return True
 
 
@@ -842,6 +1301,7 @@ def _process_queue_row(qrow: dict[str, Any]) -> None:
     reward_retry_count = int(qrow.get("reward_retry_count") or 0)
     phase = str(qrow.get("phase") or "")
     pending_keys = _pending_claim_keys(str(qrow.get("pending_claims_json") or ""))
+    reason = str(qrow.get("reason") or "")
     u = username_for_log(aid)
 
     is_reward_retry = phase == "reward_retry" and bool(pending_keys)
@@ -858,7 +1318,16 @@ def _process_queue_row(qrow: dict[str, Any]) -> None:
             do_claim=True,
             withdraw_before=not is_reward_retry,
             only_level_keys=pending_keys if is_reward_retry else None,
+            reason=reason,
         )
+        if not is_reward_retry:
+            result = _retry_stale_mission_session_if_needed(
+                aid,
+                result,
+                do_claim=True,
+                withdraw_before=True,
+                reason=reason,
+            )
     except Exception as e:
         _queue_update(aid, phase="polling", last_error=str(e))
         print(f"[AUTO-MISSION] {u}: lỗi luồng — {e}", flush=True)
@@ -931,12 +1400,21 @@ def worker_auto_mission_reward_loop(*, quiet: bool = False) -> None:
     init_mission_claim_queue()
     tick = float(_cfg().get("worker_tick_sec", 10))
     if not quiet:
+        hold = hold_reward_above_min_balance()
+        mode = (
+            f"hold mode (số dư > {_min_withdraw_vnd():,} → bỏ rút/nhận; ≤ → nhận thưởng)"
+            if hold
+            else (
+                f"rút ≥ {_min_withdraw_vnd():,}đ, bội {_withdraw_step_vnd():,}đ, "
+                f"tối đa {_max_withdraw_vnd():,}đ/lần, còn lại ≥ {_min_balance_after_withdraw_vnd():,}đ "
+                f"→ chờ Hoàn tất site rồi mới nhận thưởng"
+            )
+        )
         print(
             f"[AUTO-MISSION] Worker: delay đầu {_initial_delay_sec():.0f}s, "
             f"poll {_poll_interval_sec():.0f}s × {_poll_max_attempts()}, "
             f"rate-limit retry {_reward_retry_delay_sec():.0f}s × {_reward_retry_max()}, "
-            f"rút ≥ {_min_withdraw_vnd():,}đ, bội {_withdraw_step_vnd():,}đ "
-            f"(vd. 300k/400k) → chờ Hoàn tất site rồi mới nhận thưởng",
+            f"{mode}",
             flush=True,
         )
     while not stopping():
@@ -953,6 +1431,57 @@ def worker_auto_mission_reward_loop(*, quiet: bool = False) -> None:
                 break
             time.sleep(1)
     print("[AUTO-MISSION] Worker đã dừng.", flush=True)
+
+
+_MANUAL_CLAIM_LOCK = threading.Lock()
+
+
+def run_manual_auto_mission_claim(
+    account_ids: list[str],
+    *,
+    do_claim: bool = True,
+    withdraw_before: bool = True,
+) -> dict[str, Any]:
+    """
+    CMS nút Ck — cùng luồng worker auto-mission (rút + nhận + log [AUTO-MISSION]).
+    """
+    if not _MANUAL_CLAIM_LOCK.acquire(blocking=False):
+        return {
+            "ok": False,
+            "busy": True,
+            "error": "Đang có lượt auto-mission (Ck) khác — chờ xong rồi thử",
+            "results": [],
+        }
+    try:
+        aids = [str(x).strip() for x in (account_ids or []) if str(x).strip()]
+        if not aids:
+            return {"ok": False, "error": "account_ids bắt buộc", "results": []}
+        results: list[dict[str, Any]] = []
+        for aid in aids:
+            try:
+                results.append(
+                    _manual_claim_with_poll(
+                        aid,
+                        do_claim=do_claim,
+                        withdraw_before=withdraw_before,
+                        force_login=True,
+                    )
+                )
+            except Exception as e:
+                results.append({"ok": False, "account_id": aid, "error": str(e)})
+        ok_n = sum(1 for r in results if r.get("ok"))
+        fail_n = len(results) - ok_n
+        claimed_n = sum(int(r.get("claims_ok") or 0) for r in results)
+        return {
+            "ok": fail_n == 0,
+            "total": len(results),
+            "ok_count": ok_n,
+            "fail_count": fail_n,
+            "claims_ok_total": claimed_n,
+            "results": results,
+        }
+    finally:
+        _MANUAL_CLAIM_LOCK.release()
 
 
 def start_auto_mission_reward_thread(*, quiet: bool = False) -> threading.Thread | None:

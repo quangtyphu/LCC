@@ -26,10 +26,45 @@ CREATE TABLE IF NOT EXISTS deposit_orders (
     third_party_tx_id TEXT NOT NULL DEFAULT '',
     error_message TEXT NOT NULL DEFAULT '',
     order_placed_at_ms INTEGER NOT NULL DEFAULT 0,
+    da_nap_at_ms INTEGER NOT NULL DEFAULT 0,
+    confirm_duration_sec INTEGER,
+    device_nap TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 )
 """
+
+
+def _deposit_orders_columns(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute("PRAGMA table_info(deposit_orders)").fetchall()
+    return {str(r[1]) for r in rows}
+
+
+def migrate_deposit_orders_duration(conn: sqlite3.Connection | None = None) -> None:
+    """Thêm da_nap_at_ms + confirm_duration_sec (idempotent)."""
+    if conn is not None:
+        _migrate_deposit_orders_duration_conn(conn)
+        return
+    with db_conn() as c:
+        _migrate_deposit_orders_duration_conn(c)
+
+
+def _migrate_deposit_orders_duration_conn(conn: sqlite3.Connection) -> None:
+    conn.execute(_DEPOSIT_ORDERS_DDL)
+    cols = _deposit_orders_columns(conn)
+    if "da_nap_at_ms" not in cols:
+        conn.execute(
+            "ALTER TABLE deposit_orders ADD COLUMN da_nap_at_ms "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+    if "confirm_duration_sec" not in cols:
+        conn.execute(
+            "ALTER TABLE deposit_orders ADD COLUMN confirm_duration_sec INTEGER"
+        )
+    if "device_nap" not in cols:
+        conn.execute(
+            "ALTER TABLE deposit_orders ADD COLUMN device_nap TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def _now_iso() -> str:
@@ -39,6 +74,7 @@ def _now_iso() -> str:
 def init_deposit_orders_table(conn: sqlite3.Connection | None = None) -> None:
     if conn is not None:
         conn.execute(_DEPOSIT_ORDERS_DDL)
+        migrate_deposit_orders_duration(conn)
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_deposit_orders_serial "
             "ON deposit_orders(serial_no) WHERE serial_no != ''"
@@ -103,6 +139,9 @@ def update_deposit_order(order_id: int, **fields: Any) -> None:
         "transfer_json",
         "third_party_tx_id",
         "error_message",
+        "da_nap_at_ms",
+        "confirm_duration_sec",
+        "device_nap",
     }
     parts: list[str] = []
     vals: list[Any] = []
@@ -123,6 +162,59 @@ def update_deposit_order(order_id: int, **fields: Any) -> None:
             f"UPDATE deposit_orders SET {', '.join(parts)} WHERE id = ?",
             vals,
         )
+
+
+def mark_deposit_da_nap(order_id: int, *, at_ms: int | None = None, device_nap: str = "") -> None:
+    """Ghi mốc bắt đầu đo thời gian nạp — callback bên thứ 3 «Đã Nạp»."""
+    from xoso66_confirm_duration import now_ms
+
+    row = get_deposit_order(int(order_id)) or {}
+    extra: dict[str, Any] = {}
+    dev = str(device_nap or "").strip()
+    if dev:
+        extra["device_nap"] = dev
+    if int(row.get("da_nap_at_ms") or 0) > 0:
+        update_deposit_order(int(order_id), status="Đã Nạp", **extra)
+        return
+    update_deposit_order(
+        int(order_id),
+        status="Đã Nạp",
+        da_nap_at_ms=int(at_ms if at_ms is not None else now_ms()),
+        **extra,
+    )
+
+
+def finalize_deposit_success(
+    order_id: int,
+    *,
+    serial_no: str = "",
+    site_status: int = 1,
+    site_status_formatted: str = "Hoàn tất",
+    game_item: dict[str, Any] | None = None,
+) -> int:
+    """Ghi Thành Công + confirm_duration_sec (Đã Nạp → game Hoàn tất). Trả duration_sec."""
+    from xoso66_confirm_duration import (
+        compute_confirm_duration_sec,
+        game_item_end_ms,
+        now_ms,
+    )
+
+    row = get_deposit_order(int(order_id)) or {}
+    start_ms = int(row.get("da_nap_at_ms") or 0)
+    end_ms = game_item_end_ms(game_item)
+    if end_ms <= 0:
+        end_ms = now_ms()
+    duration = compute_confirm_duration_sec(start_ms, end_ms)
+    fields: dict[str, Any] = {
+        "status": "Thành Công",
+        "serial_no": str(serial_no or ""),
+        "site_status": int(site_status),
+        "site_status_formatted": str(site_status_formatted or "Hoàn tất"),
+    }
+    if duration > 0:
+        fields["confirm_duration_sec"] = duration
+    update_deposit_order(int(order_id), **fields)
+    return duration
 
 
 def get_deposit_order(order_id: int) -> dict[str, Any] | None:

@@ -45,7 +45,7 @@ def min_jackpot_vnd(cfg: dict) -> float:
 
 
 def side_total_by_jackpot_enabled(cfg: dict) -> bool:
-    """0 = tắt (cố định side_total_low_vnd); 1 = bật chia mức theo bậc hũ."""
+    """0 = tắt (cố định side_total_low_vnd); 1 = bật cược tăng theo bậc hũ."""
     raw = _auto_bet_cfg(cfg).get("side_total_by_jackpot_enabled", 0)
     try:
         return int(raw) != 0
@@ -53,27 +53,37 @@ def side_total_by_jackpot_enabled(cfg: dict) -> bool:
         return bool(raw)
 
 
-def resolve_side_total_vnd(cfg: dict, jackpot_vnd: float | None = None) -> int:
+def resolve_side_total_vnd(
+    cfg: dict,
+    jackpot_vnd: float | None = None,
+    *,
+    game_id: int | None = None,
+) -> int:
     """
     Tổng cược một bên Tài/Xỉu.
 
     side_total_by_jackpot_enabled=0 → side_total_low_vnd (không xét bậc hũ).
-    Bật + jackpot_side_mid_vnd:
-      min..mid → side_total_low_vnd; > mid → side_total_high_vnd.
-    Bật nhưng mid=0 / không có jackpot → side_total_vnd tĩnh.
+    Bật:
+      Bắt đầu tại min_jackpot_vnd với side_total_low_vnd.
+      Mỗi lần hũ tăng jackpot_side_step_vnd → cược tăng side_total_step_vnd.
+      VD min=1.5 tỷ, low=50k, jp_step=500tr, bet_step=10k:
+        1.5 tỷ→50k, 2 tỷ→60k, 2.5 tỷ→70k, 3 tỷ→80k, ...
+      game_id=2 (Tài xỉu): so bậc bằng hũ × 80% (jackpot_compare_vnd), giống min_jackpot_vnd.
+    Bật nhưng thiếu jackpot / step=0 → side_total_low_vnd.
     """
     acfg = _auto_bet_cfg(cfg)
     low = int(acfg.get("side_total_low_vnd") or acfg.get("side_total_vnd") or 50_000)
     if not side_total_by_jackpot_enabled(cfg):
         return low
-    mid = float(acfg.get("jackpot_side_mid_vnd") or 0)
-    if mid > 0 and jackpot_vnd is not None:
-        jp = float(jackpot_vnd)
-        high = int(acfg.get("side_total_high_vnd") or 100_000)
-        if jp <= mid:
-            return low
-        return high
-    return int(acfg.get("side_total_vnd") or 100_000)
+    jp_step = float(acfg.get("jackpot_side_step_vnd") or 0)
+    bet_step = int(acfg.get("side_total_step_vnd") or 0)
+    if jp_step <= 0 or bet_step <= 0 or jackpot_vnd is None:
+        return low
+    jp = float(jackpot_vnd)
+    compare_jp = jackpot_compare_vnd(int(game_id), jp) if game_id is not None else jp
+    min_jp = float(acfg.get("min_jackpot_vnd") or 0)
+    steps = int(max(0.0, (compare_jp - min_jp) // jp_step))
+    return low + steps * bet_step
 
 
 def jackpot_money_for_game(cfg: dict, game_id: int) -> float:
@@ -101,10 +111,30 @@ def _fmt_ty_vnd(n: float) -> str:
     return f"{n:,.0f}"
 
 
+def force_game_id(cfg: dict) -> int | None:
+    """auto_bet.force_game_id > 0 → ép chơi game đó; 0/rỗng → chọn theo hũ như cũ."""
+    raw = _auto_bet_cfg(cfg).get("force_game_id")
+    if raw is None or raw == "":
+        return None
+    try:
+        gid = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return gid if gid > 0 else None
+
+
+def forced_picked_game(cfg: dict) -> PickedGame | None:
+    gid = force_game_id(cfg)
+    if gid is None:
+        return None
+    return picked_game_from_id(cfg, gid)
+
+
 def focus_picked_game(cfg: dict) -> PickedGame | None:
     """
     Game để log / theo dõi phiên.
-    Đủ ngưỡng → hũ cao nhất >= min; dưới ngưỡng → hũ cao nhất mọi game (sau nổ không giữ game cũ).
+    force_game_id → luôn game ép; không ép: đủ ngưỡng → hũ cao nhất >= min;
+    dưới ngưỡng → hũ cao nhất mọi game (sau nổ không giữ game cũ).
     """
     best = pick_best_jackpot_game(cfg)
     if best is not None:
@@ -266,6 +296,9 @@ def focus_game_id(cfg: dict | None = None) -> int | None:
 
 
 def _watch_game_ids(cfg: dict) -> list[int]:
+    forced = force_game_id(cfg)
+    if forced is not None:
+        return [forced]
     acfg = _auto_bet_cfg(cfg)
     watch = acfg.get("game_ids")
     if isinstance(watch, list) and watch:
@@ -273,17 +306,31 @@ def _watch_game_ids(cfg: dict) -> list[int]:
     return list(DEFAULT_JACKPOT_GAME_IDS)
 
 
+def watch_game_ids_frozen(cfg: dict) -> frozenset[int]:
+    """Danh sách game_id WS subscribe / theo dõi hũ."""
+    return frozenset(_watch_game_ids(cfg))
+
+
 def highest_jackpot_game(cfg: dict) -> PickedGame | None:
     """Hũ cao nhất trong file (không lọc min) — dùng log khi chưa đủ ngưỡng."""
+    forced = forced_picked_game(cfg)
+    if forced is not None:
+        return forced
     return _pick_from_store(cfg, min_jp=0.0)
 
 
 def pick_best_jackpot_game(cfg: dict) -> PickedGame | None:
     """
-    Trong các game_id theo dõi, chọn hũ cao nhất nếu >= min_jackpot_vnd.
+    force_game_id → chỉ game ép nếu >= min_jackpot_vnd.
+    Không ép: trong game_ids, chọn hũ cao nhất nếu >= min_jackpot_vnd.
     """
     acfg = _auto_bet_cfg(cfg)
     min_jp = float(acfg.get("min_jackpot_vnd") or 0)
+    forced = forced_picked_game(cfg)
+    if forced is not None:
+        if jackpot_compare_vnd(forced.game_id, forced.money_vnd) >= min_jp:
+            return forced
+        return None
     return _pick_from_store(cfg, min_jp=min_jp)
 
 
@@ -367,6 +414,15 @@ def format_jackpot_watch_status(cfg: dict) -> str:
         tail = f"đang chơi: {pname} (id={playing_id})"
     elif best:
         tail = f"sẽ chơi: {best.game_name} (hũ ≥ {min_jp:,.0f})"
+    elif force_game_id(cfg) is not None and acfg.get("enabled"):
+        fg = forced_picked_game(cfg)
+        if fg:
+            tail = (
+                f"chờ hũ ép {fg.game_name} {_fmt_ty_vnd(fg.money_vnd)} "
+                f"< {_fmt_ty_vnd(min_jp)}"
+            )
+        else:
+            tail = f"force_game_id không hợp lệ — chờ hũ ≥ {min_jp:,.0f}"
     elif top and acfg.get("enabled"):
         watch = last_watch_game_id(cfg)
         wname = top.game_name

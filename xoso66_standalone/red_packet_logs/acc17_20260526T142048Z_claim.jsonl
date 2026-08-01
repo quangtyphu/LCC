@@ -1,5 +1,0 @@
-{"start": true, "user": "desafio", "proxy": "118.70.171.104:20023 (socks5, user PogCLP)", "balance": "116185"}
-{"t": 1779805269.4188924, "step": "click_rain", "x": 700, "y": 450}
-{"t": 1779805274.3676004, "step": "network_info", "path": "/server/user/getredpacketinfo", "status": 200, "parsed": null}
-{"t": 1779805294.0402117, "step": "grab_ui", "ok": false, "code": null, "msg": null, "via": "ui", "raw": {}}
-{"t": 1779805297.886942, "step": "getredpacketinfo", "ok": true, "code": 1, "msg": "Hoàn tất", "isNew": 0, "list": [], "red_notify": [], "packet_id": null, "raw": {"code": 1, "msg": "Hoàn tất", "time": 1779805298, "v": null, "data": {"list": [], "isNew": 0, "red_notify": []}}}

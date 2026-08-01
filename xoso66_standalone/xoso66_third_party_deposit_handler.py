@@ -12,13 +12,18 @@ Chạy: python xoso66_third_party_deposit_handler.py
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
+import json
 import logging
 import os
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 from flask import Flask, jsonify, request
@@ -43,7 +48,10 @@ def _load_urls() -> tuple[str, str, int]:
     ad = cfg.get("auto_deposit") if isinstance(cfg.get("auto_deposit"), dict) else {}
     third = str(
         ad.get("third_party_url")
-        or os.environ.get("XOSO66_THIRD_PARTY_DEPOSIT_URL", "http://localhost:8888/api/deposit")
+        or os.environ.get(
+            "XOSO66_THIRD_PARTY_DEPOSIT_URL",
+            "http://127.0.0.1:8888/api/orders/withdraw",
+        )
     ).strip()
     port = int(ad.get("handler_port") or os.environ.get("XOSO66_DEPOSIT_HANDLER_PORT") or 5000)
     callback = str(
@@ -51,6 +59,57 @@ def _load_urls() -> tuple[str, str, int]:
         or os.environ.get("XOSO66_DEPOSIT_CALLBACK_URL", f"http://127.0.0.1:{port}/callback")
     ).strip()
     return third, callback, port
+
+
+def _partner_auth_cfg() -> tuple[str, str, str]:
+    """partnerId / apiKey / apiSecret — env ghi đè hardcode."""
+    from xoso66_config_util import load_config
+
+    cfg = load_config()
+    ad = cfg.get("auto_deposit") if isinstance(cfg.get("auto_deposit"), dict) else {}
+    partner_id = str(
+        os.environ.get("XOSO66_PARTNER_ID")
+        or ad.get("partnerId")
+        or ad.get("partner_id")
+        or "xoso66"
+    ).strip()
+    api_key = str(
+        os.environ.get("XOSO66_PARTNER_API_KEY")
+        or ad.get("partner_api_key")
+        or ad.get("apiKey")
+        or ""
+    ).strip()
+    api_secret = str(
+        os.environ.get("XOSO66_PARTNER_API_SECRET")
+        or ad.get("partner_api_secret")
+        or ad.get("apiSecret")
+        or ""
+    ).strip()
+    return partner_id, api_key, api_secret
+
+
+def _hmac_partner_headers(url: str, body: bytes, *, partner_id: str, api_key: str, api_secret: str) -> dict[str, str]:
+    """Header HMAC cổng Banking (X-Partner-Id / X-Api-Key / X-Signature)."""
+    path = urlparse(url).path or "/api/orders/withdraw"
+    if "?" in path:
+        path = path.split("?", 1)[0]
+    ts = str(int(time.time()))
+    nonce = uuid.uuid4().hex
+    body_hash = hashlib.sha256(body).hexdigest()
+    canonical = f"POST\n{path}\n{ts}\n{nonce}\n{body_hash}"
+    sig = hmac.new(
+        api_secret.encode("utf-8"),
+        canonical.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return {
+        "Content-Type": "application/json",
+        "X-Partner-Id": partner_id,
+        "X-Api-Key": api_key,
+        "X-Timestamp": ts,
+        "X-Nonce": nonce,
+        "X-Signature": sig,
+    }
 
 
 THIRD_PARTY_API_URL, CALLBACK_URL, HANDLER_PORT = _load_urls()
@@ -129,8 +188,18 @@ def create_xoso66_deposit_order(account_id: str, amount: int) -> dict[str, Any]:
     username = username_for_log(aid, acc)
     since_ms = int(time.time() * 1000)
 
+    # WS-pool đã getBalance trước khi gọi /create-deposit — đừng ensure_session
+    # (probe getBalance) lần nữa. Chỉ login lại khi thiếu form_token.
     try:
-        session = ensure_session(aid, force_login=False)
+        from xoso66_accounts_db import account_to_session_dict, get_account
+        from xoso66_proxy import ensure_proxy
+
+        row = get_account(aid)
+        session = account_to_session_dict(row) if row else {}
+        if session.get("form_token"):
+            ensure_proxy(session)
+        else:
+            session = ensure_session(aid, force_login=False)
     except Exception as e:
         return {"ok": False, "error": f"session: {e}"}
 
@@ -170,19 +239,27 @@ def create_xoso66_deposit_order(account_id: str, amount: int) -> dict[str, Any]:
                 flush=True,
             )
     elif pay_url and not transfer_info_has_qr(ti):
-        try:
-            extra = fetch_transfer_info_from_pay_url(
-                pay_url, amount=int(amount), session=session
-            )
-            if isinstance(extra, dict):
-                for k, v in extra.items():
-                    if v and not ti.get(k):
-                        ti[k] = v
-                for k in ("qr_data_uri", "qr_url", "qr_base64", "qr_emv_payload", "source_url"):
-                    if extra.get(k):
-                        ti[k] = extra[k]
-        except Exception as e:
-            print(f"[CREATE-DEPOSIT] bổ sung QR từ pay_url: {e}", flush=True)
+        # QRPay: getWUInfo không trả ảnh QR; pay_url HTML/API trả 403 — dùng VietQR fallback.
+        if not (trade_no and _should_use_qrpay_api(trade_no, pay_url, ch_id)):
+            try:
+                extra = fetch_transfer_info_from_pay_url(
+                    pay_url, amount=int(amount), session=session
+                )
+                if isinstance(extra, dict):
+                    for k, v in extra.items():
+                        if v and not ti.get(k):
+                            ti[k] = v
+                    for k in (
+                        "qr_data_uri",
+                        "qr_url",
+                        "qr_base64",
+                        "qr_emv_payload",
+                        "source_url",
+                    ):
+                        if extra.get(k):
+                            ti[k] = extra[k]
+            except Exception as e:
+                print(f"[CREATE-DEPOSIT] bổ sung QR từ pay_url: {e}", flush=True)
 
     from xoso66_deposit import transfer_info_bank_fields
 
@@ -242,6 +319,23 @@ def create_xoso66_deposit_order(account_id: str, amount: int) -> dict[str, Any]:
     }
 
 
+def _extract_device_nap(data: dict[str, Any]) -> str:
+    """Device thực hiện chuyển khoản từ callback Banking."""
+    if not isinstance(data, dict):
+        return ""
+    for key in (
+        "deviceNap",
+        "device_nap",
+        "deviceId",
+        "device_id",
+        "device",
+    ):
+        raw = data.get(key)
+        if raw and str(raw).strip():
+            return str(raw).strip()
+    return ""
+
+
 def _normalize_callback_status(raw: Any) -> str:
     """Chuẩn hóa status callback bên thứ 3 → Đã Nạp / Thất Bại / Huỷ."""
     s = str(raw or "").strip()
@@ -297,19 +391,11 @@ def _third_party_status_from_body(data: dict[str, Any]) -> str:
 def _release_deposit_tracking(account_id: str, order_id: int | None = None) -> None:
     """Huỷ / thất bại bên thứ 3 — xóa cache nạp, dừng poll để acc lấy lệnh mới."""
     aid = str(account_id).strip()
-    try:
-        from xoso66_auto_deposit import release_deposit_reserve, remove_from_deposit_cache
+    if not aid:
+        return
+    from xoso66_auto_deposit import release_deposit_order_tracking
 
-        remove_from_deposit_cache(aid)
-        release_deposit_reserve(aid, clear_cache=True)
-    except Exception:
-        pass
-    try:
-        from xoso66_ws_pool import release_ws_blocks_after_deposit
-
-        release_ws_blocks_after_deposit([aid])
-    except Exception:
-        pass
+    release_deposit_order_tracking(aid)
     if order_id is not None:
         try:
             from xoso66_deposit_tracking import end_deposit_poll
@@ -364,8 +450,33 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict[st
         "callbackUrl": CALLBACK_URL,
         "callback_url": CALLBACK_URL,
     }
+    partner_id, api_key, api_secret = _partner_auth_cfg()
+    payload["partnerId"] = partner_id
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    if api_key and api_secret:
+        headers = _hmac_partner_headers(
+            THIRD_PARTY_API_URL,
+            raw,
+            partner_id=partner_id,
+            api_key=api_key,
+            api_secret=api_secret,
+        )
+    else:
+        headers = {"Content-Type": "application/json"}
+        print(
+            f"[XOSO66→BANKING] thiếu partner_api_key/secret — gửi không HMAC "
+            f"(partner={partner_id})",
+            flush=True,
+        )
+    print(
+        f"[XOSO66→BANKING] order #{order_id} | partner={partner_id} | "
+        f"url={THIRD_PARTY_API_URL} | callback={CALLBACK_URL}",
+        flush=True,
+    )
     try:
-        resp = requests.post(THIRD_PARTY_API_URL, json=payload, timeout=30)
+        resp = requests.post(
+            THIRD_PARTY_API_URL, data=raw, headers=headers, timeout=30
+        )
         data = resp.json() if resp.content else {}
         if not isinstance(data, dict):
             data = {}
@@ -395,6 +506,145 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict[st
         return {"ok": False, "error": err, "status": tp_status or ""}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _parse_amount(raw: Any) -> int:
+    try:
+        return int(float(str(raw or "0").replace(",", "").strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _order_already_sent_to_third_party(row: dict[str, Any]) -> bool:
+    st = str(row.get("status") or "").strip()
+    if st in ("Chờ bên thứ 3", "Đã Nạp", "Thành Công"):
+        return True
+    return bool(str(row.get("third_party_tx_id") or "").strip())
+
+
+def _start_poll_after_send(order_id: int) -> None:
+    from xoso66_config_util import load_config
+
+    ad_cfg = load_config().get("auto_deposit")
+    if not (isinstance(ad_cfg, dict) and ad_cfg.get("poll_on_third_party_ok")):
+        return
+    with _tracking_lock:
+        if order_id in _tracking:
+            return
+        _tracking.add(order_id)
+    threading.Thread(
+        target=_run_poll_after_third_party,
+        args=(order_id,),
+        daemon=True,
+    ).start()
+
+
+def send_existing_order_to_third_party(username: str, payload: dict) -> dict[str, Any]:
+    """
+    Gửi lệnh nạp đã tạo (QR/NDCK có sẵn) cho bên thứ 3 — không tạo lệnh mới.
+    Dùng từ CMS khi user bấm «Gửi» trên popup thông tin nạp.
+    """
+    from xoso66_deposit_orders_db import get_deposit_order, update_deposit_order
+
+    order_id = payload.get("order_id") or payload.get("orderId")
+    amount = _parse_amount(payload.get("amount"))
+    if not username or order_id is None:
+        return {"ok": False, "error": "Thiếu username hoặc orderId"}
+    if amount <= 0:
+        return {"ok": False, "error": "Thiếu số tiền hợp lệ"}
+
+    oid = int(order_id)
+    row = get_deposit_order(oid)
+    if not row:
+        return {"ok": False, "error": f"Không tìm thấy lệnh #{oid} trong DB"}
+
+    if _order_already_sent_to_third_party(row):
+        return {
+            "ok": False,
+            "error": f"Lệnh #{oid} đã được gửi bên thứ 3 trước đó",
+        }
+
+    ti = row.get("transfer_info") if isinstance(row.get("transfer_info"), dict) else {}
+    qr_path = str(
+        payload.get("qr_image_path")
+        or payload.get("qrImagePath")
+        or row.get("qr_image_path")
+        or ""
+    ).strip()
+    qr_link = str(
+        payload.get("qr_link") or payload.get("qrLink") or ti.get("qr_url") or ""
+    ).strip()
+    qr_base64 = str(
+        payload.get("qr_base64")
+        or payload.get("qrBase64")
+        or payload.get("qr")
+        or ""
+    ).strip()
+    if not qr_base64 and qr_path:
+        qr_base64 = _qr_to_base64(qr_path, transfer_info=ti)
+
+    order_data = {
+        "order_id": oid,
+        "amount": amount or int(row.get("amount") or 0),
+        "qr_base64": qr_base64,
+        "transfer_info": ti,
+        "transfer_content": (
+            payload.get("transfer_content")
+            or payload.get("transferContent")
+            or ti.get("transfer_content")
+            or ""
+        ),
+        "account_number": (
+            payload.get("account_number")
+            or payload.get("accountNumber")
+            or payload.get("receiver")
+            or ti.get("account_no")
+            or ""
+        ),
+        "account_holder": (
+            payload.get("account_holder")
+            or payload.get("accountHolder")
+            or payload.get("name")
+            or ti.get("account_name")
+            or ""
+        ),
+        "bank": payload.get("bank") or payload.get("type") or ti.get("bank_name") or "",
+        "qr_link": qr_link,
+        "qr_image_path": qr_path,
+        "pay_url": str(payload.get("pay_url") or "").strip(),
+    }
+
+    user = str(username or row.get("username") or "").strip()
+    amt = int(order_data["amount"] or 0)
+    if amt <= 0:
+        return {"ok": False, "error": "Thiếu số tiền hợp lệ"}
+
+    print(
+        f"📤 [XOSO66] CMS gửi lệnh #{oid} ({user}, {amt:,}đ) → bên thứ 3",
+        flush=True,
+    )
+    tp = send_to_third_party(user, amt, order_data)
+    if not tp.get("ok"):
+        err_tp = str(tp.get("error") or "third party")
+        cancelled = bool(tp.get("cancelled_by_third_party")) or tp.get("status") == "Huỷ"
+        st_tp = "Huỷ" if cancelled else "Thất Bại"
+        update_deposit_order(oid, status=st_tp, error_message=err_tp)
+        aid = str(row.get("account_id") or "")
+        _release_deposit_tracking(aid, oid)
+        return tp
+
+    update_deposit_order(
+        oid,
+        status="Chờ bên thứ 3",
+        third_party_tx_id=str(tp.get("transaction_id") or ""),
+    )
+    _start_poll_after_send(oid)
+    return {
+        "ok": True,
+        "order_id": oid,
+        "transaction_id": tp.get("transaction_id"),
+        "message": "Đã gửi yêu cầu nạp tiền cho bên thứ 3",
+    }
 
 
 def _run_poll_after_third_party(order_id: int) -> None:
@@ -483,15 +733,24 @@ def _run_poll_after_third_party(order_id: int) -> None:
                 item = rep.get("item") if isinstance(rep.get("item"), dict) else {}
                 serial = str(rep.get("serial_no") or item.get("serial_no") or "")
                 if not deposit_order_confirmed(order_id):
-                    update_deposit_order(
+                    from xoso66_deposit_orders_db import finalize_deposit_success
+
+                    dur = finalize_deposit_success(
                         order_id,
-                        status="Thành Công",
                         serial_no=serial,
                         site_status=1,
                         site_status_formatted=str(
                             item.get("status_formatted") or "Hoàn tất"
                         ),
+                        game_item=item,
                     )
+                    if dur > 0:
+                        from xoso66_confirm_duration import format_duration_label
+
+                        print(
+                            f"[DEPOSIT-POLL]   thời gian nạp: {format_duration_label(dur)}",
+                            flush=True,
+                        )
                 print(
                     f"[DEPOSIT-POLL] ✅ #{order_id} [{user}] Hoàn tất "
                     f"(mới lưu DB serial={serial})",
@@ -529,10 +788,19 @@ def _run_poll_after_third_party(order_id: int) -> None:
                     flush=True,
                 )
         else:
+            from xoso66_deposit_tracking import deposit_order_failed
+
+            failed_st = deposit_order_failed(order_id) if order_id else None
             if deposit_order_confirmed(order_id):
                 print(
                     f"[DEPOSIT-POLL] #{order_id} [{user}] đã Thành Công — "
                     f"bỏ ghi Thất Bại (poll song song)",
+                    flush=True,
+                )
+            elif failed_st:
+                print(
+                    f"[DEPOSIT-POLL] #{order_id} [{user}] {failed_st} — "
+                    f"bỏ ghi Thất Bại",
                     flush=True,
                 )
             else:
@@ -541,13 +809,19 @@ def _run_poll_after_third_party(order_id: int) -> None:
                     status="Thất Bại",
                     error_message=str(rep.get("error") or "chưa thấy Hoàn tất mới"),
                 )
-                print(f"[DEPOSIT-POLL] ❌ #{order_id} [{user}] {rep.get('error')}", flush=True)
+                print(
+                    f"[DEPOSIT-POLL] ❌ #{order_id} [{user}] {rep.get('error')}",
+                    flush=True,
+                )
             try:
-                from xoso66_auto_deposit import remove_from_deposit_cache
+                from xoso66_auto_deposit import release_deposit_order_tracking
 
-                remove_from_deposit_cache(aid)
-            except Exception:
-                pass
+                release_deposit_order_tracking(aid)
+            except Exception as e:
+                print(
+                    f"[DEPOSIT-POLL] #{order_id} [{user}] không xóa cache nạp: {e}",
+                    flush=True,
+                )
     finally:
         if poll_acquired:
             end_deposit_poll(order_id)
@@ -603,22 +877,25 @@ def receive_callback() -> Any:
         )
         return jsonify({"success": False, "skipped": "not_in_xoso66_db"}), 404
 
+    device_nap = _extract_device_nap(data)
+    device_fields = {"device_nap": device_nap} if device_nap else {}
+    err_msg = str(data.get("error") or data.get("message") or "").strip()
+
     if status == "Đã Nạp":
         if str(row.get("status") or "") == "Thành Công":
             return jsonify({"success": True, "skipped": "already_thanh_cong"}), 200
 
         prev_st = str(row.get("status") or "").strip()
         if prev_st != "Đã Nạp":
-            update_deposit_order(oid, status="Đã Nạp")
+            from xoso66_deposit_orders_db import mark_deposit_da_nap
+
+            mark_deposit_da_nap(oid, device_nap=device_nap)
+        elif device_fields:
+            update_deposit_order(oid, **device_fields)
 
         from xoso66_deposit_tracking import deposit_poll_in_progress
 
         if deposit_poll_in_progress(oid):
-            print(
-                f"[CALLBACK] #{oid} [{username}] Đã Nạp — "
-                f"DB {prev_st!r}→'Đã Nạp' (WS-POOL/handler đang poll, không mở poll mới)",
-                flush=True,
-            )
             return jsonify({"success": True, "skipped": "poll_in_progress"}), 200
         with _tracking_lock:
             if oid in _tracking:
@@ -635,7 +912,10 @@ def receive_callback() -> Any:
             return jsonify(
                 {"success": True, "skipped": "already_thanh_cong", "status": "Thành Công"}
             ), 200
-        update_deposit_order(oid, status=str(status))
+        fail_fields = dict(device_fields)
+        if err_msg:
+            fail_fields["error_message"] = err_msg
+        update_deposit_order(oid, status=str(status), **fail_fields)
         aid_cb = str(row.get("account_id") or "")
         _release_deposit_tracking(aid_cb, oid)
         if status == "Huỷ":
@@ -650,7 +930,10 @@ def receive_callback() -> Any:
                 flush=True,
             )
     else:
-        update_deposit_order(oid, status=str(status))
+        update_deposit_order(oid, status=str(status), **device_fields)
+
+    if device_nap:
+        print(f"[CALLBACK] #{oid} device_nap={device_nap}", flush=True)
 
     return jsonify({"success": True, "order_id": oid, "status": status}), 200
 
@@ -699,21 +982,44 @@ def _create_deposit_impl() -> Any:
     try:
         result = create_xoso66_deposit_order(aid, amount)
     except Exception as e:
+        proxy_hit = False
+        try:
+            from xoso66_proxy import maybe_report_proxy_dead_from_exception
+
+            proxy_hit = maybe_report_proxy_dead_from_exception(aid, e, source="NẠP")
+        except Exception:
+            pass
         try:
             from xoso66_auto_deposit import release_deposit_reserve
 
-            release_deposit_reserve(aid, clear_cache=True)
+            # Giữ cache khi proxy chết — tránh WS-pool spam /create-deposit ngay.
+            release_deposit_reserve(aid, clear_cache=not proxy_hit)
         except Exception:
             pass
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify(
+            {"ok": False, "error": str(e), "proxy_error": proxy_hit}
+        ), 500
 
     if not result.get("ok"):
+        proxy_hit = bool(result.get("proxy_error"))
+        try:
+            from xoso66_proxy import maybe_report_proxy_dead_from_message
+
+            if maybe_report_proxy_dead_from_message(
+                aid, result.get("error"), source="NẠP"
+            ):
+                proxy_hit = True
+        except Exception:
+            pass
         try:
             from xoso66_auto_deposit import release_deposit_reserve
 
-            release_deposit_reserve(aid, clear_cache=True)
+            release_deposit_reserve(aid, clear_cache=not proxy_hit)
         except Exception:
             pass
+        if proxy_hit:
+            result = dict(result)
+            result["proxy_error"] = True
         try:
             print(
                 f"[CREATE-DEPOSIT] FAIL [{user}] {amount:,}đ — {result.get('error')}",
@@ -823,11 +1129,14 @@ def _create_deposit_impl() -> Any:
 
 @app.route("/health", methods=["GET"])
 def health() -> Any:
+    partner_id, api_key, _secret = _partner_auth_cfg()
     return jsonify(
         {
             "status": "running",
             "callback_url": CALLBACK_URL,
             "third_party_url": THIRD_PARTY_API_URL,
+            "partnerId": partner_id,
+            "hmac_configured": bool(api_key and _secret),
         }
     )
 

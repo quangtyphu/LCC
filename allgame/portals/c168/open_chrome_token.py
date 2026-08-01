@@ -22,7 +22,7 @@ if str(_ROOT) in sys.path:
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from allgame.db.accounts_db import get_account, resolve_profile_dir, update_session
+from allgame.db.accounts_db import get_account, resolve_profile_dir, update_session, upsert_account
 from allgame.portals.c168.token import C168TokenChecker
 
 _JS_READ_SESSION = """
@@ -76,6 +76,40 @@ def _cdp_alive(url: str) -> bool:
         return False
 
 
+def _pids_listening_on_port(port: int) -> list[int]:
+    if port < 1:
+        return []
+    try:
+        proc = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception:
+        return []
+    pids: list[int] = []
+    needle = f":{port}"
+    for line in (proc.stdout or "").splitlines():
+        row = " ".join(line.split())
+        if needle not in row:
+            continue
+        if "LISTENING" not in row.upper():
+            continue
+        parts = row.split(" ")
+        if len(parts) < 5:
+            continue
+        try:
+            pid = int(parts[-1])
+        except ValueError:
+            continue
+        if pid > 0 and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
 def ensure_chrome_for_username(username: str, account: dict[str, Any] | None = None) -> dict[str, Any]:
     user = str(username or "").strip()
     acc = account or get_account("c168", user)
@@ -102,6 +136,7 @@ def ensure_chrome_for_username(username: str, account: dict[str, Any] | None = N
         return {"ok": False, "error": f"missing_launcher:{launcher}", "stage": "ensure_chrome_running"}
     Path(profile_dir).mkdir(parents=True, exist_ok=True)
 
+    launched = False
     if not _cdp_alive(cdp_url):
         python = os.environ.get("PYTHON") or sys.executable
         args = [
@@ -115,35 +150,72 @@ def ensure_chrome_for_username(username: str, account: dict[str, Any] | None = N
             "--urls-json",
             json.dumps(["https://c168b2.cc/"]),
         ]
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [python, *args],
             cwd=str(launcher.parent),
-            capture_output=True,
-            text=True,
-            timeout=90,
-            encoding="utf-8",
-            errors="replace",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        if proc.returncode != 0:
-            return {
-                "ok": False,
-                "error": f"launcher_exit_{proc.returncode}",
-                "stderr": (proc.stderr or "").strip()[:500],
-                "stage": "ensure_chrome_running",
-            }
+        launched = True
 
-    for _ in range(60):
+    for _ in range(32):
         if _cdp_alive(cdp_url):
-            focused = focus_or_open_c168_tab(cdp_url)
+            focused = focus_or_open_c168_tab(cdp_url) if launched else {"ok": True, "skipped": True}
             return {
                 "ok": True,
                 "stage": "chrome_ready",
                 "cdp_url": cdp_url,
                 "focus": focused,
                 "profile_dir": profile_dir,
+                "launched": launched,
             }
-        time.sleep(0.4)
+        time.sleep(0.25)
     return {"ok": False, "error": f"cdp_not_ready:{cdp_url}", "stage": "ensure_chrome_running"}
+
+
+def close_chrome_for_username(username: str, account: dict[str, Any] | None = None) -> dict[str, Any]:
+    user = str(username or "").strip()
+    acc = account or get_account("c168", user)
+    if not user or not acc:
+        return {"ok": False, "error": "account_not_found", "username": user}
+    try:
+        cdp_port = int(acc.get("chrome_cdp_port") or 0)
+    except (TypeError, ValueError):
+        cdp_port = 0
+    if cdp_port < 1:
+        cdp_port = _default_cdp_port(user)
+    cdp_url = f"http://127.0.0.1:{cdp_port}"
+    if not _cdp_alive(cdp_url):
+        return {"ok": True, "closed": False, "reason": "already_closed", "cdp_url": cdp_url}
+    pids = _pids_listening_on_port(cdp_port)
+    if not pids:
+        return {
+            "ok": False,
+            "closed": False,
+            "error": "cdp_alive_but_no_pid",
+            "cdp_url": cdp_url,
+        }
+    closed_pids: list[int] = []
+    for pid in pids:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                encoding="utf-8",
+                errors="replace",
+            )
+            closed_pids.append(pid)
+        except Exception:
+            continue
+    time.sleep(0.6)
+    return {
+        "ok": not _cdp_alive(cdp_url),
+        "closed": bool(closed_pids),
+        "pids": closed_pids,
+        "cdp_url": cdp_url,
+    }
 
 
 def focus_or_open_c168_tab(cdp_url: str) -> dict[str, Any]:
@@ -154,53 +226,94 @@ def focus_or_open_c168_tab(cdp_url: str) -> dict[str, Any]:
     try:
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(cdp_url)
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = None
+            for p0 in context.pages:
+                if "c168" in str(p0.url or "").lower():
+                    page = p0
+                    break
+            if page is None:
+                page = context.new_page()
+                page.goto("https://c168b2.cc/", wait_until="domcontentloaded", timeout=120_000)
             try:
-                context = browser.contexts[0] if browser.contexts else browser.new_context()
-                page = None
-                for p0 in context.pages:
-                    if "c168" in str(p0.url or "").lower():
-                        page = p0
-                        break
-                if page is None:
-                    page = context.new_page()
-                    page.goto("https://c168b2.cc/", wait_until="domcontentloaded", timeout=120_000)
-                try:
-                    page.bring_to_front()
-                except Exception:
-                    pass
-                return {"ok": True, "url": str(page.url or "")}
-            finally:
-                browser.close()
+                page.bring_to_front()
+            except Exception:
+                pass
+            return {"ok": True, "url": str(page.url or "")}
     except Exception as e:
         return {"ok": False, "error": f"focus_tab_failed:{e}"}
 
 
-def read_and_update_token(username: str) -> dict[str, Any]:
-    user = str(username or "").strip()
-    acc = get_account("c168", user)
-    if not acc:
-        return {"ok": False, "error": "account_not_found", "username": user}
-    chrome = ensure_chrome_for_username(user, account=acc)
-    if not chrome.get("ok"):
-        return chrome
-    cdp_url = str(chrome.get("cdp_url") or "")
+def _read_session_via_cdp(
+    cdp_url: str,
+    *,
+    poll_sec: float = 4.0,
+    goto_timeout_ms: int = 18_000,
+) -> dict[str, Any]:
+    """Đọc token localStorage — poll ngắn, tránh goto 120s khi Chrome vừa mở."""
     try:
         from playwright.sync_api import sync_playwright
     except Exception:
         return {"ok": False, "error": "playwright_not_installed"}
+    home = "https://c168b2.cc/"
+    deadline = time.time() + max(1.0, float(poll_sec))
+    last: dict[str, Any] = {"ok": False, "error": "no_attempt"}
     with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(cdp_url)
-        try:
-            context = browser.contexts[0] if browser.contexts else browser.new_context()
+        browser = p.chromium.connect_over_cdp(cdp_url.rstrip("/"))
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        page = None
+        for pg in context.pages:
+            if "c168" in str(pg.url or "").lower():
+                page = pg
+                break
+        if page is None:
             page = context.pages[0] if context.pages else context.new_page()
+        while time.time() < deadline:
+            try:
+                page.bring_to_front()
+            except Exception:
+                pass
             if "c168" not in str(page.url or "").lower():
-                page.goto("https://c168b2.cc/", wait_until="domcontentloaded", timeout=120_000)
-                page.wait_for_timeout(1200)
-            snap = page.evaluate(_JS_READ_SESSION)
-        finally:
-            browser.close()
+                try:
+                    page.goto(home, wait_until="domcontentloaded", timeout=goto_timeout_ms)
+                except Exception:
+                    pass
+                page.wait_for_timeout(350)
+            try:
+                snap = page.evaluate(_JS_READ_SESSION)
+            except Exception as e:
+                snap = {"ok": False, "error": str(e)}
+            last = snap if isinstance(snap, dict) else {"ok": False, "error": "bad_js_result"}
+            if last.get("ok"):
+                return last
+            page.wait_for_timeout(280)
+    return last
+
+
+def read_and_update_token(
+    username: str,
+    *,
+    chrome: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    user = str(username or "").strip()
+    acc = get_account("c168", user)
+    if not acc:
+        return {"ok": False, "error": "account_not_found", "username": user}
+    if chrome and chrome.get("ok") and chrome.get("cdp_url"):
+        chrome_out = chrome
+    else:
+        chrome_out = ensure_chrome_for_username(user, account=acc)
+    if not chrome_out.get("ok"):
+        return chrome_out
+    cdp_url = str(chrome_out.get("cdp_url") or "")
+    poll = 10.0 if chrome_out.get("launched") else 3.0
+    snap = _read_session_via_cdp(cdp_url, poll_sec=poll, goto_timeout_ms=18_000)
     if not isinstance(snap, dict) or not snap.get("ok"):
-        return {"ok": False, "error": str((snap or {}).get("error") if isinstance(snap, dict) else "bad_js_result"), "chrome": chrome}
+        return {
+            "ok": False,
+            "error": str(snap.get("error") if isinstance(snap, dict) else "bad_js_result"),
+            "chrome": chrome_out,
+        }
     keep_keys = (
         "session_key",
         "newjwt",
@@ -218,7 +331,53 @@ def read_and_update_token(username: str) -> dict[str, Any]:
     checker = C168TokenChecker()
     acc2 = get_account("c168", user) or acc
     alive = checker.read_token_snapshot(acc2)
-    return {"ok": bool(alive.get("ok")), "username": user, "chrome": chrome, "token_snapshot": alive}
+    # Một số lúc API trả code tạm thời (vd 2025) ngay sau khi vừa mở tab.
+    # Thử đọc/lưu token và check lại 1 lần để tránh skip oan account.
+    if not bool(alive.get("ok")) and str(alive.get("code") or "") in {"2025", "1401", "41001401"}:
+        time.sleep(0.35)
+        snap2 = _read_session_via_cdp(cdp_url, poll_sec=6.0, goto_timeout_ms=15_000)
+        if isinstance(snap2, dict) and snap2.get("ok"):
+                keep_keys = (
+                    "session_key",
+                    "newjwt",
+                    "device",
+                    "browserfingerid",
+                    "domain",
+                    "origin",
+                    "appversion",
+                    "x-version",
+                    "sitecode",
+                    "x_device",
+                )
+                patch2 = {k: snap2.get(k) for k in keep_keys if snap2.get(k)}
+                update_session("c168", user, patch2)
+                acc2 = get_account("c168", user) or acc2
+                alive = checker.read_token_snapshot(acc2)
+    bal_raw = alive.get("balance")
+    balance_updated = False
+    balance_value: float | None = None
+    if bal_raw is not None:
+        try:
+            balance_value = float(str(bal_raw).replace(",", "").strip())
+        except (TypeError, ValueError):
+            balance_value = None
+    if bool(alive.get("ok")) and balance_value is not None:
+        upsert_account(
+            {
+                "portal_id": "c168",
+                "username": user,
+                "balance": balance_value,
+            }
+        )
+        balance_updated = True
+    return {
+        "ok": bool(alive.get("ok")),
+        "username": user,
+        "chrome": chrome_out,
+        "token_snapshot": alive,
+        "balance_value": balance_value,
+        "balance_updated": balance_updated,
+    }
 
 
 def main() -> int:

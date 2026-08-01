@@ -261,6 +261,12 @@ class AccountUpdate(BaseModel):
     daily_bet_day: str | None = None
 
 
+class SyncChromeBody(BaseModel):
+    device: str = ""
+    force_login: bool = False
+    timeout_sec: int = 30
+
+
 class ProvisionBody(BaseModel):
     username: str
     password: str
@@ -326,6 +332,14 @@ class SyncPaymentsBody(BaseModel):
     wait: bool = True
 
 
+class BackfillDepositsBody(BaseModel):
+    account_id: str = ""
+    username: str = ""
+    days: int = 7
+    all_accounts: bool = False
+    wait: bool = True
+
+
 class MinigameRefreshBody(BaseModel):
     account_id: str
     game_key: str = "taixiu_dai_loc"
@@ -347,6 +361,13 @@ class MissionRefreshBody(BaseModel):
     )
     force_login: bool = False
     parallel: int = Field(8, ge=1, le=32)
+    wait: bool = Field(True, description="False: chạy nền")
+
+
+class MissionAutoClaimBody(BaseModel):
+    """CMS nút Ck — luồng auto-mission (rút + nhận, log [AUTO-MISSION] trên main.py)."""
+
+    account_ids: list[str] = Field(..., min_length=1)
     wait: bool = Field(True, description="False: chạy nền")
 
 
@@ -449,7 +470,7 @@ def _attach_payment_totals(
 @app.get("/api/ws-priority-accounts", dependencies=[Depends(require_api_key)])
 def api_ws_priority_accounts() -> dict[str, Any]:
     """
-    Danh sách ưu tiên mở WS / nạp: đủ tiền (balance↓) rồi thiếu tiền (cược ngày↓).
+    Danh sách ưu tiên mở WS / nạp (ws_fill_priority: 2 = cược↓ rồi số dư↓; 1 = balance↓ rồi cược↑; 0 = balance↑ rồi cược↓).
     """
     from xoso66_config_util import load_config
     from xoso66_ws_pool import list_ws_priority_accounts_payload
@@ -506,7 +527,13 @@ def api_create_account(body: AccountCreate, secrets: bool = False) -> dict[str, 
         row = create_account(body.model_dump(exclude_none=True))
     except Exception as e:
         raise HTTPException(400, str(e)) from e
-    return public_row(row, include_secrets=secrets)
+    out = public_row(row, include_secrets=secrets)
+    from xoso66_cms_chrome import device_proxy_mismatch
+
+    mismatch = device_proxy_mismatch(row)
+    if mismatch:
+        out["proxy_mismatch"] = mismatch
+    return out
 
 
 @app.put("/api/accounts/{account_id}", dependencies=[Depends(require_api_key)])
@@ -558,6 +585,51 @@ def api_refresh_account_balance(account_id: str) -> dict[str, Any]:
         "username": row.get("username"),
         "balance": rep.get("balance"),
     }
+
+
+@app.post(
+    "/api/accounts/{account_id}/sync-from-chrome",
+    dependencies=[Depends(require_api_key)],
+)
+def api_sync_from_chrome(
+    account_id: str, body: SyncChromeBody | None = None
+) -> dict[str, Any]:
+    """
+    Đồng bộ cf_clearance + headers từ Chrome CMS profile vào session DB.
+    Nếu chưa có clearance: mở Chrome CMS — giải captcha trong cửa sổ đó rồi gọi lại.
+    """
+    aid = str(account_id or "").strip()
+    if not aid:
+        raise HTTPException(400, "account_id trống")
+    b = body or SyncChromeBody()
+    try:
+        from xoso66_cf import CfRateLimitError
+        from xoso66_session import sync_session_from_chrome
+
+        out = sync_session_from_chrome(
+            aid,
+            device=b.device,
+            force_login=bool(b.force_login),
+            timeout_sec=int(b.timeout_sec or 0),
+        )
+    except KeyError:
+        raise HTTPException(404, "Không tìm thấy account") from None
+    except CfRateLimitError as e:
+        raise HTTPException(429, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+    if not out.get("ok"):
+        msg = str(
+            out.get("msg")
+            or out.get("error")
+            or "Đồng bộ thất bại — mở Chrome CMS, giải captcha Cloudflare, thử lại"
+        )
+        if out.get("rate_limited"):
+            raise HTTPException(429, msg)
+        raise HTTPException(400, msg)
+    return out
 
 
 @app.post("/api/accounts/provision", dependencies=[Depends(require_api_key)])
@@ -723,40 +795,14 @@ def _run_deposit(account_id: str, amount: int) -> dict[str, Any]:
 def _run_withdraw(
     account_id: str, amount: int, fund_password: str, use_browser: bool
 ) -> dict[str, Any]:
-    import time
+    from xoso66_withdraw import run_withdraw_with_tracking
 
-    from xoso66_withdraw import resolve_fund_password, withdraw_for_account
-    from xoso66_session import ensure_session
-    from xoso66_withdraw_tracking import extract_withdraw_serial, start_withdraw_confirm_watch
-
-    session = ensure_session(account_id)
-    pwd = resolve_fund_password(session, fund_password)
-    since_ms = int(time.time() * 1000)
-    out = withdraw_for_account(
+    return run_withdraw_with_tracking(
         account_id,
         amount,
-        pwd,
+        fund_password or "",
         use_playwright=use_browser,
     )
-    from xoso66_accounts_db import username_for_log
-
-    print(f"[WITHDRAW] {username_for_log(account_id)} {amount}: ok={out.get('ok')}", flush=True)
-    if out.get("ok"):
-        start_withdraw_confirm_watch(
-            account_id,
-            amount_vnd=amount,
-            since_ms=since_ms,
-            serial_no=extract_withdraw_serial(out),
-            log_prefix="[WITHDRAW-WATCH]",
-            notify_on_fail=True,
-        )
-        threading.Thread(
-            target=_sync_payment_history_bg,
-            args=(account_id,),
-            kwargs={"days": 3},
-            daemon=True,
-        ).start()
-    return out
 
 
 def _run_refresh(account_id: str, force_login: bool) -> None:
@@ -941,32 +987,86 @@ _DEPOSIT_ORDER_STATUSES = frozenset(
 )
 
 
-class DepositOrderStatusBody(BaseModel):
-    status: str = Field(..., min_length=1)
+class DepositOrderPatchBody(BaseModel):
+    status: str | None = None
+    site_status: int | None = None
+    site_status_formatted: str | None = None
+
+
+_DEPOSIT_SITE_LABEL_TO_STATUS: dict[str, int | None] = {
+    "": None,
+    "—": None,
+    "-": None,
+    "Hoàn tất": 1,
+    "Đang xử lý": 0,
+    "Thất bại": 2,
+}
 
 
 @app.put("/api/deposit-orders/{order_id}", dependencies=[Depends(require_api_key)])
 def api_update_deposit_order_status(
-    order_id: int, body: DepositOrderStatusBody
+    order_id: int, body: DepositOrderPatchBody
 ) -> dict[str, Any]:
-    """CMS — đổi trạng thái lệnh trong deposit_orders."""
-    from xoso66_auto_deposit import remove_from_deposit_cache
-    from xoso66_deposit_orders_db import get_deposit_order, update_deposit_order
+    """CMS — đổi trạng thái lệnh / cột Site trong deposit_orders."""
+    from xoso66_auto_deposit import release_deposit_order_tracking
+    from xoso66_deposit_orders_db import (
+        DEPOSIT_ORDER_TERMINAL_STATUSES,
+        get_deposit_order,
+        update_deposit_order,
+    )
 
     row = get_deposit_order(int(order_id))
     if not row:
         raise HTTPException(404, "Không tìm thấy lệnh nạp")
-    st = str(body.status or "").strip()
-    if st not in _DEPOSIT_ORDER_STATUSES:
-        raise HTTPException(
-            400,
-            f"status không hợp lệ: {st!r} (cho phép: {', '.join(sorted(_DEPOSIT_ORDER_STATUSES))})",
-        )
-    update_deposit_order(int(order_id), status=st)
-    if st in ("Thành Công", "Thất Bại", "Huỷ", "Hủy"):
-        remove_from_deposit_cache(str(row.get("account_id") or ""))
+
+    data = body.model_dump(exclude_unset=True)
+    if not data:
+        raise HTTPException(400, "Thiếu trường cập nhật (status / site_status / site_status_formatted)")
+
+    updates: dict[str, Any] = {}
+
+    if "status" in data:
+        st = str(data.get("status") or "").strip()
+        if st not in _DEPOSIT_ORDER_STATUSES:
+            raise HTTPException(
+                400,
+                f"status không hợp lệ: {st!r} (cho phép: {', '.join(sorted(_DEPOSIT_ORDER_STATUSES))})",
+            )
+        updates["status"] = st
+
+    site_touched = "site_status" in data or "site_status_formatted" in data
+    if site_touched:
+        fmt_raw = data.get("site_status_formatted")
+        fmt = "" if fmt_raw is None else str(fmt_raw).strip()
+        if fmt in ("—", "-"):
+            fmt = ""
+        if fmt == "" and "site_status_formatted" in data:
+            updates["site_status"] = None
+            updates["site_status_formatted"] = ""
+        else:
+            if fmt:
+                updates["site_status_formatted"] = fmt
+            if "site_status" in data:
+                updates["site_status"] = data.get("site_status")
+            elif fmt:
+                if fmt not in _DEPOSIT_SITE_LABEL_TO_STATUS:
+                    raise HTTPException(
+                        400,
+                        f"site không hợp lệ: {fmt!r} (cho phép: Hoàn tất, Đang xử lý, Thất bại, —)",
+                    )
+                updates["site_status"] = _DEPOSIT_SITE_LABEL_TO_STATUS[fmt]
+
+    if not updates:
+        raise HTTPException(400, "Không có trường hợp lệ để cập nhật")
+
+    update_deposit_order(int(order_id), **updates)
+
+    new_st = str(updates.get("status") or row.get("status") or "").strip()
+    if new_st in DEPOSIT_ORDER_TERMINAL_STATUSES:
+        release_deposit_order_tracking(str(row.get("account_id") or ""))
+
     out = get_deposit_order(int(order_id))
-    return out if out else {"id": order_id, "status": st}
+    return out if out else {"id": order_id, **updates}
 
 
 @app.post("/api/payment-orders/sync", dependencies=[Depends(require_api_key)])
@@ -986,6 +1086,62 @@ def api_payment_orders_sync(
             raise HTTPException(400, str(e)) from e
     bg.add_task(_sync_payment_history_bg, aid, days)
     return {"ok": True, "message": f"Đang đồng bộ {aid} ({days} ngày)"}
+
+
+@app.post("/api/payment-orders/backfill-deposits", dependencies=[Depends(require_api_key)])
+def api_backfill_deposit_successes(
+    body: BackfillDepositsBody,
+    bg: BackgroundTasks,
+) -> dict[str, Any]:
+    """Bù đơn nạp Hoàn tất (serial mới) vào payment_orders — sửa thống kê lợi nhuận."""
+    from xoso66_payment_history_sync import (
+        backfill_all_accounts_deposit_successes,
+        backfill_deposit_successes_for_account,
+    )
+
+    days = max(1, int(body.days))
+    if body.all_accounts:
+        if body.wait:
+            try:
+                return backfill_all_accounts_deposit_successes(days=days)
+            except Exception as e:
+                raise HTTPException(400, str(e)) from e
+
+        def _bg_all() -> None:
+            try:
+                rep = backfill_all_accounts_deposit_successes(days=days, verbose=True)
+                print(
+                    f"[BACKFILL-DEP] xong — +{rep.get('deposit_new_total', 0)} serial "
+                    f"({rep.get('accounts_ok', 0)}/{rep.get('accounts', 0)} acc)",
+                    flush=True,
+                )
+            except Exception as e:
+                print(f"[BACKFILL-DEP] lỗi: {e}", flush=True)
+
+        bg.add_task(_bg_all)
+        return {"ok": True, "message": f"Đang bù nạp mọi acc ({days} ngày)"}
+
+    aid = _resolve_account_id(body.account_id, body.username)
+    if body.wait:
+        try:
+            return backfill_deposit_successes_for_account(aid, days=days, verbose=True)
+        except Exception as e:
+            raise HTTPException(400, str(e)) from e
+
+    def _bg_one(a: str = aid, d: int = days) -> None:
+        try:
+            rep = backfill_deposit_successes_for_account(a, days=d, verbose=True)
+            if int(rep.get("deposit_new") or 0):
+                print(
+                    f"[BACKFILL-DEP] {rep.get('username') or a}: "
+                    f"+{rep.get('deposit_new')} serial",
+                    flush=True,
+                )
+        except Exception as e:
+            print(f"[BACKFILL-DEP] {a}: {e}", flush=True)
+
+    bg.add_task(_bg_one)
+    return {"ok": True, "message": f"Đang bù nạp {aid} ({days} ngày)"}
 
 
 @app.post("/api/payment-orders/check-withdraw", dependencies=[Depends(require_api_key)])
@@ -1144,6 +1300,30 @@ def api_missions_refresh_status(
         "ok": True,
         "message": f"Đang refresh mission ({n}) — check_only={body.check_only}",
     }
+
+
+@app.post("/api/missions/auto-claim", dependencies=[Depends(require_api_key)])
+def api_missions_auto_claim(
+    body: MissionAutoClaimBody, bg: BackgroundTasks
+) -> dict[str, Any]:
+    """Nút Ck CMS — cùng luồng worker auto-mission (log [AUTO-MISSION] trên terminal main.py)."""
+    from xoso66_auto_mission_reward import run_manual_auto_mission_claim
+
+    aids = [str(x).strip() for x in body.account_ids if str(x).strip()]
+    if not aids:
+        raise HTTPException(400, "account_ids bắt buộc")
+    if body.wait:
+        try:
+            out = run_manual_auto_mission_claim(aids)
+            if out.get("busy"):
+                raise HTTPException(409, str(out.get("error") or "auto-mission busy"))
+            return out
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(400, str(e)) from e
+    bg.add_task(run_manual_auto_mission_claim, aids)
+    return {"ok": True, "message": f"Đang auto-mission (Ck) cho {len(aids)} acc"}
 
 
 def _run_vip_refresh(

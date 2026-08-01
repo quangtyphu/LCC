@@ -9,20 +9,28 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
-from typing import Any, Dict, List, Optional
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional
 
 STATS_FILE = os.path.join(os.path.dirname(__file__), "tai_xiu_skew_stats.json")
 
 _pending_sessions: Dict[str, dict] = {}
 _finalized_session_ids: set[str] = set()
+_finalized_session_order: Deque[str] = deque()
 _FINALIZED_IDS_MAX = 500
+_lock = threading.Lock()
 
 
 def _mark_session_finalized(sid: str) -> None:
+    if sid in _finalized_session_ids:
+        return
     _finalized_session_ids.add(sid)
-    while len(_finalized_session_ids) > _FINALIZED_IDS_MAX:
-        _finalized_session_ids.pop()
+    _finalized_session_order.append(sid)
+    while len(_finalized_session_order) > _FINALIZED_IDS_MAX:
+        old = _finalized_session_order.popleft()
+        _finalized_session_ids.discard(old)
 
 
 def dices_to_winner(dices: Any) -> Optional[str]:
@@ -126,29 +134,32 @@ def note_session_winner(
     sid = _resolve_session_id(session_id)
     if sid is None:
         return
-    if sid in _finalized_session_ids:
-        return
     w = (winner or "").upper() if winner else dices_to_winner(dices)
     if w not in ("TAI", "XIU"):
         return
-    entry = _pending_sessions.setdefault(
-        sid,
-        {
-            "total_tai": 0,
-            "total_xiu": 0,
-            "skew": 0,
-            "registered_at": time.time(),
-            "needs_retry": False,
-            "finalized": False,
-        },
-    )
-    if entry.get("finalized"):
-        return
-    entry["winner"] = w
-    if dices is not None:
-        entry["dices"] = list(dices) if isinstance(dices, (list, tuple)) else dices
-    if source:
-        entry["result_source"] = source
+    with _lock:
+        if sid in _finalized_session_ids:
+            return
+        entry = _pending_sessions.setdefault(
+            sid,
+            {
+                "total_tai": 0,
+                "total_xiu": 0,
+                "skew": 0,
+                "registered_at": time.time(),
+                "needs_retry": False,
+                "finalized": False,
+            },
+        )
+        if entry.get("finalized"):
+            return
+        if entry.get("winner"):
+            return
+        entry["winner"] = w
+        if dices is not None:
+            entry["dices"] = list(dices) if isinstance(dices, (list, tuple)) else dices
+        if source:
+            entry["result_source"] = source
     try_finalize(sid)
 
 
@@ -173,50 +184,53 @@ def try_finalize(session_id: Any) -> bool:
     if session_id is None:
         return False
     sid = str(session_id)
-    if sid in _finalized_session_ids:
-        return True
-    entry = _pending_sessions.get(sid)
-    if not entry:
-        return False
-    if entry.get("finalized"):
-        return True
 
-    if not entry.get("total_tai") and not entry.get("total_xiu"):
-        _fill_totals_from_constants(entry, sid)
-    winner = entry.get("winner")
-    if winner not in ("TAI", "XIU"):
-        return False
+    with _lock:
+        if sid in _finalized_session_ids:
+            return True
+        entry = _pending_sessions.get(sid)
+        if not entry:
+            return False
+        if entry.get("finalized"):
+            return True
 
-    total_tai = int(entry.get("total_tai") or 0)
-    total_xiu = int(entry.get("total_xiu") or 0)
-    if total_tai == 0 and total_xiu == 0:
-        return False
-    skew = int(entry.get("skew") if entry.get("skew") is not None else (total_xiu - total_tai))
+        if not entry.get("total_tai") and not entry.get("total_xiu"):
+            _fill_totals_from_constants(entry, sid)
+        winner = entry.get("winner")
+        if winner not in ("TAI", "XIU"):
+            return False
 
-    entry["finalized"] = True
-    _pending_sessions.pop(sid, None)
-    _mark_session_finalized(sid)
+        total_tai = int(entry.get("total_tai") or 0)
+        total_xiu = int(entry.get("total_xiu") or 0)
+        if total_tai == 0 and total_xiu == 0:
+            return False
+        skew = int(entry.get("skew") if entry.get("skew") is not None else (total_xiu - total_tai))
+        dices = entry.get("dices")
 
-    if skew == 0:
-        return True
+        entry["finalized"] = True
+        _pending_sessions.pop(sid, None)
+        _mark_session_finalized(sid)
 
-    pnl = _session_pnl(total_tai, total_xiu, winner)
-    cumulative = _load_cumulative()
-    if pnl > 0:
-        cumulative -= pnl
-    elif pnl < 0:
-        cumulative += abs(pnl)
-    _save_cumulative(cumulative)
+        if skew == 0:
+            return True
 
-    winner_vn = "Tài" if winner == "TAI" else "Xỉu"
-    pnl_label = "lãi" if pnl > 0 else "lỗ"
-    print(
-        f"📐 [Tài/Xỉu lệch] Phiên {sid}: Tài={total_tai:,} Xỉu={total_xiu:,} "
-        f"lệch={skew:+d} | KQ={winner_vn} "
-        f"(xúc sắc={entry.get('dices')}) | Phiên {pnl:+,} ({pnl_label}) | "
-        f"Tích lũy lỗ+/lãi−={cumulative:,}",
-        flush=True,
-    )
+        pnl = _session_pnl(total_tai, total_xiu, winner)
+        cumulative = _load_cumulative()
+        if pnl > 0:
+            cumulative -= pnl
+        elif pnl < 0:
+            cumulative += abs(pnl)
+        _save_cumulative(cumulative)
+
+        winner_vn = "Tài" if winner == "TAI" else "Xỉu"
+        pnl_label = "lãi" if pnl > 0 else "lỗ"
+        print(
+            f"📐 [Tài/Xỉu lệch] Phiên {sid}: Tài={total_tai:,} Xỉu={total_xiu:,} "
+            f"lệch={skew:+d} | KQ={winner_vn} "
+            f"(xúc sắc={dices}) | Phiên {pnl:+,} ({pnl_label}) | "
+            f"Tích lũy lỗ+/lãi−={cumulative:,}",
+            flush=True,
+        )
     return True
 
 

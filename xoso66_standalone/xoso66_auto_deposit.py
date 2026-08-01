@@ -155,11 +155,14 @@ def mark_deposit_cache(account_id: str) -> None:
     save_deposit_cache(cache)
 
 
-def remove_from_deposit_cache(account_id: str) -> None:
+def remove_from_deposit_cache(account_id: str) -> bool:
     cache = load_deposit_cache()
-    if str(account_id) in cache:
-        del cache[str(account_id)]
-        save_deposit_cache(cache)
+    aid = str(account_id)
+    if aid not in cache:
+        return False
+    del cache[aid]
+    save_deposit_cache(cache)
+    return True
 
 
 def is_deposit_reserved(account_id: str) -> bool:
@@ -168,6 +171,16 @@ def is_deposit_reserved(account_id: str) -> bool:
         return False
     with _deposit_reserved_lock:
         return aid in _deposit_reserved
+
+
+def release_deposit_order_tracking(account_id: str) -> None:
+    """Huỷ/thất bại/đóng lệnh — xóa cache, reserve, pending WS, hàng nạp."""
+    aid = str(account_id).strip()
+    if not aid:
+        return
+    from xoso66_ws_pool import release_ws_blocks_after_deposit
+
+    release_ws_blocks_after_deposit([aid])
 
 
 def _deposit_blocked_by_cache_or_db(account_id: str) -> bool:
@@ -185,13 +198,23 @@ def _deposit_blocked_by_cache_or_db(account_id: str) -> bool:
     cache = load_deposit_cache()
     ts = cache.get(aid)
     if ts and (time.time() - float(ts)) < ttl:
-        return True
+        if not has_pending_deposit(aid, max_age_sec=ttl):
+            remove_from_deposit_cache(aid)
+        else:
+            return True
     if has_pending_deposit(aid, max_age_sec=ttl):
         return True
     return False
 
 
 def can_create_deposit_order(account_id: str) -> bool:
+    try:
+        from xoso66_bet_assign import consolidate_blocks_deposit
+
+        if consolidate_blocks_deposit(account_id):
+            return False
+    except Exception:
+        pass
     if is_deposit_reserved(account_id):
         return False
     return not _deposit_blocked_by_cache_or_db(account_id)
@@ -202,6 +225,13 @@ def deposit_order_block_reason(account_id: str) -> str | None:
     aid = str(account_id).strip()
     if not aid:
         return "account_id trống"
+    try:
+        from xoso66_bet_assign import consolidate_blocks_deposit
+
+        if consolidate_blocks_deposit(aid):
+            return "strategy 3 — không nạp tiền"
+    except Exception:
+        pass
     if is_deposit_reserved(aid):
         return "đang reserve tạo đơn"
     ad = _auto_deposit_cfg()
@@ -209,7 +239,10 @@ def deposit_order_block_reason(account_id: str) -> str | None:
     cache = load_deposit_cache()
     ts = cache.get(aid)
     if ts and (time.time() - float(ts)) < ttl:
-        return "cache nạp còn TTL"
+        if not has_pending_deposit(aid, max_age_sec=ttl):
+            remove_from_deposit_cache(aid)
+        else:
+            return "cache nạp còn TTL"
     from xoso66_deposit_orders_db import has_pending_deposit
 
     if has_pending_deposit(aid, max_age_sec=ttl):
@@ -311,7 +344,10 @@ def perform_deposit(
             raw = body.get("raw") if isinstance(body.get("raw"), dict) else body
             if isinstance(raw, dict) and raw.get("error"):
                 print(f"[NẠP]   chi tiết: {raw.get('error')}", flush=True)
-        return {"ok": False, "error": err, "raw": body}
+        out = {"ok": False, "error": err, "raw": body}
+        if body.get("proxy_error"):
+            out["proxy_error"] = True
+        return out
     except Exception as e:
         if verbose:
             print(f"[NẠP] {user} — lỗi kết nối: {e}", flush=True)

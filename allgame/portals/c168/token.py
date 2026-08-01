@@ -203,7 +203,15 @@ class C168TokenChecker:
         if isinstance(data, dict):
             dd = data.get("data")
             if isinstance(dd, dict):
-                for key in ("balance", "money", "wallet", "credit", "amount"):
+                for key in (
+                    "game_gold",
+                    "totalGold",
+                    "balance",
+                    "money",
+                    "wallet",
+                    "credit",
+                    "amount",
+                ):
                     if dd.get(key) is not None:
                         balance = dd.get(key)
                         break

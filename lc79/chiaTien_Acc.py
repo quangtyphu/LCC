@@ -9,9 +9,11 @@ from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
 from chiaTien_Tho import distribute_for_devices
-from constants import active_ws, load_config
+from constants import active_ws, load_config, save_config
 from telegram_notifier import send_telegram
 from weekly_bet_mode_scheduler import weekly_bet_mode_forces_strategy
+from monthly_bet_mode_scheduler import monthly_bet_mode_forces_strategy
+from top_bet_daily_mode_scheduler import top_bet_daily_mode_forces_strategy
 from auto_withdraw_on_won_session import is_user_waiting_to_withdraw
 
 API_BASE = "http://127.0.0.1:3000"  # server.js
@@ -47,6 +49,109 @@ def _priority_users_min_bet_amount(cfg: dict, w: dict) -> int:
         return max(0, int(val))
     except (TypeError, ValueError):
         return 0
+
+
+def _priority_users_max_daily_bet(cfg: dict, w: dict) -> int:
+    """0 = không giới hạn tổng cược ngày cho PRIORITY_USERS."""
+    val = w.get("PRIORITY_USERS_MAX_DAILY_BET")
+    if val is None:
+        val = cfg.get("PRIORITY_USERS_MAX_DAILY_BET", 0)
+    try:
+        return max(0, int(val))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _today_bet_lookup(today_bets: Dict[str, int], username: str) -> int:
+    if not username:
+        return 0
+    if username in today_bets:
+        return today_bets[username]
+    lower = username.lower()
+    for key, val in today_bets.items():
+        if key.lower() == lower:
+            return val
+    return 0
+
+
+def _collect_priority_usernames_in_cfg(cfg: dict) -> List[str]:
+    users: set[str] = set()
+    for u in cfg.get("PRIORITY_USERS") or []:
+        if isinstance(u, str) and u.strip():
+            users.add(u.strip())
+    for win in cfg.get("TIME_WINDOWS") or []:
+        for u in (win.get("PRIORITY_USERS") or []):
+            if isinstance(u, str) and u.strip():
+                users.add(u.strip())
+    return list(users)
+
+
+def _blank_priority_users_in_list(lst: list, remove_users: set[str]) -> tuple[list, bool]:
+    """Thay username bị loại bằng chuỗi rỗng (giữ số slot). Khớp không phân biệt hoa thường."""
+    remove_lower = {u.lower() for u in remove_users if u}
+    changed = False
+    new_lst: list = []
+    for item in lst:
+        if isinstance(item, str) and item.strip() and item.strip().lower() in remove_lower:
+            new_lst.append("")
+            changed = True
+        else:
+            new_lst.append(item)
+    return new_lst, changed
+
+
+def _persist_remove_priority_users_over_daily_bet(
+    cfg: dict,
+    w: dict,
+    today_bets: Dict[str, int],
+) -> List[str]:
+    """
+    User có tổng cược ngày >= PRIORITY_USERS_MAX_DAILY_BET → xóa khỏi config (ghi file).
+    Chỉ kiểm tra trước phiên: user dưới ngưỡng vẫn nhận lệnh dù sau cược vượt ngưỡng.
+    """
+    max_daily = _priority_users_max_daily_bet(cfg, w)
+    current = _priority_users_from(cfg, w)
+    if max_daily <= 0 or not current:
+        return current
+
+    to_remove = [
+        u for u in current
+        if _today_bet_lookup(today_bets, u) >= max_daily
+    ]
+    if not to_remove:
+        return current
+
+    remove_set = set(to_remove)
+    changed = False
+
+    root = cfg.get("PRIORITY_USERS")
+    if isinstance(root, list):
+        new_root, c = _blank_priority_users_in_list(root, remove_set)
+        if c:
+            cfg["PRIORITY_USERS"] = new_root
+            changed = True
+
+    windows = cfg.get("TIME_WINDOWS") or []
+    for i, win in enumerate(windows):
+        pl = win.get("PRIORITY_USERS")
+        if not isinstance(pl, list) or not pl:
+            continue
+        new_pl, c = _blank_priority_users_in_list(pl, remove_set)
+        if c:
+            windows[i]["PRIORITY_USERS"] = new_pl
+            changed = True
+
+    if changed and save_config(cfg):
+        details = ", ".join(
+            f"{u}({_today_bet_lookup(today_bets, u):,})" for u in to_remove
+        )
+        print(
+            f"[PRIORITY] Xóa khỏi config (tổng cược ngày >= {max_daily:,}): {details}",
+            flush=True,
+        )
+
+    remove_lower = {u.lower() for u in remove_set}
+    return [u for u in current if u.lower() not in remove_lower]
 
 
 def _iter_priority_users_for_bet(
@@ -619,6 +724,12 @@ def _fresh_balances_for_online(online_users: List[str]) -> Dict[str, int]:
                 balance = int(data.get("balance") or 0)
                 balances[user] = balance
 
+                try:
+                    from auto_deposit_on_out_of_money import maybe_deposit_priority_user_low_balance
+                    maybe_deposit_priority_user_low_balance(user, balance)
+                except Exception as ex:
+                    print(f"⚠️ maybe_deposit_priority_user_low_balance {user}: {ex}", flush=True)
+
                 if balance < 10000:
                     # Chờ 20s rồi check lại, chỉ ép Hết Tiền nếu vẫn < 10k
                     threading.Thread(target=_delayed_het_tien_check, args=(user,), daemon=True).start()
@@ -647,12 +758,15 @@ def _fresh_balances_for_online(online_users: List[str]) -> Dict[str, int]:
     return balances
 
 
-def _fetch_today_bets_for_online(online_users: List[str]) -> Dict[str, int]:
+def _fetch_today_bets_for_users(usernames: List[str]) -> Dict[str, int]:
     """
-    Lấy tổng cược ngày cho các user online từ API /api/bet-totals.
-    Kết quả: {username: total_bet_today}
+    Lấy tổng cược ngày từ API /api/bet-totals.
+    Kết quả: {username: total_bet_today} — key theo username truyền vào.
     """
-    res: Dict[str, int] = {u: 0 for u in online_users}
+    res: Dict[str, int] = {u: 0 for u in usernames}
+    if not usernames:
+        return res
+    lookup = {u.lower(): u for u in usernames}
     try:
         r = requests.get(f"{API_BASE}/api/bet-totals", params={"page": 1, "limit": 10000}, timeout=6)
         if r.status_code != 200:
@@ -664,18 +778,27 @@ def _fetch_today_bets_for_online(online_users: List[str]) -> Dict[str, int]:
         for item in items:
             try:
                 u = str(item.get("username") or item.get("user") or "").strip()
-                if u and u in res:
-                    total_val = (item.get("total_day")
-                                 or item.get("totalBet")
-                                 or item.get("total")
-                                 or item.get("today_bet")
-                                 or item.get("todayBet") or 0)
-                    res[u] = int(total_val or 0)
+                if not u:
+                    continue
+                key = lookup.get(u.lower())
+                if not key:
+                    continue
+                total_val = (item.get("total_day")
+                             or item.get("totalBet")
+                             or item.get("total")
+                             or item.get("today_bet")
+                             or item.get("todayBet") or 0)
+                res[key] = int(total_val or 0)
             except Exception:
                 continue
     except Exception:
         return res
     return res
+
+
+def _fetch_today_bets_for_online(online_users: List[str]) -> Dict[str, int]:
+    """Lấy tổng cược ngày cho các user online từ API /api/bet-totals."""
+    return _fetch_today_bets_for_users(online_users)
 
 
 def _fetch_weekly_bets_for_online(online_users: List[str]) -> Dict[str, int]:
@@ -891,13 +1014,20 @@ def assign_bets(
     PRIORITY_USERS = _priority_users_from(config, window)  # vẫn dùng cho các strategy khác
     PRIORITY_USERS_V2 = _priority_users_v2_from(config, window)
     PRIORITY_USERS_V3 = _priority_users_v3_from(config, window)
+    max_daily_prio = _priority_users_max_daily_bet(config, window)
 
     balances = _fresh_balances_for_online(online_users)
-    today_bets = _fetch_today_bets_for_online(online_users) if (
-        strategy in (3, 8, 10, 11, 12)
-    ) else {}
+    today_bets = _fetch_today_bets_for_online(online_users) if strategy in (3, 8, 10, 11, 12) else {}
+    if max_daily_prio > 0:
+        prio_check_users = _collect_priority_usernames_in_cfg(config)
+        if prio_check_users:
+            prio_today_bets = _fetch_today_bets_for_users(prio_check_users)
+            PRIORITY_USERS = _persist_remove_priority_users_over_daily_bet(
+                config, window, prio_today_bets
+            )
+            today_bets.update(prio_today_bets)
     weekly_bets = _fetch_weekly_bets_for_online(online_users) if strategy in (6, 8) else {}
-    monthly_bets = _fetch_monthly_bets_for_online(online_users) if strategy == 5 else {}
+    monthly_bets = _fetch_monthly_bets_for_online(online_users) if strategy in (5, 13) else {}
 
     # sort giảm dần theo amount để nhận diện bet lớn nhất
     to_assign = sorted([(amt, door) for (_dev, amt, door) in bets], key=lambda x: -x[0])
@@ -923,7 +1053,6 @@ def assign_bets(
         print(f"[STRAT10] 2 acc ưu tiên (dư nhỏ nhất trong mô phỏng): {pair_line}", flush=True)
 
     used = set()
-    odd_applied_v2: set = set()  # V2: đã áp dụng đánh lẻ 1 lần/phiên để tổng cược ngày khác bội 10k
     # State chỉ dùng trong elif strategy == 9 (không ảnh hưởng strategy 1–8, 10–12)
     strategy9_outside_max_amount: Optional[int] = None
     strategy9_outside_max_slot_used = False
@@ -1178,7 +1307,8 @@ def assign_bets(
                     return []
     
             elif strategy == 6:
-                # Ưu tiên PRIORITY_USERS, fallback tổng cược tuần thấp nhất
+                # 1) PRIORITY_USERS  2) V2 (total_week thấp nhất; mức cao→thấp nên max vào acc V2 thấp nhất)
+                # 3) fallback mọi acc: total_week thấp nhất
                 chosen, after, _bal = None, None, None
                 for u in _iter_priority_users_for_bet(PRIORITY_USERS, amount, config, window):
                     if u in online_users and u not in used:
@@ -1189,7 +1319,46 @@ def assign_bets(
                             after = bal - amount
                             break
                 if chosen is None:
+                    v2_pool = [
+                        u for u in PRIORITY_USERS_V2
+                        if u in online_users and u not in used and balances.get(u, 0) >= amount
+                    ]
+                    if v2_pool:
+                        chosen = min(v2_pool, key=lambda u: (weekly_bets.get(u, 0), balances.get(u, 0)))
+                        _bal = balances[chosen]
+                        after = _bal - amount
+                if chosen is None:
                     candidates_sorted = sorted(candidates, key=lambda t: (weekly_bets.get(t[1], 0), t[2]))
+                    after, chosen, _bal = candidates_sorted[0]
+                if chosen is None:
+                    msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
+                    print(msg)
+                    send_telegram(msg)
+                    return []
+
+            elif strategy == 13:
+                # 1) PRIORITY_USERS  2) V2 (total_month thấp nhất; mức cao→thấp nên max vào acc V2 thấp nhất)
+                # 3) fallback mọi acc: total_month thấp nhất
+                chosen, after, _bal = None, None, None
+                for u in _iter_priority_users_for_bet(PRIORITY_USERS, amount, config, window):
+                    if u in online_users and u not in used:
+                        bal = balances.get(u, 0)
+                        if bal >= amount:
+                            chosen = u
+                            _bal = bal
+                            after = bal - amount
+                            break
+                if chosen is None:
+                    v2_pool = [
+                        u for u in PRIORITY_USERS_V2
+                        if u in online_users and u not in used and balances.get(u, 0) >= amount
+                    ]
+                    if v2_pool:
+                        chosen = min(v2_pool, key=lambda u: (monthly_bets.get(u, 0), balances.get(u, 0)))
+                        _bal = balances[chosen]
+                        after = _bal - amount
+                if chosen is None:
+                    candidates_sorted = sorted(candidates, key=lambda t: (monthly_bets.get(t[1], 0), t[2]))
                     after, chosen, _bal = candidates_sorted[0]
                 if chosen is None:
                     msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
@@ -1421,25 +1590,6 @@ def assign_bets(
 
         current_bal = balances[chosen]
 
-        # ----- V2: đánh lẻ 1 lần/phiên để tổng cược ngày khác bội 10k (khung 01:00–23:59) -----
-        tz = ZoneInfo("Asia/Ho_Chi_Minh")
-        now_t = datetime.now(tz).time()
-        in_v2_odd_window = dt_time(1, 0) <= now_t <= dt_time(23, 59)
-        if (
-            in_v2_odd_window
-            and today_bets
-            and chosen in PRIORITY_USERS_V2
-            and chosen not in odd_applied_v2
-            and today_bets.get(chosen, 0) % 10000 == 0
-            and amount % 10000 == 0
-        ):
-            add = random.randint(1, 9999)
-            if current_bal >= amount + add:
-                amount += add
-                after = current_bal - amount
-                odd_applied_v2.add(chosen)
-                print(f"   [V2 odd] {chosen} +{add} → cược {amount} (tổng ngày khác bội 10k)")
-
         cfg = load_config()
         try:
             all_in_flag = int(cfg.get("ALL_IN_IF_REMAIN_LT_10K", 1))
@@ -1508,9 +1658,15 @@ def run_assigner(online_users: List[str], strategy: int = None) -> List[Tuple[st
     # Lấy strategy theo giờ nếu caller không truyền
     if strategy is None:
         strategy = _strategy_from(cfg, w, fallback=1)
-    # Chế độ Cược tuần: ép strategy 6 (ưu tiên tổng cược tuần thấp nhất), V2 do scheduler cập nhật
-    if weekly_bet_mode_forces_strategy(cfg):
+    # Chế độ TOP cược ngày: ép strategy 8, V2 do scheduler cập nhật
+    if top_bet_daily_mode_forces_strategy(cfg):
+        strategy = 8
+    # Chế độ Cược tuần: ép strategy 6 (PRIORITY → V2 total_week thấp → fallback), V2 do scheduler cập nhật
+    elif weekly_bet_mode_forces_strategy(cfg):
         strategy = 6
+    # Chế độ Cược tháng: ép strategy 13 (PRIORITY → V2 total_month thấp → fallback), V2 do scheduler cập nhật
+    elif monthly_bet_mode_forces_strategy(cfg):
+        strategy = 13
 
     # Lấy danh sách bets từ chiaTien_Tho (đã áp khung giờ & pause)
     bets = distribute_for_devices([{}] * len(online_users))

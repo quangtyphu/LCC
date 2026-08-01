@@ -64,10 +64,13 @@ BASE_URL = os.environ.get("XOSO66_BASE_URL", "https://v6sgqpyi.whskxk1.com").rst
 DEPOSIT_ORDER_PATH = "/server/payment/depositorder"
 PAYMENT_ORDER_LIST_PATH = "/server/payment/paymentorderlist"
 QRPAY_BASE = os.environ.get("XOSO66_QRPAY_BASE", "https://pay.qrpay.quest").rstrip("/")
-# QRPay (235) đã gỡ — mặc định TOPAY Ngân hàng trực tuyến (280), cấu hình trong xoso66_config.json
+# QRPay banking (235); TIMEPAY banking (220) — chỉnh deposit_channel_* trong xoso66_config.json
 QRPAY_CHANNEL_ID = 235
-DEFAULT_DEPOSIT_CHANNEL_ID = 280
-DEFAULT_DEPOSIT_CHANNEL_NAME = "TOPAY-Ngân hàng trực tuyến"
+TIMEPAY_CHANNEL_ID = 220
+DEFAULT_DEPOSIT_CHANNEL_ID = TIMEPAY_CHANNEL_ID
+DEFAULT_DEPOSIT_CHANNEL_NAME = "TIMEPAY-nạp tiền bankking"
+DEFAULT_DEPOSIT_BANK_ID = 33
+DEFAULT_DEPOSIT_BANK_NAME = "VPBANK"
 DEFAULT_MIN_DEPOSIT_VND = 1_000_000
 QRPAY_GET_WU_INFO_PATH = "/prod-api/pay/page/PayAccount/getWUInfo"
 _DEPOSIT_PLAYWRIGHT_ACTIONS = ("userCenter/depositorder",)
@@ -232,6 +235,7 @@ def _deposit_channel_prefs() -> dict[str, Any]:
     if not isinstance(ad, dict):
         ad = {}
     raw_id = ad.get("deposit_channel_id")
+    raw_bank_id = ad.get("deposit_bank_id")
     return {
         "channel_id": int(raw_id) if raw_id not in (None, "") else None,
         "channel_name": str(
@@ -239,6 +243,10 @@ def _deposit_channel_prefs() -> dict[str, Any]:
         ).strip(),
         "min_amount_vnd": int(ad.get("min_deposit_vnd") or DEFAULT_MIN_DEPOSIT_VND),
         "topay_bank_bid": str(ad.get("topay_bank_bid") or "").strip(),
+        "deposit_bank_id": int(raw_bank_id) if raw_bank_id not in (None, "") else None,
+        "deposit_bank_name": str(
+            ad.get("deposit_bank_name") or DEFAULT_DEPOSIT_BANK_NAME
+        ).strip(),
     }
 
 
@@ -302,19 +310,84 @@ def merchant_from_deposit_info(
     return int(ch["id"]), int(m["id"]), str(m.get("random_remark") or "")
 
 
+def _channel_by_id(info: dict, channel_id: int) -> dict | None:
+    for ch in _iter_deposit_channels(info):
+        if int(ch.get("id") or 0) == int(channel_id):
+            return ch
+    return None
+
+
+def channel_requires_bank(info: dict, channel_id: int) -> bool:
+    """Kênh TIMEPAY / tương tự có bank_list — bắt buộc bank_id trước khi tạo đơn."""
+    ch = _channel_by_id(info, channel_id)
+    return bool(ch and ch.get("bank_list"))
+
+
+def resolve_deposit_bank_id(
+    info: dict,
+    channel_id: int,
+    prefs: dict[str, Any] | None = None,
+) -> str:
+    """
+    Chọn bank_id từ depositinfo.bank_list (giống bấm 1 NH trên UI).
+    Config: deposit_bank_id hoặc deposit_bank_name (mặc định VPBANK).
+    """
+    ch = _channel_by_id(info, channel_id)
+    if not ch:
+        return ""
+    banks = [b for b in (ch.get("bank_list") or []) if isinstance(b, dict)]
+    if not banks:
+        return ""
+
+    prefs = prefs or _deposit_channel_prefs()
+    raw_id = prefs.get("deposit_bank_id")
+    if raw_id not in (None, ""):
+        bid = int(raw_id)
+        for b in banks:
+            if int(b.get("id") or 0) == bid:
+                return str(bid)
+        names = ", ".join(f"{b.get('id')}:{b.get('name')}" for b in banks[:6])
+        raise ValueError(
+            f"deposit_bank_id={bid} không có trong kênh {channel_id}. Có: {names}"
+        )
+
+    key = str(prefs.get("deposit_bank_name") or DEFAULT_DEPOSIT_BANK_NAME).strip().lower()
+    for b in banks:
+        bn = str(b.get("name") or "").strip().lower()
+        if not bn:
+            continue
+        if key in bn or bn in key or key.replace(" ", "") in bn.replace(" ", ""):
+            return str(int(b["id"]))
+
+    for b in banks:
+        if "vp" in str(b.get("name") or "").lower():
+            return str(int(b["id"]))
+    return str(int(banks[0]["id"]))
+
+
 def _channel_exists_in_info(info: dict, channel_id: int) -> bool:
     return any(int(c.get("id") or 0) == int(channel_id) for c in _iter_deposit_channels(info))
 
 
-def resolve_deposit_params(session: dict) -> tuple[int, int, str]:
+def resolve_deposit_params(
+    session: dict, info: dict | None = None
+) -> tuple[int, int, str]:
     """merchant_id + random_remark — ưu tiên config, cache session nếu kênh còn tồn tại."""
     prefs = _deposit_channel_prefs()
-    info = get_deposit_info(session=session)
+    if info is None:
+        info = get_deposit_info(session=session)
     if not info.get("ok"):
         raise ValueError(f"depositinfo lỗi: {info.get('raw')}")
 
     cached_ch = int(session.get("channel_id") or 0)
     pref_ch = prefs.get("channel_id")
+
+    if pref_ch is not None and cached_ch and cached_ch != int(pref_ch):
+        session.pop("channel_id", None)
+        session.pop("merchant_id", None)
+        session.pop("random_remark", None)
+        session.pop("bank_id", None)
+        cached_ch = 0
 
     if (
         session.get("merchant_id")
@@ -345,7 +418,7 @@ def resolve_deposit_params(session: dict) -> tuple[int, int, str]:
 
 
 def qrpay_merchant_from_deposit_info(info: dict) -> tuple[int, int, str]:
-    """Legacy QRPay 235 — kênh đã gỡ trên site."""
+    """QRPay-nạp tiền bankking (channel 235)."""
     return merchant_from_deposit_info(info, channel_id=QRPAY_CHANNEL_ID)
 
 
@@ -502,7 +575,7 @@ def apply_deposit_channel_to_session(session: dict, info: dict | None = None) ->
         session["channel_id"] = ch_id
         session["merchant_id"] = mer_id
         session["random_remark"] = remark
-        session["bank_id"] = ""
+        session["bank_id"] = resolve_deposit_bank_id(info, ch_id)
     except ValueError:
         pass
     return session
@@ -754,10 +827,23 @@ def _pay_url_trade_token(pay_url: str) -> str:
     return ""
 
 
+def _is_qrpay_pay_url(pay_url: str | None) -> bool:
+    return "qrpay" in str(pay_url or "").lower()
+
+
+def _trade_no_from_pay_url(pay_url: str) -> str:
+    q = parse_qs(urlparse(str(pay_url or "").strip()).query)
+    for key in ("tradeNo", "trade_no", "orderNo", "order_no"):
+        vals = q.get(key)
+        if vals and str(vals[0]).strip():
+            return str(vals[0]).strip()
+    return _pay_url_trade_token(pay_url)
+
+
 def _should_use_qrpay_api(trade_no: str, pay_url: str | None, channel_id: int) -> bool:
     if int(channel_id or 0) == QRPAY_CHANNEL_ID:
         return True
-    return "qrpay" in str(pay_url or "").lower()
+    return _is_qrpay_pay_url(pay_url)
 
 
 def _html_element_text(html: str, element_id: str) -> str:
@@ -1222,13 +1308,6 @@ def fetch_topay_transfer_info(
             "cấu hình auto_deposit.topay_bank_bid (bid lấy khi bấm 1 NH trên trang)"
         )
 
-    if len(try_bids) > 1 or bank_bids:
-        print(
-            f"[TOPAY] chọn ngân hàng (bid) — thử {len(try_bids)} mã: "
-            f"{', '.join(try_bids[:4])}{'…' if len(try_bids) > 4 else ''}",
-            flush=True,
-        )
-
     last_err = ""
     for bid in try_bids:
         proceed_url = f"{base}/index/proceed_deposit.do?bid={bid}&o_code={order_code}"
@@ -1250,15 +1329,6 @@ def fetch_topay_transfer_info(
                     ti["account_no"] = _parse_account_from_emv(
                         str(ti["qr_emv_payload"])
                     ) or ti.get("account_no")
-                print(
-                    f"[TOPAY] bid={bid} → có QR EMV"
-                    + (
-                        f" | STK {ti.get('account_no')} | NDCK {ti.get('transfer_content')}"
-                        if ti.get("account_no")
-                        else ""
-                    ),
-                    flush=True,
-                )
                 return ti
             last_err = f"bid={bid}: chưa có EMV"
         except Exception as e:
@@ -1289,6 +1359,11 @@ def fetch_transfer_info_from_pay_url(
     pay_url = str(pay_url or "").strip()
     if not pay_url:
         raise ValueError("pay_url trống")
+    if _is_qrpay_pay_url(pay_url):
+        trade_no = _trade_no_from_pay_url(pay_url)
+        if not trade_no:
+            raise ValueError(f"QRPay pay_url không có tradeNo: {pay_url[:80]}")
+        return fetch_qrpay_transfer_info(trade_no, session=session)
     if "topay" in pay_url.lower():
         prefs = _deposit_channel_prefs()
         return fetch_topay_transfer_info(
@@ -1383,28 +1458,65 @@ def create_deposit_order(
     prefs = _deposit_channel_prefs()
     amount = max(int(amount), int(prefs["min_amount_vnd"]))
 
-    sessions = load_sessions()
-    session = session or sessions.get(account_id)
-    if not session:
-        raise KeyError(f"Không có account '{account_id}' trong sessions")
-
     try:
-        from xoso66_session import ensure_session
+        from xoso66_accounts_db import account_to_session_dict, get_account
+        from xoso66_proxy import ensure_proxy
+        from xoso66_session import ensure_session, persist_session
 
-        session = ensure_session(account_id)
-        sessions[account_id] = session
+        if session is None:
+            row = get_account(account_id)
+            if not row:
+                raise KeyError(f"Không có account '{account_id}'")
+            session = account_to_session_dict(row)
+
+        # Caller vừa check số dư / ensure — có form_token thì khỏi getBalance lại.
+        if session.get("form_token"):
+            ensure_proxy(session)
+        else:
+            session = ensure_session(account_id)
+    except KeyError:
+        raise
     except Exception as e:
         return {"ok": False, "account_id": account_id, "error": f"Session/login: {e}"}
 
-    if not session.get("merchant_id"):
-        apply_deposit_channel_to_session(session)
-    get_deposit_info(session=session)
+    # Một lần depositinfo (trước đây gọi 2–3 lần: apply + get + resolve).
+    try:
+        info = get_deposit_info(session=session)
+    except Exception as e:
+        proxy_hit = False
+        try:
+            from xoso66_proxy import is_proxy_transport_error
+
+            proxy_hit = is_proxy_transport_error(e)
+        except Exception:
+            pass
+        out: dict[str, Any] = {
+            "ok": False,
+            "account_id": account_id,
+            "error": str(e),
+        }
+        if proxy_hit:
+            out["proxy_error"] = True
+        return out
+    if not info.get("ok"):
+        return {
+            "ok": False,
+            "account_id": account_id,
+            "error": f"depositinfo lỗi: {info.get('raw')}",
+        }
     session.pop("aes_session_key", None)
-    ch_id, mer_id, remark = resolve_deposit_params(session)
+    try:
+        ch_id, mer_id, remark = resolve_deposit_params(session, info=info)
+    except ValueError as e:
+        return {"ok": False, "account_id": account_id, "error": str(e)}
     session["channel_id"] = ch_id
     session["merchant_id"] = mer_id
     session["random_remark"] = remark
-    session["bank_id"] = ""
+    try:
+        bank_id = resolve_deposit_bank_id(info, ch_id)
+    except ValueError as e:
+        return {"ok": False, "account_id": account_id, "error": str(e)}
+    session["bank_id"] = bank_id
 
     form_token = get_form_token(session)
     plain = prepare_deposit_payload(
@@ -1412,7 +1524,7 @@ def create_deposit_order(
         merchant_id=mer_id,
         random_remark=remark,
         form_token=form_token,
-        bank_id="",
+        bank_id=bank_id,
         extra=extra_plain or session.get("deposit_extra"),
     )
 
@@ -1482,9 +1594,9 @@ def create_deposit_order(
             ti = fetch_qrpay_transfer_info(trade_no, session=session)
         except Exception as e:
             out["transfer_info_error"] = str(e)
-    elif pay_url:
+    elif pay_url and not (ti and ti.get("account_no")):
         try:
-            ti = ti or fetch_transfer_info_from_pay_url(
+            ti = fetch_transfer_info_from_pay_url(
                 pay_url, amount=amount, session=session
             )
         except Exception as e:
@@ -1517,8 +1629,8 @@ def create_deposit_order(
         out["error"] = raw.get("msg") or "Tạo đơn thất bại — kiểm tra decrypt / payload / form_token"
     else:
         try:
-            sessions[account_id] = session
-            save_sessions(sessions)
+            # Chỉ ghi 1 acc — save_sessions cả map = 123 UPDATE (~13–20s).
+            persist_session(account_id, session)
         except Exception:
             pass
     return out
@@ -1774,7 +1886,7 @@ def print_setup_help() -> None:
 
 2) pip install -r requirements.txt  (xoso66_crypto.py)
 
-3) Kênh nạp: TOPAY Ngân hàng trực tuyến (channel 280) — min 1M, chỉnh trong xoso66_config.json
+3) Kênh nạp: QRPay-nạp tiền bankking (channel 235) — chỉnh trong xoso66_config.json
 
 4) (Tuỳ chọn) cek_p trong session neu GET /index/encryptKey khong tra header
 

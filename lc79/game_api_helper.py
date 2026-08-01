@@ -17,8 +17,9 @@ import requests as std_requests  # Fallback khi curl_cffi lỗi TLS
 NODE_SERVER_URL = "http://127.0.0.1:3000"
 
 # User đã bị đánh dấu proxy chết trong tiến trình → không lặp 5 lần retry cho mọi API.
-# Mở lại: restart tiến trình hoặc gọi clear_proxy_circuit(username) sau khi đổi proxy / sửa status.
-_PROXY_CIRCUIT_OPEN: set[str] = set()
+# Lưu proxy_str lúc fail: nếu DB đổi sang proxy khác → tự mở lại và thử proxy mới.
+# Vẫn có thể mở tay: clear_proxy_circuit / restart / HTTP 2xx / WS reconnect.
+_PROXY_CIRCUIT_OPEN: dict[str, str] = {}
 
 
 def clear_proxy_circuit(username: str | None = None) -> None:
@@ -26,7 +27,30 @@ def clear_proxy_circuit(username: str | None = None) -> None:
     if username is None:
         _PROXY_CIRCUIT_OPEN.clear()
     else:
-        _PROXY_CIRCUIT_OPEN.discard(username)
+        _PROXY_CIRCUIT_OPEN.pop(username, None)
+
+
+def _normalize_proxy_key(proxy_str: str | None) -> str:
+    return (proxy_str or "").strip()
+
+
+def _circuit_should_block(username: str, current_proxy: str | None) -> bool:
+    """
+    True = vẫn fail-fast. False = đã mở circuit (proxy đổi hoặc chưa từng ghim).
+    """
+    if username not in _PROXY_CIRCUIT_OPEN:
+        return False
+    failed_proxy = _PROXY_CIRCUIT_OPEN.get(username, "")
+    current = _normalize_proxy_key(current_proxy)
+    if current and current != failed_proxy:
+        _PROXY_CIRCUIT_OPEN.pop(username, None)
+        host = current.split(":")[0] if ":" in current else current
+        print(
+            f"🔄 [{username}] Proxy đã đổi trên DB → mở circuit, thử proxy mới ({host})",
+            flush=True,
+        )
+        return False
+    return True
 
 
 # Import jwt_manager để refresh token
@@ -173,10 +197,7 @@ def game_request_with_retry_ex(
 
     failure_tag: None (ok), "proxy_exhausted", "no_auth", "auth", "error"
     """
-    if username in _PROXY_CIRCUIT_OPEN:
-        return None, "proxy_exhausted"
-
-    # 1. Lấy auth info
+    # 1. Lấy auth info trước — để phát hiện proxy đã đổi trên DB và tự mở circuit
     auth = get_user_auth(username)
     if not auth:
         if username in _PROXY_CIRCUIT_OPEN:
@@ -186,11 +207,16 @@ def game_request_with_retry_ex(
 
     proxy_str, jwt, access_token, _ = auth
 
+    if _circuit_should_block(username, proxy_str):
+        return None, "proxy_exhausted"
+
     if not _credential_usable(jwt) or not _credential_usable(access_token):
         if refresh_jwt_and_token(username):
             auth2 = get_user_auth(username)
             if auth2:
                 proxy_str, jwt, access_token, _ = auth2
+                if _circuit_should_block(username, proxy_str):
+                    return None, "proxy_exhausted"
         if not _credential_usable(jwt) or not _credential_usable(access_token):
             print(
                 f"❌ [{username}] Không lấy được JWT/accessToken sau khi thử đăng nhập",
@@ -262,7 +288,7 @@ def game_request_with_retry_ex(
                 print(f"❌ [{username}] Lỗi proxy (attempt {attempt}/5): {e}", flush=True)
                 if attempt == 5:
                     proxy_exhausted = True
-                    _PROXY_CIRCUIT_OPEN.add(username)
+                    _PROXY_CIRCUIT_OPEN[username] = _normalize_proxy_key(proxy_str)
                     try:
                         curl_requests.put(f"{NODE_SERVER_URL}/api/users/{username}", json={"status": "Proxy Lỗi"}, timeout=5)
                     except Exception:
@@ -283,7 +309,16 @@ def game_request_with_retry_ex(
             # Lấy lại token mới
             auth2 = get_user_auth(username)
             if auth2:
-                _, jwt2, access_token2, _ = auth2
+                proxy2, jwt2, access_token2, _ = auth2
+                if _circuit_should_block(username, proxy2):
+                    return None, "proxy_exhausted"
+                # Proxy có thể đã đổi khi refresh — dùng proxy mới nếu khác
+                if _normalize_proxy_key(proxy2) != _normalize_proxy_key(proxy_str):
+                    proxy_str = proxy2
+                    proxies = build_proxies(proxy_str)
+                    if not proxies:
+                        print(f"❌ [{username}] Proxy không hợp lệ sau refresh", flush=True)
+                        return None, "error"
                 headers["authorization"] = f"Bearer {jwt2}"
                 common_params["at"] = access_token2
 
@@ -309,7 +344,7 @@ def game_request_with_retry_ex(
             return None, "auth"
 
     if resp is not None and 200 <= resp.status_code < 300:
-        _PROXY_CIRCUIT_OPEN.discard(username)
+        _PROXY_CIRCUIT_OPEN.pop(username, None)
 
     return resp, None
 

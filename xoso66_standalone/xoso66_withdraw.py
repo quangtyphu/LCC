@@ -23,6 +23,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
+import time
 from typing import Any
 
 from xoso66_bank_bind import get_user_bank_list
@@ -35,10 +37,10 @@ from xoso66_session import (
     BASE_URL,
     ensure_session,
     merge_playwright_cookies,
+    persist_session,
     post_encrypted,
     _requests_session,
 )
-from xoso66_sessions_io import load_sessions, save_sessions
 
 WITHDRAWAL_ORDER_PATH = "/server/payment/withdrawalorder"
 CURRENCY_VND = 1
@@ -222,14 +224,86 @@ def withdraw_for_account(
         result["balance_after"] = bal
         result["card_id_used"] = cid
 
-    accounts = load_sessions()
-    accounts[account_id] = session
-    save_sessions(accounts)
+    persist_session(account_id, session)
     result["account_id"] = account_id
     result["payload_sent"] = {
         k: v for k, v in plain.items() if k != "fund_password"
     }
     return result
+
+
+def _sync_payment_history_bg(account_id: str, days: int = 7) -> None:
+    try:
+        from xoso66_accounts_db import username_for_log
+        from xoso66_payment_history_sync import sync_account_payment_history
+
+        user = username_for_log(account_id)
+        rep = sync_account_payment_history(account_id, days=days)
+        if rep.get("ok"):
+            print(
+                f"[PAYMENT-HIST] {user}: nạp {rep.get('deposit', 0)} | "
+                f"rút {rep.get('withdraw', 0)} dòng",
+                flush=True,
+            )
+        else:
+            print(
+                f"[PAYMENT-HIST] {user}: {rep.get('error') or rep.get('errors')}",
+                flush=True,
+            )
+    except Exception as e:
+        from xoso66_accounts_db import username_for_log
+
+        print(f"[PAYMENT-HIST] {username_for_log(account_id)}: {e}", flush=True)
+
+
+def run_withdraw_with_tracking(
+    account_id: str,
+    amount: int,
+    fund_password: str = "",
+    *,
+    use_playwright: bool = False,
+    card_id: int = 0,
+) -> dict[str, Any]:
+    """Rút tiền + đăng ký submission + poll Hoàn tất (dùng chung CMS bridge & API)."""
+    from xoso66_session import ensure_session
+    from xoso66_withdraw_tracking import extract_withdraw_serial, start_withdraw_confirm_watch
+
+    aid = str(account_id).strip()
+    session = ensure_session(aid)
+    pwd = resolve_fund_password(session, fund_password)
+    since_ms = int(time.time() * 1000)
+    out = withdraw_for_account(
+        aid,
+        amount,
+        pwd,
+        card_id=int(card_id or 0),
+        use_playwright=use_playwright,
+    )
+    from xoso66_accounts_db import username_for_log
+
+    print(f"[WITHDRAW] {username_for_log(aid)} {amount}: ok={out.get('ok')}", flush=True)
+    if out.get("ok"):
+        from xoso66_payment_history_db import register_withdraw_submission
+
+        serial = extract_withdraw_serial(out)
+        register_withdraw_submission(aid, amount, since_ms, serial_no=serial)
+        start_withdraw_confirm_watch(
+            aid,
+            amount_vnd=amount,
+            since_ms=since_ms,
+            serial_no=serial,
+            log_prefix="[WITHDRAW-WATCH]",
+            notify_on_fail=True,
+        )
+        threading.Thread(
+            target=_sync_payment_history_bg,
+            args=(aid,),
+            kwargs={"days": 3},
+            daemon=True,
+        ).start()
+        if serial:
+            out["serial_no"] = serial
+    return out
 
 
 def main() -> int:
@@ -260,7 +334,7 @@ def main() -> int:
                     ensure_ascii=False,
                 )
             )
-            save_sessions({**load_sessions(), args.account: session})
+            persist_session(args.account, session)
             return 0 if out.get("ok") else 1
 
         fund_pwd = resolve_fund_password(session, args.fund_password) if (

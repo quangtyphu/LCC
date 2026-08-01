@@ -10,7 +10,7 @@ Phụ trợ (không mã hóa):
   GET  /server/index/getcaptcha
   POST /server/index/smscode  { source: "register", phone }
 
-Đăng ký thật: dùng Playwright (gọi Vue store — header CF theo URL, không cần captcha).
+Đăng ký thật: dùng Playwright (gọi Vue store) + Capsolver ImageToText khi site bắt captcha ảnh.
 HTTP encrypt thuần hay trả code 1004 (cf-auth-token gắn URL).
 
 CLI:
@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import string
 import sys
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -77,12 +79,13 @@ def new_guest_session(*, proxy: str = "", user_agent: str = "") -> dict:
 
 
 def seed_cf_from_account(guest: dict, account_id: str) -> None:
-    """Copy cf_clearance + cf-* từ account có sẵn (tùy chọn, vẫn nên refresh)."""
+    """Copy chỉ CF cookies/headers từ account có sẵn — không copy PHPSESSID/form_token."""
     acc = load_sessions().get(account_id)
     if not acc:
         raise KeyError(f"Không có account '{account_id}'")
     cookies = dict(guest.get("cookies") or {})
-    for k in ("cf_clearance", "__cf_bm", "PHPSESSID"):
+    # Chỉ CF — PHPSESSID/form_token của nick khác làm lẫn số dư (vd. ak47 ↔ consoverhnz).
+    for k in ("cf_clearance", "__cf_bm"):
         if acc.get("cookies", {}).get(k):
             cookies[k] = acc["cookies"][k]
     guest["cookies"] = cookies
@@ -92,8 +95,6 @@ def seed_cf_from_account(guest: dict, account_id: str) -> None:
         if v:
             headers[k] = v
     guest["headers"] = headers
-    if acc.get("form_token"):
-        guest["form_token"] = acc["form_token"]
 
 
 def prepare_register_payload(
@@ -197,11 +198,14 @@ def send_sms_code(session: dict, phone: str, *, source: str = "register") -> dic
 
 def register_failure_message(result: dict[str, Any]) -> str:
     """Rút msg ngắn từ response đăng ký (không dump captcha base64)."""
+    if result.get("error") in ("no_vue_store", "cf_verify_blocked"):
+        return str(result.get("msg") or "Cloudflare/Vue chưa sẵn sàng — thử proxy khác")
     if result.get("msg"):
         return str(result["msg"])
     code = result.get("code")
     hints = {
         1046: " — đổi username khác hoặc đăng nhập acc đã có",
+        1049: " — chờ 5–10 phút rồi thử lại (IP/proxy bị giới hạn tần suất)",
     }
     hint = hints.get(int(code)) if code is not None else ""
 
@@ -225,6 +229,13 @@ def register_failure_message(result: dict[str, Any]) -> str:
     if code is not None:
         return f"Đăng ký thất bại (code={code}){hint}"
     return "Đăng ký thất bại"
+
+
+_REGISTER_RATE_LIMIT_CODE = 1049
+
+
+def is_register_rate_limit_code(code: int | None) -> bool:
+    return code == _REGISTER_RATE_LIMIT_CODE
 
 
 def is_register_success_response(
@@ -275,81 +286,642 @@ def ensure_guest_ready(session: dict, *, skip_cf: bool = False) -> dict[str, Any
     return report
 
 
+def _register_via_vue_browser(
+    session: dict,
+    plain: dict,
+    *,
+    cf_meta: dict[str, Any] | None = None,
+    method: str = "cms_chrome",
+    browser_mode: str = "cms_persistent",
+) -> dict[str, Any]:
+    """Đăng ký qua Vue store trong browser."""
+    import os
+
+    from xoso66_cf import _apply_cookies, bootstrap_register_page, _inject_session_cookies
+    from xoso66_captcha_solver import (
+        EXTRACT_STORE_TOKENS_JS,
+        REGISTER_DISPATCH_JS,
+        captcha_enabled,
+        is_wrong_captcha_code,
+        load_captcha_config,
+        parse_register_error,
+        solve_image_captcha_auto,
+        solve_register_captcha_from_page,
+    )
+    from xoso66_playwright_ctx import (
+        playwright_browser,
+        playwright_cms_profile_browser,
+        playwright_register_browser,
+    )
+
+    headless = os.environ.get("XOSO66_CF_HEADLESS", "0") != "0"
+    cap_cfg = load_captcha_config()
+    max_attempts = max(1, int(cap_cfg.get("max_attempts") or 3))
+    meta = dict(cf_meta or {})
+    captcha_meta: dict[str, Any] = {}
+    pw_result: dict[str, Any] = {}
+    tokens: dict[str, Any] = {}
+
+    mode = (browser_mode or "cms_persistent").strip().lower()
+    use_native = mode == "native_cdp" and os.environ.get(
+        "XOSO66_REGISTER_NATIVE_CHROME", "1"
+    ).strip().lower() not in ("0", "false", "no")
+    use_cms_persistent = mode == "cms_persistent"
+    label = {
+        "native_cdp": "Chrome native + CDP",
+        "cms_persistent": "Playwright persistent profile CMS",
+        "ephemeral": "Chrome tạm + cookie CMS",
+    }.get(mode, mode)
+
+    def _run_page(context: Any) -> dict[str, Any]:
+        nonlocal pw_result, tokens, captcha_meta
+        page = context.pages[0] if context.pages else context.new_page()
+        if mode == "ephemeral":
+            from xoso66_cf import SITE_HOST
+
+            _inject_session_cookies(context, session, SITE_HOST)
+        print(f"[REGISTER] Vue dispatch ({label})…", flush=True)
+        has_cf = bool((session.get("cookies") or {}).get("cf_clearance"))
+        boot = bootstrap_register_page(
+            page,
+            session,
+            context=context,
+            headless=headless,
+            native_launch=use_native or (use_cms_persistent and has_cf),
+        )
+        if isinstance(boot.get("meta"), dict):
+            meta.update(boot["meta"])
+        if not boot.get("ok"):
+            return {
+                "ok": False,
+                "error": boot.get("error") or "bootstrap_failed",
+                "msg": boot.get("msg"),
+                "cf_meta": meta,
+                "method": method,
+                "session": session,
+            }
+
+        # Không gửi captcha trước — site thường không bắt (chỉ khi sai nhiều lần → code 1011).
+        for attempt in range(max_attempts):
+            pw_result = page.evaluate(REGISTER_DISPATCH_JS, plain)
+            resp = pw_result.get("response") if isinstance(pw_result.get("response"), dict) else {}
+            api_code = resp.get("code") if resp else pw_result.get("code")
+            api_msg = resp.get("msg") if resp else pw_result.get("msg")
+            if api_code is not None or api_msg:
+                print(
+                    f"[REGISTER] API lần {attempt + 1}: code={api_code} msg={api_msg or ''}",
+                    flush=True,
+                )
+            if pw_result.get("ok"):
+                break
+            err_text = str(pw_result.get("message") or pw_result.get("error") or "")
+            code, msg, cap_b64 = parse_register_error(err_text)
+            if pw_result.get("error") == "no_vue_store":
+                break
+            if not is_wrong_captcha_code(code) or attempt + 1 >= max_attempts:
+                if code is not None:
+                    pw_result.setdefault("code", code)
+                if msg:
+                    pw_result.setdefault("msg", msg)
+                break
+            if not captcha_enabled():
+                break
+            solved = (
+                solve_image_captcha_auto(cap_b64)
+                if cap_b64
+                else solve_register_captcha_from_page(page)
+            )
+            captcha_meta[f"retry_{attempt + 1}"] = {"ok": solved.get("ok"), "code": code}
+            if not solved.get("ok"):
+                pw_result["captcha_error"] = solved.get("error")
+                break
+            plain["captcha"] = str(solved.get("text") or "").strip()
+            print(f"[REGISTER] Captcha retry {attempt + 1}: {plain['captcha']!r}", flush=True)
+
+        if pw_result.get("ok"):
+            tokens = page.evaluate(EXTRACT_STORE_TOKENS_JS)
+        _apply_cookies(session, context.cookies())
+        return {}
+
+    try:
+        if use_native:
+            with playwright_register_browser(session, headless=headless, channel="chrome") as (
+                _p,
+                context,
+            ):
+                err = _run_page(context)
+                if err:
+                    return err
+        elif use_cms_persistent:
+            with playwright_cms_profile_browser(session, headless=headless, channel="chrome") as (
+                _p,
+                context,
+            ):
+                err = _run_page(context)
+                if err:
+                    return err
+        else:
+            with playwright_browser(
+                session,
+                base_url=BASE_URL,
+                headless=headless,
+                channel="chrome",
+                ignore_automation=True,
+            ) as (_p, _browser, context):
+                err = _run_page(context)
+                if err:
+                    return err
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "cf_meta": meta,
+            "method": method,
+            "session": session,
+        }
+
+    if pw_result.get("error"):
+        err_body: dict[str, Any] = {
+            "ok": False,
+            "error": pw_result.get("error"),
+            "msg": pw_result.get("msg"),
+            "cf_meta": meta,
+            "captcha": captcha_meta or None,
+            "method": method,
+            "session": session,
+        }
+        err_text = str(pw_result.get("message") or pw_result.get("error") or "")
+        if '"status":475' in err_text or '"status": 475' in err_text:
+            err_body["http_status"] = 475
+            err_body["msg"] = (
+                "Cloudflare chặn POST /user/register (HTTP 475). "
+                "Cookie CMS đã OK nhưng CF vẫn chặn khi automation gửi đăng ký — "
+                "thử đóng Chrome CMS (profile XMSB17) rồi chạy lại, hoặc đăng ký tay trong Chrome CMS."
+            )
+        code, msg, _ = parse_register_error(err_text)
+        if msg and msg != str(pw_result.get("error") or ""):
+            err_body["msg"] = msg
+        if code is not None:
+            err_body["code"] = code
+        return err_body
+
+    data = pw_result.get("response") if isinstance(pw_result.get("response"), dict) else {}
+    user_data = data.get("data") if isinstance(data.get("data"), dict) else {}
+    ok, fail_reason = is_register_success_response(
+        data,
+        expected_username=str(plain.get("username") or ""),
+    )
+    if tokens.get("form_token"):
+        session["form_token"] = tokens["form_token"]
+    if ok:
+        session["user_info"] = user_data
+        session["username"] = user_data.get("username") or plain.get("username")
+        session["password"] = plain.get("password")
+        session["ukey"] = user_data.get("ukey")
+    return {
+        "ok": ok,
+        "code": data.get("code"),
+        "msg": data.get("msg"),
+        "fail_reason": fail_reason or None,
+        "data": user_data,
+        "user_info": user_data if ok else None,
+        "raw": data,
+        "cf_meta": meta,
+        "captcha": captcha_meta or None,
+        "method": method,
+        "session": session,
+    }
+
+
+def _prefetch_register_captcha(session: dict, plain: dict) -> dict[str, Any]:
+    """Lấy + giải captcha qua HTTP, ghi vào plain."""
+    from xoso66_captcha_solver import (
+        captcha_base64_from_payload,
+        captcha_enabled,
+        solve_image_captcha_auto,
+    )
+
+    meta: dict[str, Any] = {}
+    if not captcha_enabled() or str(plain.get("captcha") or "").strip():
+        return meta
+    try:
+        ensure_guest_ready(session, skip_cf=True)
+        cap = get_captcha(session)
+        b64 = captcha_base64_from_payload(cap.get("raw") or {})
+        if b64:
+            solved = solve_image_captcha_auto(b64)
+            meta["prefetch"] = {"ok": solved.get("ok"), "error": solved.get("error")}
+            if solved.get("ok"):
+                plain["captcha"] = str(solved.get("text") or "").strip()
+                print(f"[REGISTER] Captcha HTTP: {plain['captcha']!r}", flush=True)
+    except Exception as e:
+        meta["prefetch"] = {"ok": False, "error": str(e)}
+    return meta
+
+
+def _resolve_cms_register_context(
+    *,
+    cms_device: str = "",
+    proxy: str = "",
+) -> tuple[str, dict[str, Any] | None]:
+    """Gắn XOSO66_CMS_DEVICE + kiểm tra profile CMS tồn tại."""
+    import os
+
+    from xoso66_cms_chrome import resolve_cms_chrome_by_device
+
+    dev = str(cms_device or os.environ.get("XOSO66_CMS_DEVICE") or "").strip()
+    if not dev:
+        return proxy, None
+    os.environ["XOSO66_CMS_DEVICE"] = dev
+    row = resolve_cms_chrome_by_device(dev)
+    if not row or not row.get("profile_dir"):
+        raise ValueError(f"Không tìm thấy Chrome profile CMS: {dev}")
+    pdir = Path(str(row["profile_dir"]))
+    if not pdir.is_dir():
+        raise ValueError(f"Thư mục profile CMS không tồn tại ({dev}): {pdir}")
+    cms_proxy = str(row.get("proxy") or "").strip()
+    use_proxy = str(proxy or cms_proxy or "").strip()
+    if not use_proxy:
+        raise ValueError(f"Profile CMS {dev} thiếu proxy")
+    print(f"[PROVISION] CMS device {dev} → {pdir}", flush=True)
+    return use_proxy, row
+
+
+def register_account_via_cms_chrome(
+    plain: dict,
+    *,
+    proxy: str = "",
+    user_agent: str = "",
+    cms_device: str = "",
+) -> dict[str, Any]:
+    """
+    Đăng ký tự động:
+      1) Chrome CMS + extension (không CDP)
+      2) Playwright persistent profile CMS
+    """
+    import os
+    import time
+
+    from xoso66_chrome_ext_register import register_via_chrome_extension
+    from xoso66_chrome_profile import (
+        cms_chrome_warm_session,
+        profile_is_locked,
+        wait_profile_unlocked,
+    )
+    from xoso66_playwright_ctx import _register_profile_dir
+    from xoso66_proxy import require_explicit_proxy
+
+    dev = str(cms_device or os.environ.get("XOSO66_CMS_DEVICE") or "").strip()
+    if dev:
+        os.environ["XOSO66_CMS_DEVICE"] = dev
+    proxy = require_explicit_proxy(proxy)
+    session = new_guest_session(proxy=proxy, user_agent=user_agent)
+    profile_dir = _register_profile_dir(proxy)
+    cf_meta = cms_chrome_warm_session(session, profile_dir, cms_device=dev)
+
+    if not cf_meta.get("ok") and not cf_meta.get("has_clearance"):
+        who = dev or profile_dir.name
+        return {
+            "ok": False,
+            "error": cf_meta.get("error") or "cf_warm_failed",
+            "msg": (
+                f"Cloudflare chưa cho qua (cf_clearance) — profile {who}. "
+                "Mở Chrome CMS, giải captcha chọn con vật nếu có, rồi bấm Đăng ký lại."
+            ),
+            "cf_meta": cf_meta,
+            "method": "cms_chrome",
+            "session": session,
+        }
+
+    captcha_meta: dict[str, Any] = {}
+    if os.environ.get("XOSO66_REGISTER_PREFETCH_CAPTCHA", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        captcha_meta = _prefetch_register_captcha(session, plain)
+
+    if profile_is_locked(profile_dir):
+        print(
+            "[REGISTER] Chrome đang giữ profile CMS — chờ đóng (tối đa 30s)…",
+            flush=True,
+        )
+        if not wait_profile_unlocked(profile_dir, timeout_sec=30):
+            return {
+                "ok": False,
+                "error": "profile_in_use",
+                "msg": (
+                    f"Profile {dev or profile_dir.name} đang mở trong Chrome. "
+                    "Đóng cửa sổ Chrome đó rồi bấm Đăng ký lại."
+                ),
+                "cf_meta": cf_meta,
+                "method": "cms_chrome",
+                "session": session,
+            }
+
+    # 1) Playwright persistent — đã chứng minh gọi được API register
+    print("[REGISTER] Playwright persistent profile CMS…", flush=True)
+    from xoso66_chrome_profile import warm_session_from_profile
+
+    warm_session_from_profile(session, profile_dir)
+    max_rate_retries = max(1, int(os.environ.get("XOSO66_REGISTER_RATE_RETRY", "3")))
+    result: dict[str, Any] = {}
+
+    for rate_try in range(max_rate_retries):
+        if rate_try > 0:
+            wait_s = 45 * rate_try
+            print(f"[REGISTER] Rate limit — chờ {wait_s}s rồi thử lại…", flush=True)
+            time.sleep(wait_s)
+            plain.pop("captcha", None)
+
+        result = _register_via_vue_browser(
+            session,
+            plain,
+            cf_meta=cf_meta,
+            method="cms_chrome",
+            browser_mode="cms_persistent",
+        )
+        result["captcha"] = captcha_meta or result.get("captcha")
+        if result.get("ok"):
+            return result
+        if is_register_rate_limit_code(result.get("code")):
+            continue
+        if result.get("http_status") == 475 or '"status":475' in str(result.get("error") or ""):
+            print("[REGISTER] 475 — refresh cookie profile…", flush=True)
+            cms_chrome_warm_session(session, profile_dir, cms_device=dev)
+            warm_session_from_profile(session, profile_dir)
+            result = _register_via_vue_browser(
+                session,
+                plain,
+                cf_meta=cf_meta,
+                method="cms_chrome",
+                browser_mode="cms_persistent",
+            )
+            result["captcha"] = captcha_meta or result.get("captcha")
+            if result.get("ok"):
+                return result
+        break
+
+    if result.get("ok"):
+        return result
+
+    # 2) Extension (tùy chọn) — Chrome thật, không CDP
+    use_ext = os.environ.get("XOSO66_REGISTER_USE_EXT", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if not use_ext:
+        return result
+
+    if profile_is_locked(profile_dir) and not wait_profile_unlocked(profile_dir, timeout_sec=15):
+        result.setdefault(
+            "msg",
+            result.get("msg") or "Playwright thất bại — profile vẫn đang mở, không chạy extension.",
+        )
+        return result
+
+    print("[REGISTER] Chrome extension (fallback)…", flush=True)
+    ext_out = register_via_chrome_extension(session, plain, profile_dir, timeout_sec=90)
+    cf_meta["extension"] = {k: v for k, v in ext_out.items() if k not in ("response", "result")}
+    if ext_out.get("ok"):
+        data = ext_out.get("response") if isinstance(ext_out.get("response"), dict) else {}
+        if not data and isinstance(ext_out.get("result"), dict):
+            data = ext_out["result"].get("response") if isinstance(ext_out["result"].get("response"), dict) else {}
+        user_data = data.get("data") if isinstance(data.get("data"), dict) else {}
+        ok, fail_reason = is_register_success_response(
+            data, expected_username=str(plain.get("username") or "")
+        )
+        if ok:
+            session["user_info"] = user_data
+            session["username"] = user_data.get("username") or plain.get("username")
+            session["password"] = plain.get("password")
+            session["ukey"] = user_data.get("ukey")
+        return {
+            "ok": ok,
+            "code": data.get("code"),
+            "msg": data.get("msg"),
+            "fail_reason": fail_reason or None,
+            "user_info": user_data if ok else None,
+            "raw": data,
+            "cf_meta": cf_meta,
+            "captcha": captcha_meta or None,
+            "method": "cms_chrome_ext",
+            "session": session,
+        }
+
+    ext_code = None
+    ext_msg = str(ext_out.get("error") or ext_out.get("message") or "")
+    if ext_out.get("response") and isinstance(ext_out["response"], dict):
+        ext_code = ext_out["response"].get("code")
+    if is_register_rate_limit_code(ext_code):
+        for rate_try in range(1, max(1, int(os.environ.get("XOSO66_REGISTER_RATE_RETRY", "3")))):
+            wait_s = 45 * rate_try
+            print(f"[REGISTER] Rate limit {ext_code} — chờ {wait_s}s…", flush=True)
+            time.sleep(wait_s)
+            plain.pop("captcha", None)
+            captcha_meta.update(_prefetch_register_captcha(session, plain))
+            ext_out = register_via_chrome_extension(session, plain, profile_dir, timeout_sec=150)
+            if ext_out.get("ok"):
+                data = ext_out.get("response") if isinstance(ext_out.get("response"), dict) else {}
+                user_data = data.get("data") if isinstance(data.get("data"), dict) else {}
+                ok, fail_reason = is_register_success_response(
+                    data, expected_username=str(plain.get("username") or "")
+                )
+                if ok:
+                    session["user_info"] = user_data
+                    session["username"] = user_data.get("username") or plain.get("username")
+                    session["password"] = plain.get("password")
+                    session["ukey"] = user_data.get("ukey")
+                return {
+                    "ok": ok,
+                    "code": data.get("code"),
+                    "msg": data.get("msg"),
+                    "fail_reason": fail_reason or None,
+                    "user_info": user_data if ok else None,
+                    "raw": data,
+                    "cf_meta": cf_meta,
+                    "captcha": captcha_meta or None,
+                    "method": "cms_chrome_ext",
+                    "session": session,
+                }
+
+    if ext_msg and not result.get("msg"):
+        result["msg"] = ext_msg
+    result["cf_meta"] = cf_meta
+    return result
+
+
 def register_account_playwright(
     plain: dict,
     *,
     headless: bool | None = None,
     proxy: str = "",
     user_agent: str = "",
+    cms_device: str = "",
 ) -> dict[str, Any]:
-    """Đăng ký qua trình duyệt (Vue $store) — khuyến nghị."""
+    """Đăng ký — mặc định CMS Chrome (không CDP); mode=cdp mới dùng Playwright."""
     import os
 
+    mode = os.environ.get("XOSO66_REGISTER_MODE", "cms").strip().lower()
+    if mode != "cdp":
+        out = register_account_via_cms_chrome(
+            plain,
+            proxy=proxy,
+            user_agent=user_agent,
+            cms_device=cms_device,
+        )
+        if out.get("ok"):
+            return out
+        if os.environ.get("XOSO66_REGISTER_USE_CDP", "0").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            return out
+        print("[REGISTER] CMS HTTP thất bại → fallback CDP (dễ bị CF chọn con vật)…", flush=True)
+
     try:
-        from xoso66_playwright_ctx import playwright_browser
+        from xoso66_playwright_ctx import playwright_register_browser
     except ImportError:
         raise RuntimeError("pip install playwright && playwright install chromium")
 
-    from xoso66_cf import _apply_cookies
+    from xoso66_cf import _apply_cookies, bootstrap_register_page
+    from xoso66_captcha_solver import (
+        EXTRACT_STORE_TOKENS_JS,
+        REGISTER_DISPATCH_JS,
+        captcha_enabled,
+        is_wrong_captcha_code,
+        load_captcha_config,
+        parse_register_error,
+        solve_image_captcha_auto,
+        solve_register_captcha_from_page,
+    )
+    from xoso66_proxy import require_explicit_proxy
 
     if headless is None:
-        headless = os.environ.get("XOSO66_CF_HEADLESS", "1") != "0"
-
-    from xoso66_proxy import require_explicit_proxy
+        reg_hl = os.environ.get("XOSO66_REGISTER_HEADLESS")
+        if reg_hl is not None:
+            headless = reg_hl.strip() not in ("0", "false", "no")
+        else:
+            headless = os.environ.get("XOSO66_CF_HEADLESS", "0") != "0"
+    pw_channel = (os.environ.get("XOSO66_PW_CHANNEL") or "chrome").strip() or None
 
     proxy = require_explicit_proxy(proxy)
     session = new_guest_session(proxy=proxy, user_agent=user_agent)
+    cap_cfg = load_captcha_config()
+    max_attempts = max(1, int(cap_cfg.get("max_attempts") or 3))
+    cf_meta: dict[str, Any] = {}
 
     def _http_register_fallback(reason: str) -> dict[str, Any]:
         print(
             f"[REGISTER] {reason} → thử đăng ký HTTP (requests socks5h)…",
             flush=True,
         )
-        return register_account(session, plain)
+        try:
+            ensure_guest_ready(session, skip_cf=True)
+        except Exception as e:
+            return {
+                "ok": False,
+                "error": "http_bootstrap_failed",
+                "msg": str(e),
+                "session": session,
+                "method": "http",
+            }
+        return register_account(session, plain, skip_cf=True)
+
+    def _should_http_fallback(pw_result: dict[str, Any]) -> bool:
+        if pw_result.get("ok"):
+            return False
+        err = str(pw_result.get("error") or pw_result.get("message") or "")
+        if pw_result.get("error") in ("no_vue_store", "cf_verify_blocked"):
+            return False
+        return bool(err)
 
     pw_result: dict[str, Any] = {}
     tokens: dict[str, Any] = {}
+    captcha_meta: dict[str, Any] = {}
 
     try:
-        with playwright_browser(session, base_url=BASE_URL, headless=headless) as (
+        with playwright_register_browser(
+            session,
+            headless=headless,
+            channel=pw_channel,
+        ) as (
             _p,
-            _browser,
             context,
         ):
-            page = context.new_page()
-            page.goto(f"{BASE_URL}/home/", wait_until="domcontentloaded", timeout=90_000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=25_000)
-            except Exception:
-                page.wait_for_timeout(8_000)
-            page.wait_for_timeout(2_000)
+            page = context.pages[0] if context.pages else context.new_page()
+            boot = bootstrap_register_page(
+                page,
+                session,
+                context=context,
+                headless=headless,
+                native_launch=os.environ.get("XOSO66_REGISTER_NATIVE_CHROME", "1").strip().lower()
+                not in ("0", "false", "no"),
+            )
+            cf_meta = boot.get("meta") if isinstance(boot.get("meta"), dict) else {}
+            if not boot.get("ok"):
+                pw_result = {
+                    "error": boot.get("error") or "no_vue_store",
+                    "msg": boot.get("msg"),
+                }
+            elif captcha_enabled() and not str(plain.get("captcha") or "").strip():
+                solved = solve_register_captcha_from_page(page)
+                captcha_meta["prefetch"] = {
+                    "ok": solved.get("ok"),
+                    "text_len": len(str(solved.get("text") or "")),
+                }
+                if solved.get("ok"):
+                    plain["captcha"] = str(solved.get("text") or "").strip()
+                    print(f"[REGISTER] Captcha prefetch: {plain['captcha']!r}", flush=True)
+                else:
+                    print(
+                        f"[REGISTER] Captcha prefetch thất bại: {solved.get('error')}",
+                        flush=True,
+                    )
 
-            pw_result = page.evaluate(
-                """async (body) => {
-                    const app = document.querySelector('#app');
-                    const vm = app && app.__vue__;
-                    if (!vm || !vm.$store) return { error: 'no_vue_store' };
-                    try {
-                        const r = await vm.$store.dispatch('user/register', body);
-                        return { ok: true, response: r };
-                    } catch (e) {
-                        return { ok: false, error: String(e), message: e.message || '' };
+            if not pw_result.get("error"):
+                for attempt in range(max_attempts):
+                    pw_result = page.evaluate(REGISTER_DISPATCH_JS, plain)
+                    if pw_result.get("ok"):
+                        break
+
+                    err_text = str(pw_result.get("message") or pw_result.get("error") or "")
+                    code, msg, cap_b64 = parse_register_error(err_text)
+                    if pw_result.get("error") == "no_vue_store":
+                        break
+                    if not is_wrong_captcha_code(code) or attempt + 1 >= max_attempts:
+                        if code is not None:
+                            pw_result.setdefault("code", code)
+                        if msg:
+                            pw_result.setdefault("msg", msg)
+                        break
+                    if not captcha_enabled():
+                        break
+
+                    solved: dict[str, Any]
+                    if cap_b64:
+                        solved = solve_image_captcha_auto(cap_b64)
+                    else:
+                        solved = solve_register_captcha_from_page(page)
+                    captcha_meta[f"retry_{attempt + 1}"] = {
+                        "ok": solved.get("ok"),
+                        "code": code,
                     }
-                }""",
-                plain,
-            )
+                    if not solved.get("ok"):
+                        pw_result["captcha_error"] = solved.get("error")
+                        break
+                    plain["captcha"] = str(solved.get("text") or "").strip()
+                    print(
+                        f"[REGISTER] Captcha retry {attempt + 1}: {plain['captcha']!r}",
+                        flush=True,
+                    )
 
-            tokens = page.evaluate(
-                """() => {
-                    const vm = document.querySelector('#app').__vue__;
-                    const store = vm && vm.$store;
-                    if (!store) return {};
-                    return {
-                        form_token: store.getters.fromToken || '',
-                        cek_p: (store.state.app && store.state.app.cek_p) || ''
-                    };
-                }"""
-            )
+            if pw_result.get("ok"):
+                tokens = page.evaluate(EXTRACT_STORE_TOKENS_JS)
+            else:
+                tokens = {}
             _apply_cookies(session, context.cookies())
     except Exception as e:
         err = str(e)
@@ -358,17 +930,28 @@ def register_account_playwright(
         raise
 
     if pw_result.get("error"):
-        err_body: dict[str, Any] = {"ok": False, "error": pw_result.get("error"), "session": session, "method": "playwright"}
-        s = str(pw_result.get("error") or "").strip()
-        if s.startswith("Error:"):
-            s = s[6:].strip()
-        if s.startswith("{"):
-            try:
-                j = json.loads(s)
-                err_body["code"] = j.get("code")
-                err_body["msg"] = j.get("msg")
-            except json.JSONDecodeError:
-                pass
+        if _should_http_fallback(pw_result):
+            http_res = _http_register_fallback("Vue/API lỗi")
+            http_res["cf_meta"] = cf_meta or None
+            http_res["captcha"] = captcha_meta or None
+            if http_res.get("ok"):
+                return http_res
+        err_body: dict[str, Any] = {
+            "ok": False,
+            "error": pw_result.get("error"),
+            "session": session,
+            "method": "playwright",
+            "captcha": captcha_meta or None,
+            "cf_meta": cf_meta or None,
+        }
+        err_text = str(pw_result.get("message") or pw_result.get("error") or "")
+        code, msg, _ = parse_register_error(err_text)
+        if pw_result.get("msg"):
+            err_body["msg"] = pw_result.get("msg")
+        elif msg and msg != str(pw_result.get("error") or ""):
+            err_body["msg"] = msg
+        if code is not None:
+            err_body["code"] = code
         return err_body
 
     data = pw_result.get("response") if isinstance(pw_result.get("response"), dict) else {}
@@ -391,6 +974,7 @@ def register_account_playwright(
         "raw": data,
         "session": session,
         "method": "playwright",
+        "captcha": captcha_meta or None,
     }
 
 
@@ -442,7 +1026,7 @@ def register_account_auto(
     prefer_playwright: bool = True,
     skip_cf: bool = False,
 ) -> dict[str, Any]:
-    """Playwright trước; HTTP nếu prefer_playwright=False. proxy bắt buộc."""
+    """Playwright trước; HTTP nếu prefer_playwright=False. Proxy bắt buộc."""
     from xoso66_proxy import require_explicit_proxy
 
     px = require_explicit_proxy(proxy or (session or {}).get("proxy"))
@@ -491,9 +1075,14 @@ def main() -> int:
     parser.add_argument("--invite", default="", help="mã mời")
     parser.add_argument("--cid", default="")
     parser.add_argument(
+        "--cms-device",
+        default=os.environ.get("XOSO66_CMS_DEVICE", ""),
+        help="Thiết bị CMS (vd. XMSB17) — dùng chrome_profiles_data + proxy từ game_data.db",
+    )
+    parser.add_argument(
         "--proxy",
-        required=True,
-        help='BẮT BUỘC — SOCKS5 host:port:user:pass (vd. 118.70.171.104:20023:user:pass)',
+        default="",
+        help='SOCKS5 host:port:user:pass — bỏ qua nếu có --cms-device (lấy proxy từ CMS)',
     )
     parser.add_argument("--cf-from", metavar="ACC", help="copy cf từ account trong sessions rồi refresh")
     parser.add_argument("--get-captcha", action="store_true", help="lấy captcha, in JSON")
@@ -503,8 +1092,32 @@ def main() -> int:
     parser.add_argument("--dry", action="store_true", help="chỉ bootstrap CF + form-token")
     args = parser.parse_args()
 
+    cms_device = str(args.cms_device or os.environ.get("XOSO66_CMS_DEVICE") or "").strip()
+    proxy = str(args.proxy or "").strip()
+    if cms_device:
+        os.environ["XOSO66_CMS_DEVICE"] = cms_device
+        if not proxy:
+            from xoso66_cms_chrome import resolve_cms_chrome_by_device
+
+            row = resolve_cms_chrome_by_device(cms_device)
+            if not row:
+                print(f"Không tìm thấy chrome profile CMS: {cms_device}", file=sys.stderr)
+                return 1
+            proxy = str(row.get("proxy") or "").strip()
+            if not proxy:
+                print(f"Profile {cms_device} thiếu proxy trong CMS", file=sys.stderr)
+                return 1
+            print(
+                f"[REGISTER] CMS device {cms_device} | proxy {proxy.split(':')[0]}:{proxy.split(':')[1]}",
+                flush=True,
+            )
+    if not proxy:
+        print("Cần --proxy hoặc --cms-device", file=sys.stderr)
+        parser.print_help()
+        return 1
+
     try:
-        guest = new_guest_session(proxy=args.proxy)
+        guest = new_guest_session(proxy=proxy)
     except Exception as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -570,7 +1183,7 @@ def main() -> int:
             result = register_account(guest, plain, skip_cf=args.skip_cf)
             sess = guest
         else:
-            result = register_account_playwright(plain, proxy=args.proxy)
+            result = register_account_playwright(plain, proxy=proxy)
             sess = result.get("session") or guest
 
         login_name = (result.get("user_info") or {}).get("username") or username

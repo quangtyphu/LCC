@@ -340,6 +340,7 @@ async def handle_event(user, msg):
             dices = data.get("dices", [])
             update_balance(user, balance, silent=True)
             print(f"🎲 [{user}] Thắng phiên | Dices={dices} | Prize={prize} | Balance={balance}", flush=True)
+            # Fallback KQ phiên (chỉ ghi 1 lần; session-result là nguồn chính)
             sid_skew = (
                 data.get("sessionId")
                 or data.get("session_id")

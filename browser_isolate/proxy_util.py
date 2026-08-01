@@ -191,6 +191,43 @@ def prepare_chrome_proxy(proxy_str: str) -> dict[str, str]:
     }
 
 
+def relay_pid_for(proxy_str: str) -> int | None:
+    """PID của tiến trình pproxy đang phục vụ ``proxy_str`` (None nếu không có)."""
+    proc = _relays.get((proxy_str or "").strip())
+    if proc is not None and proc.poll() is None:
+        return proc.pid
+    return None
+
+
+def spawn_relay_guardian(*, chrome_pid: int, relay_pid: int) -> None:
+    """
+    Spawn guardian detached: Chrome (chrome_pid) thoát -> kill relay (relay_pid).
+    Dùng cho luồng mở Chrome detached (cms_launch) vốn để relay mồ côi.
+    """
+    if not chrome_pid or not relay_pid:
+        return
+    guardian = Path(__file__).resolve().parent / "relay_guardian.py"
+    if not guardian.is_file():
+        return
+    try:
+        subprocess.Popen(
+            [
+                python_executable_no_console(),
+                str(guardian),
+                "--chrome-pid",
+                str(int(chrome_pid)),
+                "--relay-pid",
+                str(int(relay_pid)),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            **subprocess_hide_window_kwargs(),
+        )
+    except Exception:
+        pass
+
+
 def stop_all_relays() -> None:
     for proc in list(_relays.values()):
         if proc.poll() is None:

@@ -4,17 +4,12 @@
 from __future__ import annotations
 
 import threading
-import time
 from contextlib import contextmanager
 from typing import Any
 
 from xoso66_bet_assign import BetSlot
 
 _round_console_lock = threading.RLock()
-
-
-def _ts_hms() -> str:
-    return time.strftime("%H:%M:%S")
 
 
 def assign_bet_console_enabled() -> bool:
@@ -72,7 +67,7 @@ def log_round_start_line(
             pass
     with _round_console_lock:
         print(
-            f"\n[{_ts_hms()}] BẮT ĐẦU PHIÊN - {game_label}{iss} - Jackpot : {jp}{below}",
+            f"\nBẮT ĐẦU PHIÊN - {game_label}{iss} - Jackpot : {jp}{below}",
             flush=True,
         )
 
@@ -127,8 +122,6 @@ def log_ws_connecting(username: str, *, user_token_ok: bool | None = None) -> No
             f"🔐 [{user}] ws_token OK — user-token chưa ping OK, vẫn mở WS",
             flush=True,
         )
-    else:
-        print(f"🔐 [{user}] token OK, kết nối WS", flush=True)
 
 
 def log_ws_connected(username: str, *, account_id: str = "") -> None:

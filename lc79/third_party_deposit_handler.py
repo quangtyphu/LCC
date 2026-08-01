@@ -4,15 +4,29 @@ File xử lý nạp tiền qua bên thứ 3
 Chức năng:
 1. Tạo lệnh nạp qua deposit_api.py (API game thật) để lấy QR/base64
 2. Gửi thông tin cho bên thứ 3 (HTTP POST)
-3. Nhận callback từ bên thứ 3; nếu SUCCESS thì bắt đầu check lịch sử 5 lần
+3. Nhận callback từ bên thứ 3
 """
 
 import os
 import sys
+from pathlib import Path
 
-# In log ngay lập tức
-sys.stdout.reconfigure(line_buffering=True)
-sys.stderr.reconfigure(line_buffering=True)
+_LC79_DIR = Path(__file__).resolve().parent
+_LC79_REPO = _LC79_DIR.parent
+if str(_LC79_DIR) not in sys.path:
+    sys.path.insert(0, str(_LC79_DIR))
+if str(_LC79_REPO) not in sys.path:
+    sys.path.insert(0, str(_LC79_REPO))
+
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
+from shared.console_log import install_timed_print
+
+install_timed_print()
 
 import requests
 import time
@@ -137,10 +151,38 @@ def _extract_order_dict(js: dict) -> dict:
 	return js
 
 
+def _is_device_balance_overflow_order(order_id, username: str = "", data: dict | None = None) -> bool:
+	"""
+	Lệnh gom tiền DEVICE_BALANCE_OVERFLOW_DEPOSIT — chỉ chuyển khoản về TK config,
+	không phải nạp user game → không cập nhật DB / không poll lịch sử.
+	"""
+	oid = str(order_id or "").strip().lower()
+	u = (username or "").strip()
+	payload = data if isinstance(data, dict) else {}
+
+	if payload.get("skipVerify") or payload.get("skip_verify"):
+		return True
+	if str(payload.get("purpose") or "").strip().lower() == "device_balance_overflow":
+		return True
+	# Prefix hiện tại + prefix cũ (vib_)
+	if oid.startswith("overflow_") or oid.startswith("vib_"):
+		return True
+
+	try:
+		from constants import load_config
+
+		block = (load_config() or {}).get("DEVICE_BALANCE_OVERFLOW_DEPOSIT") or {}
+		if isinstance(block, dict) and int(block.get("ENABLED", 0) or 0):
+			holder = str(block.get("ACCOUNT_HOLDER") or "").strip()
+			if holder and u and holder.casefold() == u.casefold():
+				return True
+	except Exception:
+		pass
+	return False
+
+
 # ========== FLASK APP ==========
 app = Flask(__name__)
-_tracking_orders = set()
-_tracking_lock = threading.Lock()
 
 
 def create_deposit_order_with_real_qr(username: str, amount: int) -> dict:
@@ -153,10 +195,13 @@ def create_deposit_order_with_real_qr(username: str, amount: int) -> dict:
 		# Bỏ log gọi API game
 
 		# Gọi deposit_full_process (API chung) - đã bao gồm deposit, save DB, save QR
-		result = deposit_full_process(username, amount, track_history=False)
+		result = deposit_full_process(username, amount)
 
 		if not result.get("ok"):
-			return {"ok": False, "error": result.get("error", "Không gọi được API game")}
+			out = {"ok": False, "error": result.get("error", "Không gọi được API game")}
+			if result.get("order"):
+				out["order"] = result["order"]
+			return out
 
 		# Lấy dữ liệu từ response
 		data = result.get("data", {})
@@ -252,6 +297,32 @@ def send_existing_order_to_third_party(username: str, payload: dict) -> dict:
 	if amount <= 0:
 		return {"ok": False, "error": "Thiếu số tiền hợp lệ"}
 
+	try:
+		from auto_deposit_on_out_of_money import was_order_sent_to_banking
+		from deposit_api import get_pending_deposit_order
+
+		if was_order_sent_to_banking(order_id):
+			print(
+				f"⚠️ [LC79] Bỏ gửi lệnh #{order_id} ({username}) — đã gửi bên thứ 3 trước đó",
+				flush=True,
+			)
+			return {
+				"ok": False,
+				"error": f"Lệnh #{order_id} đã được gửi bên thứ 3 trước đó",
+			}
+
+		pending = get_pending_deposit_order(username)
+		if pending:
+			pending_id = pending.get("id")
+			if pending_id is not None and str(pending_id) != str(order_id):
+				return {
+					"ok": False,
+					"error": "Tài khoản đang có lệnh nạp chưa hoàn thành",
+					"order": pending,
+				}
+	except Exception as e:
+		print(f"⚠️ Không kiểm tra được trạng thái gửi lệnh: {e}", flush=True)
+
 	qr_image_path = payload.get("qr_image_path") or payload.get("qrImagePath") or ""
 	qr_link = payload.get("qr_link") or payload.get("qrLink") or ""
 	qr_base64 = _normalize_qr_base64(
@@ -270,6 +341,30 @@ def send_existing_order_to_third_party(username: str, payload: dict) -> dict:
 		"qr_image_path": qr_image_path,
 		"bank": payload.get("bank") or payload.get("type") or "",
 	}
+
+	# Bổ sung STK từ DB nếu CMS gửi ****
+	from deposit_api import _is_masked_account
+	acc = str(order_data.get("account_number") or "").strip()
+	if _is_masked_account(acc):
+		try:
+			r = requests.get(f"{NODE_SERVER_URL}/api/deposit-orders/{order_id}", timeout=5)
+			if r.ok:
+				od = _extract_order_dict(r.json() or {})
+				db_acc = str(od.get("accountNumber") or od.get("account_number") or "").strip()
+				if db_acc and not _is_masked_account(db_acc):
+					order_data["account_number"] = db_acc
+				if not order_data.get("transfer_content"):
+					order_data["transfer_content"] = str(
+						od.get("transferContent") or od.get("transfer_content") or ""
+					).strip()
+				if not order_data.get("bank"):
+					order_data["bank"] = str(od.get("bank") or "").strip()
+				if not order_data.get("account_holder"):
+					order_data["account_holder"] = str(
+						od.get("accountHolder") or od.get("account_holder") or ""
+					).strip()
+		except Exception as e:
+			print(f"⚠️ Không đọc được order #{order_id} từ DB: {e}", flush=True)
 
 	print(f"📤 [LC79] CMS gửi lệnh #{order_id} ({username}, {amount:,}đ) → bên thứ 3", flush=True)
 	third_party_result = send_to_third_party(username, amount, order_data)
@@ -293,25 +388,58 @@ def send_existing_order_to_third_party(username: str, payload: dict) -> dict:
 def send_to_third_party(username: str, amount: int, order_data: dict) -> dict:
 	"""
 	Gửi thông tin nạp tiền cho bên thứ 3 (theo format của họ).
+	Chỉ gửi khi đủ 5 trường: ngân hàng, STK, chủ TK, số tiền, NDCK.
 	"""
 	refresh_urls()
 	order_id = order_data.get("order_id")
 	qr_base64 = order_data.get("qr_base64", "")
-	tc = (order_data.get("transfer_content") or "").strip()
+	qr_image_path = order_data.get("qr_image_path", "")
+	qr_link = order_data.get("qr_link", "")
+
+	if not qr_base64:
+		qr_base64 = _normalize_qr_base64("", qr_image_path, qr_link)
+
+	from deposit_api import (
+		resolve_account_number_for_send,
+		validate_deposit_fields,
+	)
+
+	acc_no = resolve_account_number_for_send(
+		order_data.get("account_number", ""),
+		qr_base64=qr_base64,
+		qr_image_path=qr_image_path,
+		qr_link=qr_link,
+	)
+	order_data["account_number"] = acc_no
+
+	fields = {
+		"bank": str(order_data.get("bank") or "").strip(),
+		"account_number": acc_no,
+		"account_holder": str(order_data.get("account_holder") or "").strip(),
+		"amount": _parse_amount(amount or order_data.get("amount")),
+		"transfer_content": str(order_data.get("transfer_content") or "").strip(),
+	}
+	ok_fields, field_err = validate_deposit_fields(fields)
+	if not ok_fields:
+		print(f"❌ [LC79] Không gửi bên thứ 3 order #{order_id}: {field_err}", flush=True)
+		return {"ok": False, "error": field_err, "missing_fields": fields}
+
+	tc = fields["transfer_content"]
+	amount = fields["amount"]
 
 	payload = {
 		"orderId": str(order_id),
 		"qrBase64": qr_base64,
 		"username": username,
 		"amount": amount,
-		"accountNumber": order_data.get("account_number", ""),
-		"accountHolder": order_data.get("account_holder", ""),
-		"bank": order_data.get("bank", ""),
-		"qrLink": order_data.get("qr_link", ""),
-		"qrImagePath": order_data.get("qr_image_path", ""),
-		"receiver": order_data.get("account_number", ""),
-		"name": order_data.get("account_holder", ""),
-		"type": order_data.get("bank", ""),
+		"accountNumber": fields["account_number"],
+		"accountHolder": fields["account_holder"],
+		"bank": fields["bank"],
+		"qrLink": qr_link,
+		"qrImagePath": qr_image_path,
+		"receiver": fields["account_number"],
+		"name": fields["account_holder"],
+		"type": fields["bank"],
 	}
 	# Chỉ gửi NDCK khi có; không có thì không thêm transferContent/msg
 	if tc:
@@ -319,8 +447,16 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict:
 		payload["msg"] = tc
 	payload["callbackUrl"] = CALLBACK_URL
 	payload["callback_url"] = CALLBACK_URL
+	try:
+		from constants import load_config
+
+		dep = load_config().get("LC79_DEPOSIT") or {}
+		partner_id = str(dep.get("partnerId") or "AZP").strip() or "AZP"
+	except Exception:
+		partner_id = "AZP"
+	payload["partnerId"] = partner_id
 	print(
-		f"🔗 [LC79] Gửi Banking order #{order_id} | callback={CALLBACK_URL}",
+		f"🔗 [LC79] Gửi Banking order #{order_id} | partner={partner_id} | callback={CALLBACK_URL}",
 		flush=True,
 	)
 	try:
@@ -328,6 +464,11 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict:
 		data = resp.json()
 
 		if resp.ok and data.get("ok"):
+			try:
+				from auto_deposit_on_out_of_money import mark_order_sent_to_banking
+				mark_order_sent_to_banking(order_id)
+			except Exception as e:
+				print(f"⚠️ Không lưu được trạng thái đã gửi banking: {e}", flush=True)
 			return {
 				"ok": True,
 				"transaction_id": data.get("data", {}).get("orderId", ""),
@@ -348,7 +489,7 @@ def receive_callback():
 	"""
 	API nhận callback từ bên thứ 3.
 	- Cập nhật status vào DB
-	- Nếu status = "Đã Nạp" → bắt đầu check lịch sử 5 lần
+	- Nếu status = "Đã Nạp" → poll check lịch sử nạp mỗi 30s, tối đa 30 lần
 	"""
 	data = request.json
 	# Hỗ trợ cả camelCase và snake_case
@@ -359,12 +500,35 @@ def receive_callback():
 	amount = data.get("amount", 0)
 	username = data.get("username", "")
 	transfer_content = data.get("transferContent") or data.get("transfer_content", "")
+	device_nap = (
+		data.get("deviceNap")
+		or data.get("device_nap")
+		or data.get("deviceId")
+		or data.get("device")
+		or ""
+	)
+	device_nap = str(device_nap).strip()
 
 	if not order_id:
 		return jsonify({"error": "Missing order_id"}), 400
 
 	if not status:
 		return jsonify({"error": "Missing status"}), 400
+
+	# Gom tiền overflow: chỉ ACK callback, không poll auth/lịch sử user game.
+	if _is_device_balance_overflow_order(order_id, username, data if isinstance(data, dict) else {}):
+		print(
+			f"ℹ️ [OVERFLOW] Callback #{order_id} ({username or '-'}) status={status} "
+			f"— bỏ qua verify/poll lịch sử (chỉ gom tiền)",
+			flush=True,
+		)
+		return jsonify({
+			"success": True,
+			"order_id": order_id,
+			"status": status,
+			"skipped": "device_balance_overflow",
+			"received_at": time.time(),
+		}), 200
 
 	refresh_urls()
 	from deposit_callback_routing import resolve_callback_game
@@ -428,32 +592,38 @@ def receive_callback():
 
 		if prev_status == "Thành Công":
 			print(
-				f"ℹ️ Order #{order_id} đã Thành Công (đã khớp lịch sử game trước) — bỏ qua cập nhật «Đã Nạp» và không cần tracking thêm.",
+				f"ℹ️ Order #{order_id} đã Thành Công — bỏ qua cập nhật «Đã Nạp».",
 				flush=True,
 			)
+			try:
+				from auto_deposit_on_out_of_money import clear_order_sent_to_banking
+				clear_order_sent_to_banking(order_id)
+			except Exception:
+				pass
 			return jsonify({"success": True, "order_id": order_id, "status": status, "skipped": "already_thanh_cong"}), 200
 
-		print(f"📝 Cập nhật order #{order_id} → {status}", flush=True)
-		update_deposit_order_status(order_id, status)
+		print(f"📝 Cập nhật order #{order_id} → {status}" + (f" (device={device_nap})" if device_nap else ""), flush=True)
+		update_deposit_order_status(order_id, status, device_nap=device_nap or None)
 
-		if username and amount > 0:
-			with _tracking_lock:
-				if order_id in _tracking_orders:
-					print(f"ℹ️ Order #{order_id} đã được theo dõi, bỏ qua", flush=True)
-				else:
-					_tracking_orders.add(order_id)
-					from deposit_api import wait_and_check_deposit
+		if username:
+			def _poll_deposit_history(
+				u: str = username,
+				oid=order_id,
+				tc: str = transfer_content,
+				amt: int = amount,
+			):
+				try:
+					from check_deposit_history import poll_deposit_history_after_da_nap
+					poll_deposit_history_after_da_nap(
+						u,
+						order_id=oid,
+						transfer_content=tc,
+						amount=amt,
+					)
+				except Exception as e:
+					print(f"⚠️ [{u}] Lỗi poll lịch sử sau Đã Nạp: {e}", flush=True)
 
-					threading.Thread(
-						target=wait_and_check_deposit,
-						args=(username, transfer_content or "", order_id, amount),
-						daemon=True,
-					).start()
-		else:
-			print(
-				f"⚠️ Bỏ qua tracking: thiếu username hoặc amount (DB+callback). order_id={order_id}",
-				flush=True,
-			)
+			threading.Thread(target=_poll_deposit_history, daemon=True).start()
 
 	elif status in ["Thất Bại", "Huỷ"]:
 		# Không hạ trạng thái nếu lệnh đã Thành Công (tránh callback muộn ghi đè).
@@ -471,17 +641,21 @@ def receive_callback():
 		except Exception as e:
 			print(f"⚠️ Không đọc được trạng thái hiện tại trước khi set {status}: {e}", flush=True)
 
-		print(f"📝 Cập nhật order #{order_id} → {status}", flush=True)
-		update_deposit_order_status(order_id, status)
+		print(f"📝 Cập nhật order #{order_id} → {status}" + (f" (device={device_nap})" if device_nap else ""), flush=True)
+		update_deposit_order_status(order_id, status, device_nap=device_nap or None)
 		if username:
 			try:
-				from auto_deposit_on_out_of_money import remove_from_deposit_cache
+				from auto_deposit_on_out_of_money import (
+					clear_order_sent_to_banking,
+					remove_from_deposit_cache,
+				)
 				remove_from_deposit_cache(username)
+				clear_order_sent_to_banking(order_id)
 			except Exception as e:
 				print(f"⚠️ Không xóa được khỏi cache: {e}", flush=True)
 	else:
-		print(f"📝 Cập nhật order #{order_id} → {status}", flush=True)
-		update_deposit_order_status(order_id, status)
+		print(f"📝 Cập nhật order #{order_id} → {status}" + (f" (device={device_nap})" if device_nap else ""), flush=True)
+		update_deposit_order_status(order_id, status, device_nap=device_nap or None)
 
 	return jsonify({
 		"success": True,
@@ -500,7 +674,8 @@ def send_deposit():
 		return jsonify({"ok": False, "error": "Missing username"}), 400
 	result = send_existing_order_to_third_party(username, data)
 	if not result.get("ok"):
-		return jsonify(result), 500
+		status = 409 if result.get("order") or "đã được gửi bên thứ 3" in str(result.get("error", "")) else 500
+		return jsonify(result), status
 	return jsonify(result), 200
 
 
@@ -516,11 +691,17 @@ def create_deposit():
 	if not username or not amount:
 		return jsonify({"error": "Missing username or amount"}), 400
 
-	# Nếu đang có lệnh treo trong cache thì không tạo mới
+	# Nếu đang có lệnh treo (cache hoặc DB) thì không tạo mới / không gửi banking
 	try:
 		from auto_deposit_on_out_of_money import can_create_deposit_order
+		from deposit_api import pending_deposit_error
+
 		if not can_create_deposit_order(username):
-			return jsonify({"error": "Tài khoản đang có lệnh nạp chưa hoàn thành"}), 409
+			blocked = pending_deposit_error(username) or {
+				"ok": False,
+				"error": "Tài khoản đang có lệnh nạp chưa hoàn thành",
+			}
+			return jsonify(blocked), 409
 	except Exception as e:
 		print(f"⚠️ Không kiểm tra được cache: {e}", flush=True)
 
@@ -528,7 +709,8 @@ def create_deposit():
 	result = create_deposit_order_with_real_qr(username, amount)
 	if not result.get("ok"):
 		print(f"❌ Lỗi tạo order: {result.get('error')}", flush=True)
-		return jsonify(result), 400
+		status = 409 if result.get("order") else 400
+		return jsonify(result), status
 
 	order_id = result.get("order_id")
 	effective_amount = result.get("amount") or amount  # Lệnh B lấy thành công (có NDCK)

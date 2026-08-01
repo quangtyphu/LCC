@@ -99,6 +99,7 @@ def _launch_chrome_native(
         f"--user-data-dir={profile_path}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--new-window",
     ]
     port = int(cdp_port or 0)
     if port > 0:
@@ -125,12 +126,26 @@ def _launch_chrome_native(
         open_urls = ["about:blank"]
     cmd.extend(open_urls)
 
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
     )
+
+    # Gắn vòng đời relay pproxy vào Chrome: Chrome đóng -> guardian kill relay.
+    # Tránh relay mồ côi khi cms_launch mở Chrome detached rồi thoát ngay.
+    if prep and prep.get("mode") == "socks5_auth_relay" and proxy.strip():
+        try:
+            from proxy_util import relay_pid_for, spawn_relay_guardian
+
+            rpid = relay_pid_for(proxy)
+            if rpid:
+                spawn_relay_guardian(chrome_pid=proc.pid, relay_pid=rpid)
+        except Exception:
+            pass
+
+    return proc
 
 
 def run_playwright_session(
@@ -218,6 +233,15 @@ def run_playwright_session(
                 context.close()
             except Exception:
                 pass
+
+    # Chrome Playwright đã đóng -> dọn relay pproxy của phiên này (tiến trình này
+    # giữ tham chiếu relay, không sợ giết nhầm Chrome khác).
+    try:
+        from proxy_util import stop_all_relays
+
+        stop_all_relays()
+    except Exception:
+        pass
 
     if ephemeral:
         wipe_profile(session_id)

@@ -1,127 +1,48 @@
 
-import asyncio
+
+import threading
+import time
+from datetime import datetime
+
 import requests
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 from game_api_helper import game_request_with_retry, NODE_SERVER_URL
+
+
+def normalize_tx_time(raw: str) -> str:
+    """Chuẩn hóa dateTime game → YYYY-MM-DD HH:mm:ss (tránh ISO 'T' làm CMS lọc sai)."""
+    if not raw:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    s = str(raw).strip()
+    if s.endswith("Z"):
+        s = s[:-1]
+    s = s.replace("T", " ")
+    if "." in s:
+        s = s.split(".")[0]
+    try:
+        return datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return s[:19] if len(s) >= 19 else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+DEPOSIT_HISTORY_POLL_INTERVAL_SEC = 30
+DEPOSIT_HISTORY_POLL_MAX_ATTEMPTS = 30
+
+_deposit_poll_lock = threading.Lock()
+_deposit_poll_active: set[str] = set()
 from get_balance import get_balance
-from ws_minigame_client import connect_minigame
 
-_TZ_VN = ZoneInfo("Asia/Ho_Chi_Minh")
-
-
-def _extract_order_from_api(js: dict) -> dict:
-    if not isinstance(js, dict):
-        return {}
-    d = js.get("data")
-    if isinstance(d, dict):
-        return d
-    if isinstance(d, list) and d and isinstance(d[0], dict):
-        return d[0]
-    return js
+_deposit_refresh_done: set[str] = set()
 
 
-def _parse_tx_datetime(val) -> datetime | None:
-    """Parse dateTime từ API game / createdAt từ DB → timezone VN."""
-    if val is None:
-        return None
-    if isinstance(val, (int, float)):
-        try:
-            return datetime.fromtimestamp(val, tz=_TZ_VN)
-        except (OSError, ValueError, OverflowError):
-            return None
-    s = str(val).strip()
-    if not s:
-        return None
-    try:
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_TZ_VN)
-        return dt.astimezone(_TZ_VN)
-    except Exception:
-        pass
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            return datetime.strptime(s[:19], fmt).replace(tzinfo=_TZ_VN)
-        except Exception:
-            continue
-    return None
-
-
-def get_deposit_order_meta(order_id: int) -> tuple[datetime | None, str]:
+def refresh_after_deposit_confirm(username: str, order_id=None) -> None:
     """
-    Đọc lệnh nạp từ API: (mốc thời gian sớm nhất để khớp GD game, NDCK).
-    Mốc = createdAt - 5 phút (trừ lệch giờ). NDCK dùng khi không có mốc.
+    Sau khi lệnh nạp Thành Công: làm mới số dư (HTTP) và cập nhật Đang Chơi.
+    Không mở WS minigame — watcher sẽ mở handle_ws khi thấy status Đang Chơi.
     """
-    if not order_id:
-        return None, ""
-    try:
-        r = requests.get(f"{NODE_SERVER_URL}/api/deposit-orders/{order_id}", timeout=5)
-        if r.status_code != 200:
-            return None, ""
-        order = _extract_order_from_api(r.json() or {})
-        raw_created = order.get("createdAt") or order.get("created_at")
-        dt = _parse_tx_datetime(raw_created)
-        sync_min = (dt - timedelta(minutes=5)) if dt is not None else None
-        tc = (
-            order.get("transferContent")
-            or order.get("transfer_content")
-            or ""
-        )
-        return sync_min, str(tc).strip()
-    except Exception:
-        return None, ""
-
-
-def _ndck_in_tx_content(transfer_content: str, tx_content: str) -> bool:
-    """NDCK lệnh phải xuất hiện trong nội dung GD game (không phân biệt hoa thường)."""
-    tc = (transfer_content or "").strip()
-    if not tc:
-        return False
-    c = str(tx_content or "").strip()
-    if not c:
-        return False
-    tcl, cl = tc.lower(), c.lower()
-    return tcl in cl or cl in tcl
-
-
-def tx_matches_deposit_order(
-    tx: dict,
-    expected_amount: int,
-    sync_min: datetime | None,
-    transfer_content: str,
-) -> bool:
-    """
-    Tránh báo Thành Công nhầm: không chỉ trùng số tiền / mốc thời gian với GD cũ.
-    - Bắt buộc có NDCK và nội dung GD chứa đúng NDCK.
-    - Không dùng điều kiện thời gian; NDCK là tiêu chí chính.
-    """
-    try:
-        amt = int(tx.get("amount") or 0)
-    except (TypeError, ValueError):
-        return False
-    if amt != int(expected_amount):
-        return False
-    tx_dt = _parse_tx_datetime(tx.get("dateTime"))
-    tc = (transfer_content or "").strip()
-    content = str(tx.get("content") or "")
-
-    if not tc:
-        return False
-    if not _ndck_in_tx_content(tc, content):
-        return False
-
-    return True
-
-
-def refresh_after_deposit_confirm(username: str) -> None:
-    """
-    Sau khi chắc chắn tiền đã vào (lệnh Thành Công / giao dịch mới lưu):
-    làm mới số dư (bỏ cooldown), cập nhật trạng thái user, WS minigame.
-    """
+    key = f"{(username or '').strip()}:{order_id}"
+    if key in _deposit_refresh_done:
+        return
+    _deposit_refresh_done.add(key)
     try:
         balance_result = get_balance(username, force=True)
         if not balance_result.get("ok"):
@@ -149,16 +70,17 @@ def refresh_after_deposit_confirm(username: str) -> None:
     except Exception as e:
         print(f"⚠️ [{username}] Không kết nối được API khi update status: {e}", flush=True)
 
-    try:
-        coro = connect_minigame(username, keep_alive=False)
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            asyncio.run(coro)
-        else:
-            loop.create_task(coro)
-    except Exception as e:
-        print(f"⚠️ [{username}] Lỗi gọi WS minigame sau nạp: {e}", flush=True)
+
+def _ndck_in_tx_content(transfer_content: str, tx_content: str) -> bool:
+    """NDCK lệnh phải xuất hiện trong nội dung GD game (không phân biệt hoa thường)."""
+    tc = (transfer_content or "").strip()
+    if not tc:
+        return False
+    c = str(tx_content or "").strip()
+    if not c:
+        return False
+    tcl, cl = tc.lower(), c.lower()
+    return tcl in cl or cl in tcl
 
 
 def _sync_deposit_order_by_amount(
@@ -172,13 +94,8 @@ def _sync_deposit_order_by_amount(
     """
     Khớp lệnh nạp theo username + số tiền + NDCK trong nội dung giao dịch.
 
-    Mặc định (game_tx_confirmed=False): chỉ nâng Thành Công khi lệnh «Đã Nạp» (hoặc Thất Bại
-    khi sync đúng only_order_id) — an toàn cho gọi từ luồng không có GD game.
-
-    game_tx_confirmed=True: đã có GD SUCCESS trên game (lịch sử / vừa lưu transaction-details) —
-    cho phép cập nhật Thành Công kể cả lệnh đang Thất Bại/Chờ/Đang nạp (trừ Huỷ), để cứu lệnh
-    sau khi hết vòng chờ wait_and_check.
-    only_order_id: nếu có, chỉ cập nhật đúng lệnh đó (tránh trùng số tiền nhiều lệnh).
+    game_tx_confirmed=True: đã có GD SUCCESS trên game — cho phép cập nhật Thành Công
+    kể cả lệnh đang Thất Bại/Chờ/Đang nạp (trừ Huỷ).
     """
     if not username or not tx_amount:
         return False
@@ -225,12 +142,7 @@ def _sync_deposit_order_by_amount(
                 return True
             if current_status == "Huỷ":
                 return False
-            if game_tx_confirmed:
-                # Có bằng chứng GD trên game — bỏ chặn trạng thái CMS (cứu Thất Bại / Chờ / …).
-                pass
-            else:
-                # Chỉ nâng Thành Công khi lệnh đã qua callback "Đã Nạp".
-                # Ngoại lệ: Thất Bại + only_order_id (sync strict một lệnh).
+            if not game_tx_confirmed:
                 if current_status not in ("Đã Nạp", "Thất Bại"):
                     continue
                 if current_status == "Thất Bại" and only_order_id is None:
@@ -244,16 +156,194 @@ def _sync_deposit_order_by_amount(
                 print(f"✅ Đã cập nhật deposit_orders #{order_id} → {desired_status}", flush=True)
                 if desired_status == "Thành Công":
                     try:
-                        from auto_deposit_on_out_of_money import remove_from_deposit_cache
+                        from auto_deposit_on_out_of_money import (
+                            clear_order_sent_to_banking,
+                            remove_from_deposit_cache,
+                        )
                         remove_from_deposit_cache(username)
+                        clear_order_sent_to_banking(order_id)
                     except Exception as e:
-                        print(f"⚠️ [{username}] Không xóa được khỏi cache sau sync theo số tiền: {e}", flush=True)
+                        print(f"⚠️ [{username}] Không dọn cache sau sync order #{order_id}: {e}", flush=True)
                 return True
             return False
         return False
     except Exception as e:
         print(f"⚠️ Lỗi sync deposit_orders theo số tiền: {e}", flush=True)
         return False
+
+
+def after_deposit_transaction_saved(
+    username: str,
+    tx_amount: int | float,
+    tx_content: str,
+) -> bool:
+    """
+    Sau khi lưu GD nạp MỚI vào transaction-details (bất kể nguồn nào):
+    khớp username + số tiền + NDCK → cập nhật deposit_orders «Thành Công»
+    nếu trạng thái hiện tại khác «Thành Công».
+    """
+    u = (username or "").strip()
+    if not u:
+        return False
+    try:
+        amt = int(float(tx_amount))
+    except (TypeError, ValueError):
+        return False
+    content = str(tx_content or "").strip()
+    if not amt or not content:
+        return False
+    return _sync_deposit_order_by_amount(
+        u,
+        amt,
+        content,
+        desired_status="Thành Công",
+        game_tx_confirmed=True,
+    )
+
+
+def _fetch_deposit_order_device_nap(order_id=None, username: str = "") -> str:
+    """Lấy deviceNap đã lưu trên deposit_orders (CMS)."""
+    if order_id is None:
+        return ""
+    try:
+        r = requests.get(f"{NODE_SERVER_URL}/api/deposit-orders/{order_id}", timeout=5)
+        if r.ok:
+            row = r.json() or {}
+            return str(row.get("deviceNap") or row.get("device_nap") or "").strip()
+    except Exception:
+        pass
+    if not username:
+        return ""
+    try:
+        r = requests.get(
+            f"{NODE_SERVER_URL}/api/deposit-orders",
+            params={"username": username, "limit": 50},
+            timeout=5,
+        )
+        if not r.ok:
+            return ""
+        data = r.json() or {}
+        orders = data.get("data") if isinstance(data.get("data"), list) else (
+            data if isinstance(data, list) else []
+        )
+        for order in orders:
+            if str(order.get("id")) == str(order_id):
+                return str(order.get("deviceNap") or order.get("device_nap") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def save_deposit_transaction_and_sync_order(
+    username: str,
+    *,
+    transaction_id,
+    amount: int | float,
+    content: str,
+    time: str = "",
+    nickname: str = "",
+    device_nap: str = "",
+    order_id=None,
+) -> tuple[bool, bool]:
+    """
+    Lưu GD nạp vào transaction-details (bỏ qua 409) rồi sync deposit_orders.
+    Dùng chung cho check_deposit_history, fetch_transactions (WS reconnect), v.v.
+    Trả (saved_new, synced_order_success).
+    """
+    u = (username or "").strip()
+    if not u:
+        return False, False
+    dev_nap = (device_nap or "").strip() or _fetch_deposit_order_device_nap(order_id, u)
+    record = {
+        "username": u,
+        "nickname": nickname or u,
+        "hinhThuc": "Nạp tiền",
+        "transactionId": transaction_id,
+        "amount": float(amount or 0),
+        "time": normalize_tx_time(time),
+        "deviceNap": dev_nap,
+    }
+    saved_new = False
+    resp_json: dict = {}
+    try:
+        resp = requests.post(
+            f"{NODE_SERVER_URL}/api/transaction-details",
+            json=record,
+            timeout=5,
+        )
+        if resp.status_code in (200, 201):
+            saved_new = True
+            try:
+                resp_json = resp.json() if resp.text else {}
+            except Exception:
+                resp_json = {}
+            print(
+                f"Đã lưu 1 giao dịch nạp {int(float(amount)):,} cho [{u}] "
+                f"với nội dung {content}",
+                flush=True,
+            )
+        elif resp.status_code != 409:
+            print(
+                f"⚠️ [{u}] Lỗi lưu giao dịch {transaction_id}: "
+                f"{resp.status_code} - {resp.text}",
+                flush=True,
+            )
+    except Exception as e:
+        print(f"⚠️ [{u}] Lỗi lưu giao dịch {transaction_id}: {e}", flush=True)
+
+    synced = False
+    if saved_new:
+        synced = after_deposit_transaction_saved(u, amount, content)
+        if resp_json.get("isFirstDepositToday") or resp_json.get("isEligibleForBonus"):
+            if float(amount or 0) >= 200000:
+                try:
+                    from mission_api import auto_claim_missions
+
+                    auto_claim_missions(u)
+                except Exception as e:
+                    print(f"⚠️ [{u}] Lỗi gọi auto_claim_missions: {e}", flush=True)
+    return saved_new, synced
+
+
+def _try_sync_pending_order_from_transactions(
+    username: str,
+    transactions: list,
+    order_id=None,
+    amount=None,
+    transfer_content: str | None = None,
+) -> bool:
+    """
+    GD có thể đã lưu trước (409 / fetch_transactions khi WS reconnect) —
+    vẫn khớp lệnh đang «Đã Nạp» với lịch sử game để poll dừng đúng.
+    """
+    if order_id is None:
+        return False
+    try:
+        oid = int(order_id)
+        poll_amt = int(float(amount or 0))
+    except (TypeError, ValueError):
+        return False
+    poll_tc = (transfer_content or "").strip()
+    for tx in transactions or []:
+        try:
+            tx_amt = int(float(tx.get("amount") or 0))
+        except (TypeError, ValueError):
+            continue
+        if poll_amt and tx_amt != poll_amt:
+            continue
+        tx_content = str(tx.get("content") or "")
+        if poll_tc and not _ndck_in_tx_content(poll_tc, tx_content):
+            continue
+        if _sync_deposit_order_by_amount(
+            username,
+            tx_amt,
+            tx_content,
+            only_order_id=oid,
+            game_tx_confirmed=True,
+        ):
+            return True
+    return False
+
 
 def check_deposit_history(
     username,
@@ -262,17 +352,11 @@ def check_deposit_history(
     amount=None,
     limit=10,
     status=None,
-    sync_min_datetime=None,
-    sync_only_order_id=None,
-    sync_transfer_content=None,
 ):
 
     """
     Lấy lịch sử nạp tiền từ game, lưu giao dịch mới vào DB, tự động nhận quà nếu đủ điều kiện.
     Sử dụng game_api_helper để lấy token, proxy, headers, params.
-
-    sync_min_datetime / sync_only_order_id / sync_transfer_content:
-      Chỉ áp dụng khi vừa lưu mới GD (200/201). wait_and_check: strict NDCK/amount trước khi sync.
     """
     api_url = "https://wsslot.tele68.com/v1/lobby/transaction/history"
     params = {
@@ -303,80 +387,254 @@ def check_deposit_history(
         print(f"❌ [{username}] Lỗi parse lịch sử: {e}", flush=True)
         return {"ok": False, "error": str(e)}
 
-    # 2. Lưu giao dịch mới vào DB — chỉ khi vừa lưu mới (200/201) mới sync deposit_orders → Thành Công (bỏ qua 409/GD đã có).
+    # 2. Lưu giao dịch mới vào DB (bỏ qua 409 nếu GD đã có).
     saved = []
     new_saved = 0
     synced_order_success = False
-    sync_strict = (
-        sync_min_datetime is not None
-        or (sync_transfer_content or "").strip()
-        or sync_only_order_id is not None
-    )
+    order_device_nap = _fetch_deposit_order_device_nap(order_id, username)
     for tx in transactions:
-        saved_new_this_tx = False
-        record = {
-            "username": username,
-            "nickname": username,  # Nếu có nickname thực thì truyền vào
-            "hinhThuc": "Nạp tiền",
-            "transactionId": tx.get("id"),
-            "amount": float(tx.get("amount", 0)),
-            "time": tx.get("dateTime"),
-            "deviceNap": "",
-        }
-        try:
-            resp2 = requests.post(f"{NODE_SERVER_URL}/api/transaction-details", json=record, timeout=5)
-            if resp2.status_code in (200, 201):
-                saved_new_this_tx = True
-                saved.append(record)
-                new_saved += 1
-                print(f"Đã lưu 1 giao dịch nạp {int(tx['amount']):,} cho [{username}] với nội dung {tx['content']}", flush=True)
-                try:
-                    resp_json = resp2.json()
-                    is_first = resp_json.get("isFirstDepositToday")
-                    is_bonus = resp_json.get("isEligibleForBonus")
-                    if (is_first or is_bonus) and float(tx["amount"]) >= 200000:
-                        # Gọi nhận nhiệm vụ tự động
-                        try:
-                            from mission_api import auto_claim_missions
-                            auto_claim_missions(username)
-                        except Exception as e:
-                            print(f"⚠️ [{username}] Lỗi gọi auto_claim_missions: {e}", flush=True)
-                except Exception:
-                    pass
-            elif resp2.status_code != 409:
-                print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')} cho [{username}]: {resp2.status_code} - {resp2.text}", flush=True)
-        except Exception as e:
-            print(f"⚠️ [{username}] Lỗi lưu giao dịch {tx.get('id')} cho [{username}]: {e}", flush=True)
-
-        if not saved_new_this_tx:
-            continue
-
-        tx_amount = tx.get("amount", 0)
-        if not tx_amount:
-            continue
-        if sync_strict and not tx_matches_deposit_order(
-            tx,
-            int(tx_amount),
-            sync_min_datetime,
-            (sync_transfer_content or "").strip(),
-        ):
-            continue
-        if _sync_deposit_order_by_amount(
+        saved_new_this_tx, synced_this_tx = save_deposit_transaction_and_sync_order(
             username,
-            int(tx_amount),
-            str(tx.get("content") or ""),
-            desired_status="Thành Công",
-            only_order_id=sync_only_order_id,
-            game_tx_confirmed=True,
-        ):
+            transaction_id=tx.get("id"),
+            amount=tx.get("amount", 0),
+            content=str(tx.get("content") or ""),
+            time=tx.get("dateTime"),
+            nickname=username,
+            device_nap=order_device_nap,
+            order_id=order_id,
+        )
+        if saved_new_this_tx:
+            saved.append({
+                "username": username,
+                "transactionId": tx.get("id"),
+                "amount": float(tx.get("amount", 0)),
+                "time": tx.get("dateTime"),
+            })
+            new_saved += 1
+        if synced_this_tx:
             synced_order_success = True
 
-    # Có giao dịch mới lưu DB HOẶC vừa đồng bộ lệnh → Đã Nạp → Thành Công: đều cần làm mới số dư
-    # (Trước đây chỉ khi new_saved > 0 nên khi giao dịch đã tồn tại 409 thì không gọi get_balance.)
-    if new_saved > 0 or synced_order_success:
-        refresh_after_deposit_confirm(username)
+    if not synced_order_success:
+        synced_order_success = _try_sync_pending_order_from_transactions(
+            username,
+            transactions,
+            order_id=order_id,
+            amount=amount,
+            transfer_content=transfer_content,
+        )
 
-    return {"ok": True, "total": total, "transactions": transactions}
+    if synced_order_success:
+        order_status = _deposit_order_status(order_id, username, transfer_content)
+        if order_status == "Thành Công":
+            refresh_after_deposit_confirm(username, order_id=order_id)
+
+    return {
+        "ok": True,
+        "total": total,
+        "transactions": transactions,
+        "new_saved": new_saved,
+        "synced_order_success": synced_order_success,
+    }
+
+
+def _deposit_order_status(
+    order_id,
+    username: str = "",
+    transfer_content: str = "",
+) -> str:
+    """Đọc trạng thái lệnh nạp từ Node (rỗng nếu lỗi)."""
+    if order_id is None:
+        return ""
+    try:
+        from deposit_callback_routing import get_lc79_order
+
+        row = get_lc79_order(order_id, transfer_content)
+        if row:
+            return str(row.get("status") or row.get("Status") or "").strip()
+    except Exception:
+        pass
+    u = (username or "").strip()
+    if u:
+        try:
+            resp = requests.get(
+                f"{NODE_SERVER_URL}/api/deposit-orders",
+                params={"username": u, "limit": 50},
+                timeout=5,
+            )
+            if resp.ok:
+                data = resp.json() or {}
+                orders = data.get("data") if isinstance(data.get("data"), list) else (
+                    data if isinstance(data, list) else []
+                )
+                for order in orders:
+                    if str(order.get("id")) == str(order_id):
+                        return str(
+                            order.get("status") or order.get("Status") or ""
+                        ).strip()
+        except Exception:
+            pass
+    try:
+        resp = requests.get(
+            f"{NODE_SERVER_URL}/api/deposit-orders/{order_id}",
+            timeout=5,
+        )
+        if not resp.ok:
+            return ""
+        js = resp.json() or {}
+        order = js.get("data")
+        if isinstance(order, list) and order:
+            order = order[0]
+        if not isinstance(order, dict):
+            order = js.get("order") or js.get("depositOrder") or js
+        if not isinstance(order, dict):
+            return ""
+        return str(order.get("status") or order.get("Status") or "").strip()
+    except Exception:
+        return ""
+
+
+def _try_begin_deposit_poll(key: str) -> bool:
+    with _deposit_poll_lock:
+        if key in _deposit_poll_active:
+            return False
+        _deposit_poll_active.add(key)
+        return True
+
+
+def _end_deposit_poll(key: str) -> None:
+    with _deposit_poll_lock:
+        _deposit_poll_active.discard(key)
+
+
+def _log_deposit_poll_success(username: str, order_id, amount=None) -> None:
+    u = (username or "").strip()
+    extra = ""
+    if amount:
+        try:
+            extra = f" ({int(amount):,}đ)"
+        except (TypeError, ValueError):
+            pass
+    oid = f" #{order_id}" if order_id is not None else ""
+    print(f"✅ [{u}] Xác nhận nạp thành công order{oid}{extra}", flush=True)
+
+
+def _handle_deposit_poll_failed(
+    username: str,
+    order_id,
+    amount,
+    transfer_content: str,
+    attempts: int,
+    interval_sec: int,
+) -> None:
+    from deposit_api import update_deposit_order_status
+
+    u = (username or "").strip()
+    if not u or order_id is None:
+        print(f"❌ [{u or '?'}] Không xác nhận nạp sau {attempts} lần check", flush=True)
+        return
+
+    try:
+        amt = int(amount or 0)
+    except (TypeError, ValueError):
+        amt = 0
+    tc = (transfer_content or "").strip()
+
+    if _deposit_order_status(order_id, u, tc) == "Thành Công":
+        _log_deposit_poll_success(u, order_id, amt)
+        return
+
+    if not update_deposit_order_status(order_id, "Thất Bại"):
+        print(
+            f"❌ [{u}] Không xác nhận nạp sau {attempts} lần — không cập nhật được order #{order_id}",
+            flush=True,
+        )
+        return
+
+    try:
+        from auto_deposit_on_out_of_money import remove_from_deposit_cache
+
+        remove_from_deposit_cache(u)
+    except Exception:
+        pass
+
+    print(
+        f"❌ [{u}] Không xác nhận nạp sau {attempts} lần — order #{order_id} → Thất Bại",
+        flush=True,
+    )
+
+    try:
+        from datetime import datetime
+
+        from telegram_notifier import send_telegram
+
+        send_telegram(
+            f"❌ LỆNH NẠP TIỀN THẤT BẠI\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 Username: {u}\n"
+            f"🆔 Order ID: #{order_id}\n"
+            f"💰 Số tiền: {amt:,}đ\n"
+            f"📝 NDCK: {tc}\n"
+            f"⏰ Thời gian: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Không tìm thấy giao dịch sau {attempts} lần check ({interval_sec}s/lần)."
+        )
+    except Exception as e:
+        print(f"⚠️ [{u}] Lỗi gửi Telegram: {e}", flush=True)
+
+
+def poll_deposit_history_after_da_nap(
+    username: str,
+    order_id=None,
+    transfer_content=None,
+    amount=None,
+    interval_sec: int = DEPOSIT_HISTORY_POLL_INTERVAL_SEC,
+    max_attempts: int = DEPOSIT_HISTORY_POLL_MAX_ATTEMPTS,
+    limit: int = 20,
+) -> dict:
+    """
+    Sau callback «Đã Nạp» từ bên thứ 3: check lịch sử nạp game định kỳ.
+    Mặc định mỗi 30s, tối đa 30 lần; dừng sớm khi lệnh → Thành Công.
+    """
+    u = (username or "").strip()
+    if not u:
+        return {"ok": False, "error": "missing username"}
+
+    poll_key = str(order_id) if order_id is not None else u
+    if not _try_begin_deposit_poll(poll_key):
+        return {"ok": True, "skipped": "poll_in_progress"}
+
+    tc = (transfer_content or "").strip()
+    try:
+        if _deposit_order_status(order_id, u, tc) == "Thành Công":
+            return {"ok": True, "confirmed": True, "skipped": "already_thanh_cong"}
+
+        interval = max(1, int(interval_sec))
+        attempts = max(1, int(max_attempts))
+
+        for attempt in range(1, attempts + 1):
+            if _deposit_order_status(order_id, u, tc) == "Thành Công":
+                _log_deposit_poll_success(u, order_id, amount)
+                return {"ok": True, "confirmed": True, "attempt": attempt}
+
+            result = check_deposit_history(
+                u,
+                transfer_content=transfer_content,
+                order_id=order_id,
+                amount=amount,
+                limit=limit,
+            )
+
+            if result.get("synced_order_success") or _deposit_order_status(order_id, u, tc) == "Thành Công":
+                _log_deposit_poll_success(u, order_id, amount)
+                return {"ok": True, "confirmed": True, "attempt": attempt}
+
+            if attempt < attempts:
+                time.sleep(interval)
+
+        _handle_deposit_poll_failed(u, order_id, amount, transfer_content or "", attempts, interval)
+        return {"ok": True, "confirmed": False, "attempts": attempts}
+    finally:
+        _end_deposit_poll(poll_key)
 
 
 # Cho phép chạy trực tiếp file này

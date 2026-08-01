@@ -287,7 +287,7 @@ def try_claim_red_packet_on_home_page(
 
     page.on("response", on_response)
 
-    bal_before = get_user_balance(session, refresh=False).get("balance")
+    bal_before = get_user_balance(session, refresh=True).get("balance")
     result["balance_before"] = bal_before
     _log_red_packet(user, f"bat dau tren /home/ (balance={bal_before})")
 
@@ -337,7 +337,7 @@ def try_claim_red_packet_on_home_page(
         else:
             _log_red_packet(user, "HTTP getredpacketinfo — khong co list[].id (khong co bao?)")
 
-    bal_after = get_user_balance(session, refresh=False).get("balance")
+    bal_after = get_user_balance(session, refresh=True).get("balance")
     result["balance_after"] = bal_after
     result["grab"] = grab
     result["claimed"] = bool(grab.get("ok")) or (
@@ -488,7 +488,7 @@ def claim_red_packet(
         "log_path": str(log_path),
         "steps": [],
     }
-    bal_before = get_user_balance(session, refresh=False).get("balance")
+    bal_before = get_user_balance(session, refresh=True).get("balance")
     result["balance_before"] = bal_before
 
     last_grab: dict[str, Any] = {}
@@ -624,7 +624,7 @@ def claim_red_packet(
     if persist:
         persist_session(account_id, session)
 
-    bal_after = get_user_balance(session, refresh=False).get("balance")
+    bal_after = get_user_balance(session, refresh=True).get("balance")
     result["balance_after"] = bal_after
     result["grab"] = grab
     result["ok"] = bool(grab.get("ok")) or (

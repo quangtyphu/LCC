@@ -32,6 +32,11 @@ def _auto_mission_cfg(cfg: dict | None) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _balance_reconcile_cfg(cfg: dict | None) -> dict:
+    raw = _load_cfg(cfg).get("balance_reconcile")
+    return raw if isinstance(raw, dict) else {}
+
+
 def _telegram_credentials(cfg: dict | None, *, section: dict) -> tuple[bool, str, str]:
     """enabled, token, chat_id — section trước, rồi auto_bet, rồi env."""
     ab = _auto_bet_cfg(cfg)
@@ -96,3 +101,53 @@ def notify_auto_bet(msg: str, *, cfg: dict | None = None, prefix: str = "XOSO66"
 
 def notify_auto_mission(msg: str, *, cfg: dict | None = None, prefix: str = "XOSO66 MISSION") -> bool:
     return _notify_telegram(msg, cfg=cfg, section=_auto_mission_cfg(cfg), prefix=prefix)
+
+
+def _ensure_banking_telethon_path(banking: Path) -> None:
+    """Python XOSO66 thường khác .venv Banking → cần site-packages có telethon."""
+    venv_site = banking / ".venv" / "Lib" / "site-packages"
+    for p in (venv_site, banking):
+        sp = str(p)
+        if p.is_dir() and sp not in sys.path:
+            sys.path.insert(0, sp)
+
+
+def _trigger_voice_call(reason: str) -> None:
+    """Gọi Acc B qua Telethon (module ở Documents/Banking). Lệch số dư → gọi ngay."""
+    banking = _DIR.parent.parent / "Banking"
+    if not banking.is_dir():
+        print(f"[TELEGRAM-CALL] Không thấy Banking tại {banking}", flush=True)
+        return
+    _ensure_banking_telethon_path(banking)
+    try:
+        import telethon  # noqa: F401 — fail sớm nếu thiếu, trước khi spawn thread
+    except ModuleNotFoundError:
+        print(
+            "[TELEGRAM-CALL] Thiếu telethon. Cài: "
+            f'"{sys.executable}" -m pip install telethon',
+            flush=True,
+        )
+        return
+    try:
+        from telegram_caller import reload_call_env, trigger_telegram_call_async
+
+        reload_call_env()
+        # force=True: bỏ cooldown — lệch số dư là mất tiền, gọi ngay
+        trigger_telegram_call_async(reason=reason, force=True)
+        print("[TELEGRAM-CALL] Đã kích hoạt gọi Telegram (XOSO66 SỐ DƯ)", flush=True)
+    except Exception as e:
+        print(f"[TELEGRAM-CALL] Lỗi kích hoạt gọi: {e}", flush=True)
+
+
+def notify_balance_drop(
+    msg: str, *, cfg: dict | None = None, prefix: str = "XOSO66 SỐ DƯ"
+) -> bool:
+    text = f"[{prefix}]\n{msg}".strip()
+    ok = _notify_telegram(
+        msg, cfg=cfg, section=_balance_reconcile_cfg(cfg), prefix=prefix
+    )
+    try:
+        _trigger_voice_call(text)
+    except Exception as e:
+        print(f"[TELEGRAM-CALL] {e}", flush=True)
+    return ok

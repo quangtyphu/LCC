@@ -29,6 +29,10 @@ from typing import Any
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+from xoso66_config_util import configure_stdio_utf8
+
+configure_stdio_utf8()
+
 from xoso66_accounts_db import init_db, usernames_for_log
 from xoso66_minigame_catalog import DEFAULT_JACKPOT_GAME_IDS, GAME_ID_LABELS
 from xoso66_minigame_jackpot_store import MinigameJackpotStore
@@ -48,6 +52,16 @@ _ws_after_deposit_ids: set[str] = set()
 _ws_after_deposit_lock = threading.Lock()
 
 WATCH_GAME_IDS = frozenset(DEFAULT_JACKPOT_GAME_IDS)
+_cli_watch_override = False
+
+
+def effective_watch_game_ids(cfg: dict) -> frozenset[int]:
+    """CLI --watch-games ghi đè; không thì config force_game_id / game_ids."""
+    if _cli_watch_override:
+        return WATCH_GAME_IDS
+    from xoso66_jackpot_picker import watch_game_ids_frozen
+
+    return watch_game_ids_frozen(cfg)
 
 _token_maintain_ids: list[str] = []
 _token_maintain_lock = threading.Lock()
@@ -133,6 +147,10 @@ def _maintain_user_tokens_loop() -> None:
             if stopping():
                 return
             try:
+                from xoso66_cf import is_account_cf_rate_limited
+
+                if is_account_cf_rate_limited(aid):
+                    continue
                 from xoso66_ws_pool import get_connected_ws_accounts
 
                 from xoso66_config_util import load_config
@@ -153,13 +171,7 @@ def _maintain_user_tokens_loop() -> None:
                     continue
                 if st.get("ping_ok") and not st.get("needs_refresh"):
                     continue
-                user = username_for_log(aid, session)
-                print(
-                    f"[TOKEN] {user} maintain ({game_key}) "
-                    f"ping_ok={st.get('ping_ok')} needs_refresh={st.get('needs_refresh')}",
-                    flush=True,
-                )
-                rep = refresh_minigame_tokens(
+                refresh_minigame_tokens(
                     session,
                     account_id=aid,
                     game_key=game_key,
@@ -167,15 +179,27 @@ def _maintain_user_tokens_loop() -> None:
                     ws_only=bool(st.get("ping_ok")),
                 )
                 persist_session(aid, session)
-                ping_after = user_token_status(session, game_id=gid, gamename=gname)
-                print(
-                    f"[TOKEN] {user} → refresh_ok={rep.get('ok')} "
-                    f"ping_ok={ping_after.get('ping_ok')}"
-                    f"{(' warn=' + str(rep.get('warn'))) if rep.get('warn') else ''}",
-                    flush=True,
-                )
             except Exception as e:
                 print(f"[TOKEN] {username_for_log(aid)} lỗi maintain: {e}", flush=True)
+
+
+async def _sleep_until_account_cf_cooldown(account_id: str, user: str) -> None:
+    """Chờ hết cooldown CF — không gọi API/WS trong lúc chờ."""
+    from xoso66_cf import cf_rate_limit_remaining_for_account, is_account_cf_rate_limited
+    from xoso66_shutdown import stopping
+
+    if not is_account_cf_rate_limited(account_id):
+        return
+    rem = int(cf_rate_limit_remaining_for_account(account_id))
+    if rem <= 0:
+        return
+    print(
+        f"⏸️ [{user}] CF rate limit — chờ {rem}s (không gọi API/WS)",
+        flush=True,
+    )
+    while rem > 0 and not stopping():
+        await asyncio.sleep(min(rem, 15))
+        rem = int(cf_rate_limit_remaining_for_account(account_id))
 
 
 async def run_ws_for_account(
@@ -192,7 +216,13 @@ async def run_ws_for_account(
     aid = str(account_id).strip()
     user = username_for_log(aid)
     while not stopping():
+        await _sleep_until_account_cf_cooldown(aid, user)
+        if stopping():
+            return
         try:
+            from xoso66_config_util import load_config
+
+            watch_ids = effective_watch_game_ids(load_config())
             await listen_minigame_ws(
                 {},
                 aid,
@@ -201,10 +231,10 @@ async def run_ws_for_account(
                 refresh_before_connect=refresh_before_connect,
                 verbose=False,
                 game_watch=True,
-                watch_game_ids=WATCH_GAME_IDS,
+                watch_game_ids=watch_ids,
                 subscribe_spec=subscribe_spec,
                 subscribe_individual=True,
-                ping_game_id=sorted(WATCH_GAME_IDS),
+                ping_game_id=sorted(watch_ids),
                 save_jackpot=True,
                 jackpot_store=jackpot_store,
                 log_game_info=False,
@@ -213,6 +243,15 @@ async def run_ws_for_account(
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            from xoso66_cf import CfRateLimitError
+
+            if isinstance(e, CfRateLimitError):
+                print(f"❌ [{user}] WS: {e}", flush=True)
+                await _sleep_until_account_cf_cooldown(aid, user)
+                continue
+            from xoso66_ws_pool import mark_ws_connect_failed
+
+            mark_ws_connect_failed(aid, reason=str(e)[:160], exc=e)
             print(f"❌ [{user}] WS: {e}", flush=True)
             for _ in range(5):
                 if stopping():
@@ -387,6 +426,7 @@ class WsPoolSupervisor:
         cfg: dict[str, Any],
     ) -> None:
         from xoso66_accounts_db import get_account, username_for_log
+        from xoso66_proxy import is_proxy_dead, probe_proxy_socks, report_proxy_dead, resolve_proxy
         from xoso66_ws_pool import (
             account_balance_vnd,
             account_deposit_in_flight,
@@ -398,9 +438,12 @@ class WsPoolSupervisor:
             return
         min_bal = min_balance_for_ws(cfg)
         ready: list[str] = []
+        probe_new = len(added) <= 3
         for aid in added:
             aid = str(aid).strip()
             if not aid or aid == self.listener_id:
+                continue
+            if is_proxy_dead(aid):
                 continue
             if account_deposit_in_flight(aid, cfg):
                 print(
@@ -416,6 +459,17 @@ class WsPoolSupervisor:
                     flush=True,
                 )
                 continue
+            if probe_new:
+                px = resolve_proxy(row)
+                ok_px, px_err = await asyncio.to_thread(probe_proxy_socks, px)
+                if not ok_px:
+                    report_proxy_dead(
+                        aid,
+                        proxy_str=px,
+                        source="WS pre-check",
+                        detail=px_err,
+                    )
+                    continue
             ready.append(aid)
         added = ready
         if not added:
@@ -451,6 +505,10 @@ class WsPoolSupervisor:
         refresh_new: bool = False,
     ) -> bool:
         """Áp dụng danh sách nick WS; trả True nếu có thay đổi."""
+        from xoso66_shutdown import stopping
+
+        if stopping():
+            return False
         from xoso66_config_util import main_progress
         from xoso66_ws_pool import filter_ws_target_connectable
 
@@ -491,59 +549,45 @@ class WsPoolSupervisor:
 
         removed = sorted(a for a in (current - new_set) if a != self.listener_id)
         added = sorted(new_set - set(self.tasks.keys()))
-        if len(target) <= 6:
-            names = ", ".join(usernames_for_log(target))
-        else:
-            head = ", ".join(usernames_for_log(target[:4]))
-            names = f"{head}… (+{len(target) - 4})"
-        ch = []
-        if added:
-            ch.append(f"+{len(added)}")
-        if removed:
-            ch.append(f"-{len(removed)}")
-        ch_txt = f" ({', '.join(ch)})" if ch else ""
-        print(
-            f"[WS-POOL] Pool {len(target)} nick WS{ch_txt}: {names}",
-            flush=True,
-        )
 
         for aid in removed:
             await self._stop_account(aid)
-            await asyncio.to_thread(
-                _sync_ws_status_blocking,
-                cfg,
-                leaving=[aid],
-                joining=[],
-            )
+            if not stopping():
+                await asyncio.to_thread(
+                    _sync_ws_status_blocking,
+                    cfg,
+                    leaving=[aid],
+                    joining=[],
+                )
 
         self._sync_token_maintain_ids()
 
         lead = target[0] if target else ""
         if added:
+            from xoso66_shutdown import stopping
             from xoso66_ws_pool import mark_pending_ws_slots
 
-            mark_pending_ws_slots(added)
-            for aid in added:
-                self._spawn_task(aid, lead=lead or aid, refresh=True)
-            self._sync_token_maintain_ids()
-            t = asyncio.create_task(
-                self._sync_joining_accounts(added, cfg=cfg),
-                name="ws-pool-sync-joining",
-            )
-            t.add_done_callback(_log_async_task_result)
+            if not stopping():
+                mark_pending_ws_slots(added)
+                for aid in added:
+                    self._spawn_task(aid, lead=lead or aid, refresh=True)
+                self._sync_token_maintain_ids()
+                t = asyncio.create_task(
+                    self._sync_joining_accounts(added, cfg=cfg),
+                    name="ws-pool-sync-joining",
+                )
+                t.add_done_callback(_log_async_task_result)
         return True
 
     async def _sync_joining_accounts(
         self, added: list[str], *, cfg: dict[str, Any]
     ) -> None:
-        if not added:
+        from xoso66_shutdown import stopping
+
+        if not added or stopping():
             return
         self._connect_batch_n += 1
         try:
-            from xoso66_session import prep_site_session_before_ws
-
-            for aid in added:
-                await asyncio.to_thread(prep_site_session_before_ws, aid)
             await asyncio.to_thread(
                 _sync_ws_status_blocking,
                 cfg,
@@ -568,28 +612,26 @@ class WsPoolSupervisor:
             self._spawn_task(aid, lead=lead or aid, refresh=True)
         await self._sync_joining_accounts(added, cfg=cfg)
 
-    async def _apply_pending_evictions(self, cfg: dict[str, Any]) -> list[str]:
+    async def _apply_pending_evictions(
+        self, cfg: dict[str, Any]
+    ) -> tuple[list[str], list[str]]:
         with _ws_evict_lock:
             evict = {x for x in _ws_evict_ids if x}
             _ws_evict_ids.clear()
         if self.listener_id:
             evict.discard(self.listener_id)
         if not evict:
-            return list(self.tasks.keys())
-        from xoso66_config_util import main_progress
-        from xoso66_accounts_db import username_for_log
-
-        names = ", ".join(username_for_log(a) for a in sorted(evict))
-        main_progress(f"[WS-POOL] Ngắt WS: {names}")
+            return list(self.tasks.keys()), []
         for aid in evict:
             await self._stop_account(aid)
+        evicted = sorted(evict)
         await asyncio.to_thread(
             _sync_ws_status_blocking,
             cfg,
-            leaving=sorted(evict),
+            leaving=evicted,
             joining=[],
         )
-        return [a for a in self.tasks.keys() if a not in evict]
+        return [a for a in self.tasks.keys() if a not in evict], evicted
 
     async def _connect_after_deposit(self, cfg: dict[str, Any]) -> bool:
         with _ws_after_deposit_lock:
@@ -642,12 +684,6 @@ class WsPoolSupervisor:
                 f"{usernames_for_log(skipped)}",
                 flush=True,
             )
-        else:
-            print(
-                f"[WS-POOL] Nạp Hoàn tất — mở WS {len(to_add)} nick: "
-                f"{usernames_for_log(to_add)}",
-                flush=True,
-            )
         target = sorted(set(task_keys) | set(to_add))
         return await self.apply_pool(target, cfg=cfg, refresh_new=True)
 
@@ -679,9 +715,9 @@ class WsPoolSupervisor:
         )
 
         cfg = load_config()
-        current = await self._apply_pending_evictions(cfg)
+        current, just_evicted = await self._apply_pending_evictions(cfg)
         changed = await self._connect_after_deposit(cfg)
-        from xoso66_ws_pool import account_deposit_in_flight, clear_pending_ws_slot
+        from xoso66_ws_pool import account_ws_deposit_busy, clear_pending_ws_slot
 
         task_ids = list(self.tasks.keys())
         connected = {
@@ -692,7 +728,7 @@ class WsPoolSupervisor:
         for aid in list(get_pending_ws_slot_ids()):
             if aid in self.tasks or aid in connected:
                 continue
-            if account_deposit_in_flight(aid, cfg):
+            if account_ws_deposit_busy(aid, cfg):
                 continue
             clear_pending_ws_slot(aid)
         current = sorted(set(task_ids) | get_pending_ws_slot_ids())
@@ -702,6 +738,7 @@ class WsPoolSupervisor:
             current,
             round_start=round_start,
             ws_task_ids=task_ids,
+            just_evicted=just_evicted,
         )
         if plan is None:
             self._sync_token_maintain_ids()
@@ -710,12 +747,13 @@ class WsPoolSupervisor:
         if plan.prune_removed:
             for aid in plan.prune_removed:
                 await self._stop_account(aid)
-            await asyncio.to_thread(
-                _sync_ws_status_blocking,
-                cfg,
-                leaving=plan.prune_removed,
-                joining=[],
-            )
+            if not stopping():
+                await asyncio.to_thread(
+                    _sync_ws_status_blocking,
+                    cfg,
+                    leaving=plan.prune_removed,
+                    joining=[],
+                )
 
         task_keys = set(self.tasks.keys())
         target_set = set(plan.target)
@@ -729,6 +767,9 @@ class WsPoolSupervisor:
             to_open = sorted(a for a in want_open if a not in connected_live)
         else:
             to_open = sorted(want_open or (target_set - task_keys))
+        from xoso66_cf import is_account_cf_rate_limited
+
+        to_open = [a for a in to_open if not is_account_cf_rate_limited(a)]
         if to_open:
             tag = "Phiên mới" if round_start else "Resync"
             print(
@@ -741,12 +782,12 @@ class WsPoolSupervisor:
                 if aid in self.tasks:
                     await self._stop_account(aid)
         pool_changed = bool(to_open) or target_set != task_keys
-        if pool_changed:
+        if pool_changed and not stopping():
             changed = await self.apply_pool(
                 plan.target, cfg=cfg, refresh_new=refresh_new
             ) or changed
 
-        if plan.deposit_ids:
+        if plan.deposit_ids and not stopping():
             schedule_fund_deposit_for_ws_shortage(
                 cfg, plan.deposit_ids, label="ws-pool-round-deposit"
             )
@@ -771,6 +812,10 @@ class WsPoolSupervisor:
         for aid, task in list(self.tasks.items()):
             if not task.done() or task.cancelled():
                 continue
+            from xoso66_cf import is_account_cf_rate_limited
+
+            if is_account_cf_rate_limited(aid):
+                continue
             last = self._last_respawn_at.get(aid, 0.0)
             if now - last < 25.0:
                 continue
@@ -792,6 +837,10 @@ class WsPoolSupervisor:
 
 def schedule_ws_connect_after_deposit(account_ids: list[str]) -> None:
     """Sau nạp Hoàn tất — thêm nick vào pool WS (xử lý trên loop asyncio)."""
+    from xoso66_shutdown import stopping
+
+    if stopping():
+        return
     from xoso66_ws_pool import (
         get_connected_ws_accounts,
         get_pending_ws_slot_ids,
@@ -818,12 +867,6 @@ def schedule_ws_connect_after_deposit(account_ids: list[str]) -> None:
         )
     if not ids:
         return
-    from xoso66_accounts_db import usernames_for_log
-
-    print(
-        f"[WS-POOL] Nạp Hoàn tất — mở WS {len(ids)} nick: {usernames_for_log(ids)}",
-        flush=True,
-    )
     with _ws_after_deposit_lock:
         _ws_after_deposit_ids.update(ids)
     _ws_after_deposit_check.set()
@@ -831,11 +874,27 @@ def schedule_ws_connect_after_deposit(account_ids: list[str]) -> None:
 
 def schedule_ws_pool_round_check() -> None:
     """Gọi từ handler BẮT ĐẦU PHIÊN (thread sync) → resync pool trên loop WS."""
+    from xoso66_shutdown import stopping
+
+    if stopping():
+        return
     _ws_pool_round_check.set()
+
+
+def cancel_ws_pool_pending_work() -> None:
+    """Ctrl+C — bỏ resync/nạp WS đã lên lịch."""
+    _ws_pool_round_check.clear()
+    _ws_after_deposit_check.clear()
+    with _ws_after_deposit_lock:
+        _ws_after_deposit_ids.clear()
 
 
 def schedule_ws_evict_and_resync(account_ids: list[str]) -> None:
     """Ngắt WS nick đã gần đủ cap cược ngày, bổ sung nick mới."""
+    from xoso66_shutdown import stopping
+
+    if stopping():
+        return
     from xoso66_config_util import load_config
     from xoso66_ws_pool import filter_ws_evict_ids
 
@@ -960,7 +1019,8 @@ async def run_managed_ws_workers(
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     if pending:
                         await asyncio.gather(*pending, return_exceptions=True)
-                await sup._stop_listener()
+                _ws_pool_round_check.clear()
+                _ws_after_deposit_check.clear()
                 break
             if _ws_after_deposit_check.is_set() and not stopping():
                 _ws_after_deposit_check.clear()
@@ -996,6 +1056,16 @@ async def run_managed_ws_workers(
             with contextlib.suppress(asyncio.CancelledError):
                 await progress_task
         await sup.shutdown()
+        pending_tasks = [
+            t
+            for t in asyncio.all_tasks()
+            if t is not asyncio.current_task() and not t.done()
+        ]
+        for t in pending_tasks:
+            t.cancel()
+        if pending_tasks:
+            with contextlib.suppress(Exception):
+                await asyncio.gather(*pending_tasks, return_exceptions=True)
         if stopping():
             print("[WS-WORKER] Đã dừng (Ctrl+C).", flush=True)
 
@@ -1103,9 +1173,10 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    global WATCH_GAME_IDS
+    global WATCH_GAME_IDS, _cli_watch_override
     if (args.watch_games or "").strip():
         WATCH_GAME_IDS = parse_watch_game_ids(args.watch_games)
+        _cli_watch_override = True
 
     init_db()
     from xoso66_config_util import load_config

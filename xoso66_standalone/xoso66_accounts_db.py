@@ -395,9 +395,14 @@ STATUS_DANG_CHOI = "Đang Chơi"
 STATUS_HET_TIEN = "Hết Tiền"
 STATUS_DU_NGAY = "Đủ ngày"
 STATUS_LOI = "Lỗi"
+STATUS_LOI_PROXY = "Lỗi proxy"
 
-# Chỉ các reason từ WS pool mới hẹn auto nhận thưởng (không bootstrap lúc mở app).
-MISSION_CLAIM_WS_REASONS = frozenset({"ngắt WS", "đủ cap cược ngày"})
+# Chỉ các reason từ WS pool / strategy 3 mới hẹn auto nhận thưởng (không bootstrap lúc mở app).
+MISSION_CLAIM_WS_REASONS = frozenset({
+    "ngắt WS",
+    "đủ cap cược ngày",
+    "đạt ngưỡng rút strategy 3",
+})
 
 
 def set_account_status(
@@ -724,6 +729,9 @@ def save_session_runtime(account_id: str, session: dict[str, Any]) -> dict[str, 
         "aes_session_key",
         "user_info",
         "login_raw",
+        "session_login_at",
+        "balance_verified_at",
+        "balance_verified_money",
         "linked_banks",
         "withdraw_fast_money",
         "ukey",

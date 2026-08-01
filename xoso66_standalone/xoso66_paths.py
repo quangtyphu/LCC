@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Đường dẫn chuẩn — DB/config XOSO66 nằm trên CMS (game_data/), không dùng xoso66_standalone/data/."""
+"""Đường dẫn chuẩn — DB: CMS/game_data; config: xoso66_standalone/xoso66_config.json (CMS UI)."""
 
 from __future__ import annotations
 
@@ -34,9 +34,7 @@ def default_config_path() -> Path:
     explicit = (os.environ.get("XOSO66_CONFIG") or "").strip()
     if explicit:
         return Path(explicit).resolve()
-    cms_cfg = cms_game_data_dir() / "xoso66_config.json"
-    if cms_cfg.is_file():
-        return cms_cfg
+    # Cùng file CMS UI chỉnh: LC79/xoso66_standalone/xoso66_config.json
     return _DIR / "xoso66_config.json"
 
 

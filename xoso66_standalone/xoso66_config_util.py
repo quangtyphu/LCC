@@ -6,25 +6,38 @@ Chỉnh trong JSON:
   auto_deposit.amount_vnd
   auto_deposit.deposit_channel_id
   auto_deposit.deposit_channel_name
+  auto_deposit.deposit_bank_id      (NH chuyển khoản — TIMEPAY bank_list, VD 33 = VPBANK)
+  auto_deposit.deposit_bank_name    (tên NH nếu không set deposit_bank_id, mặc định VPBANK)
   auto_deposit.min_deposit_vnd
   game_worker.ws_account_count
   game_worker.ws_default_username  (WS CLI mặc định)
   game_worker.ws_listener_username  (nick giữ WS nghe phiên — không ngắt cap; fallback ws_default_username)
   game_worker.ws_listener_enabled  (true/false — tắt hẳn WS listener)
+  game_worker.ws_fill_priority  (2 = mọi acc: cược ngày cao→thấp, bằng nhau số dư cao→thấp; 1 = đủ tiền: số dư cao→thấp, thiếu tiền: cược thấp→cao; 0 = mọi acc: số dư thấp→cao, cược cao→thấp)
   auto_bet.enabled
-  auto_bet.side_total_by_jackpot_enabled  (0 = cố định side_total_low_vnd; 1 = chia mức theo bậc hũ)
-  auto_bet.min_jackpot_vnd
-  auto_bet.jackpot_side_mid_vnd  (hũ > mức này → side_total_high_vnd; tới mức này → side_total_low_vnd)
-  auto_bet.side_total_low_vnd
-  auto_bet.side_total_high_vnd
-  auto_bet.side_total_vnd  (fallback khi jackpot_side_mid_vnd = 0)
+  auto_bet.side_total_by_jackpot_enabled  (0 = cố định side_total_low_vnd; 1 = cược tăng theo bậc hũ)
+  auto_bet.min_jackpot_vnd  (mốc bắt đầu chơi + mốc cược base)
+  auto_bet.jackpot_side_step_vnd  (hũ tăng bao nhiêu thì lên 1 bậc cược; VD 500000000)
+  auto_bet.side_total_low_vnd  (cược tại min_jackpot_vnd)
+  auto_bet.side_total_step_vnd  (mỗi bậc hũ → cược tăng bao nhiêu; VD 10000)
+  auto_bet.side_total_vnd  (fallback khi tắt bậc hũ / thiếu step)
   auto_bet.bet_step_vnd
-  auto_bet.daily_bet_cap_vnd
-  auto_bet.assign_strategy  (1 hoặc 2 — xoso66_bet_assign.STRATEGY_LABELS; 2 = cược ngày thấp trước)
+  auto_bet.max_bet_per_user_vnd  (mỗi acc tối đa một lệnh; 0 = không giới hạn)
+  auto_bet.daily_bet_cap_vnd  (895000 ≈ điểm danh 888k; 2695000 ≈ Cửa 1 target 2688000 — nâng cap tự resume + claim lại)
+  auto_bet.assign_strategy  (1, 2 hoặc 3 — STRATEGY_LABELS; 3 = 2 acc chênh số dư nhỏ nhất, cùng mức Tài/Xỉu)
   auto_bet.assign_match_mode  (0 = khớp lệnh nào cược lệnh đó, pool Tài+Xỉu chung; 1 = khớp hết mới cược)
-  auto_mission_reward.min_withdraw_vnd  (số dư ≥ mức này mới tự rút trước nhận thưởng)
-  auto_mission_reward.withdraw_step_vnd  (bội rút, vd. 100000 → 300k/400k/500k)
-  auto_mission_reward.claim_between_delay_sec  (giây giữa 2 lần POST reward liên tiếp)
+  auto_bet.consolidate_min_withdraw_vnd  (strategy 3: dừng cược + hẹn rút khi số dư > mức này; mặc định 300k)
+  auto_bet.consolidate_no_deposit  (strategy 3: true = không nạp mọi acc; mặc định true)
+  auto_bet.consolidate_pair_max_gap_vnd  (strategy 3: chênh tối đa giữa floor bet_step của 2 acc liền kề; 0 = floor phải bằng nhau)
+  auto_bet.consolidate_withdraw_delay_sec  (strategy 3: chờ trước khi rút sau Đủ ngày; mặc định 420 = 7p)
+  auto_bet.consolidate_min_ws_balance_vnd  (strategy 3: sàn mở WS / fill slot; mặc định 50000)
+  auto_mission_reward.min_withdraw_vnd  (số dư ≥ mức này mới rút; VD 450000 = trên 450k mới rút)
+  auto_mission_reward.withdraw_step_vnd  (bước/mức rút: 300000 → mỗi lần 300k nếu max cũng 300k)
+  auto_mission_reward.max_withdraw_vnd  (trần mỗi lần rút; đặt = step để luôn rút đúng 1 mức)
+  auto_mission_reward.min_balance_after_withdraw_vnd  (số dư sau rút phải ≥ mức này; mặc định 50000)
+  auto_mission_reward.hold_reward_above_min_balance  (0/1 — 1: số dư > min_withdraw_vnd thì bỏ rút + bỏ nhận thưởng; ≤ min vẫn nhận)
+  auto_mission_reward.hold_reward_poll_max  (poll thứ N/20 chưa Hoàn tất → bật hold_reward_above_min_balance=1; mặc định 5)
+  auto_mission_reward.withdraw_confirm_poll_max  (tổng poll rút 1→N; mặc định 20)
 
 Proxy mặc định (acc không có proxy): sửa DEFAULT_PROXY bên dưới hoặc env XOSO66_DEFAULT_PROXY.
 """
@@ -66,6 +79,17 @@ def configure_stdio_utf8() -> None:
             except Exception:
                 pass
 
+    _repo = Path(__file__).resolve().parent.parent
+    if str(_repo) not in sys.path:
+        sys.path.insert(0, str(_repo))
+    from shared.console_log import install_file_tee, install_timed_print
+
+    install_timed_print()
+    # Tee stdout/stderr → xoso66_standalone/logs/xoso66_YYYYMMDD.log
+    # Tắt: XOSO66_LOG_TO_FILE=0  |  Đổi thư mục: XOSO66_LOG_DIR=...
+    # Giữ: mặc định 7 ngày (XOSO66_LOG_KEEP_DAYS)
+    install_file_tee(log_dir=_DIR / "logs", prefix="xoso66", keep_days=7)
+
 
 def safe_print(*args: object, **kwargs: object) -> None:
     """print() không làm vỡ request API khi console Windows là cp1252."""
@@ -102,26 +126,48 @@ USER_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("auto_deposit", "amount_vnd"),
     ("auto_deposit", "deposit_channel_id"),
     ("auto_deposit", "deposit_channel_name"),
+    ("auto_deposit", "deposit_bank_id"),
+    ("auto_deposit", "deposit_bank_name"),
     ("auto_deposit", "min_deposit_vnd"),
     ("game_worker", "ws_account_count"),
     ("game_worker", "ws_default_username"),
     ("game_worker", "ws_listener_username"),
     ("game_worker", "ws_listener_enabled"),
+    ("game_worker", "ws_fill_priority"),
     ("auto_bet", "enabled"),
     ("auto_bet", "side_total_by_jackpot_enabled"),
     ("auto_bet", "min_jackpot_vnd"),
-    ("auto_bet", "jackpot_side_mid_vnd"),
+    ("auto_bet", "jackpot_side_step_vnd"),
     ("auto_bet", "side_total_low_vnd"),
-    ("auto_bet", "side_total_high_vnd"),
+    ("auto_bet", "side_total_step_vnd"),
     ("auto_bet", "side_total_vnd"),
     ("auto_bet", "bet_step_vnd"),
+    ("auto_bet", "max_bet_per_user_vnd"),
+    ("auto_bet", "players_per_side"),
+    ("auto_bet", "split_dump_at_player"),
     ("auto_bet", "daily_bet_cap_vnd"),
     ("auto_bet", "assign_strategy"),
     ("auto_bet", "assign_match_mode"),
+    ("auto_bet", "consolidate_min_withdraw_vnd"),
+    ("auto_bet", "consolidate_no_deposit"),
+    ("auto_bet", "consolidate_pair_max_gap_vnd"),
+    ("auto_bet", "consolidate_withdraw_delay_sec"),
+    ("auto_bet", "consolidate_min_ws_balance_vnd"),
     ("auto_bet", "PRIORITY_USERS"),
+    ("auto_bet", "force_game_id"),
     ("auto_mission_reward", "min_withdraw_vnd"),
     ("auto_mission_reward", "withdraw_step_vnd"),
-    ("auto_mission_reward", "claim_between_delay_sec"),
+    ("auto_mission_reward", "max_withdraw_vnd"),
+    ("auto_mission_reward", "min_balance_after_withdraw_vnd"),
+    ("auto_mission_reward", "hold_reward_above_min_balance"),
+    ("auto_mission_reward", "hold_reward_poll_max"),
+    ("auto_mission_reward", "withdraw_confirm_poll_max"),
+    ("startup_checks", "startup_async"),
+    ("balance_reconcile", "enabled"),
+    ("balance_reconcile", "interval_min"),
+    ("balance_reconcile", "parallel"),
+    ("balance_reconcile", "telegram_enabled"),
+    ("balance_reconcile", "min_drop_notify_vnd"),
 )
 
 HARDCODED_CONFIG: dict[str, Any] = {
@@ -129,10 +175,18 @@ HARDCODED_CONFIG: dict[str, Any] = {
     "api_key": "doi-api-key-cms",
     "api_host": "0.0.0.0",
     "api_port": 8799,
+    "captcha": {
+        "enabled": True,
+        "provider": "capsolver",
+        "api_key": "CAP-9E805F00F18EBDFF762F217824A4AF901094F43DE4105047F59FE0D2BAB06D1B",
+        "max_attempts": 3,
+        "timeout_sec": 120,
+    },
     "startup_checks": {
         "enabled": True,
         "scope": "status",
         "verbose": False,
+        "quiet": False,
         "combined_startup": True,
         "startup_async": False,
         "parallel_max": 64,
@@ -166,15 +220,21 @@ HARDCODED_CONFIG: dict[str, Any] = {
     "auto_deposit": {
         "enabled": True,
         "amount_vnd": 1_000_000,
-        "deposit_channel_id": 280,
-        "deposit_channel_name": "TOPAY-Ngân hàng trực tuyến",
+        "deposit_channel_id": 220,
+        "deposit_channel_name": "TIMEPAY-nạp tiền bankking",
+        "deposit_bank_id": 33,
+        "deposit_bank_name": "VPBANK",
         "min_deposit_vnd": 1_000_000,
         "handler_enabled": True,
         "handler_host": "0.0.0.0",
         "handler_connect_host": "127.0.0.1",
         "handler_port": 5001,
-        "third_party_url": "http://localhost:8888/api/deposit",
+        # Banking cổng HMAC (giống AZP/LC79) — POST /api/orders/withdraw trên :8888
+        "third_party_url": "http://127.0.0.1:8888/api/orders/withdraw",
         "callback_url": "http://127.0.0.1:5001/callback",
+        "partnerId": "xoso66",
+        "partner_api_key": "_KdFrx_Vrik23ysY6GDrp-_4dmh4g3GNjOU2SHK8wUg",
+        "partner_api_secret": "ttL1yTZWAQ8qd7nHVeLB4S1fL7-FbgCuea8FfMiqNzvBd9Z-OYAeGrYranYqbSOU",
         "poll_on_third_party_ok": False,
         "poll_interval_sec": 10,
         "poll_max_attempts": 100,
@@ -191,12 +251,13 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "round_start_log_delay_sec": 8,
         "round_start_balance_check_delay_sec": 10,
         "ws_pool_resync_enabled": True,
-        "ws_pool_resync_interval_sec": 30,
+        "ws_pool_resync_interval_sec": 60,
         "ws_pool_resync_only_expand": True,
         "ws_connect_batch_size": 8,
         "ws_connect_batch_delay_sec": 0.35,
         "ws_bulk_refresh_threshold": 5,
         "ws_listener_enabled": True,
+        "ws_fill_priority": 2,
         "ws_listener_account_id": "",
         "ws_listener_username": "quangtyphu",
         "ws_default_username": "quangtyphu",
@@ -207,10 +268,23 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "ws_vip_after_connect_claim": True,
         "ws_vip_after_connect_cooldown_sec": 3600,
         "ws_vip_after_claim_refresh_balance": True,
+        "withdraw_sync_on_ws_open": True,
+        "withdraw_sync_list_limit": 10,
+        "withdraw_sync_days": 7,
+        "withdraw_sync_on_ws_cooldown_sec": 120,
     },
     "device_balance": {
         "banking_api_url": "http://127.0.0.1:8888",
+        # banking-db Node — credit XMSB* (giống CMS BANKING_CREDIT_URL / :3010)
+        "banking_credit_url": "http://127.0.0.1:3010",
         "cms_api_url": "http://127.0.0.1:3000",
+    },
+    "auto_red_packet": {
+        "enabled": True,
+        "hour": 21,
+        "minute": 0,
+        "parallel": 5,
+        "worker_tick_sec": 30,
     },
     "auto_mission_reward": {
         "enabled": True,
@@ -219,14 +293,23 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "poll_max_attempts": 15,
         "min_withdraw_vnd": 300_000,
         "withdraw_step_vnd": 100_000,
-        "claim_between_delay_sec": 3,
+        "max_withdraw_vnd": 500_000,
+        "min_balance_after_withdraw_vnd": 50_000,
         "reward_retry_delay_sec": 300,
         "reward_retry_max": 3,
         "withdraw_confirm_poll_interval_sec": 60,
         "withdraw_confirm_poll_max": 20,
-        "disable_auto_bet_on_withdraw_timeout": True,
+        "hold_reward_poll_max": 5,
         "telegram_enabled": True,
         "worker_tick_sec": 10,
+        "hold_reward_above_min_balance": 0,
+    },
+    "balance_reconcile": {
+        "enabled": True,
+        "interval_min": 60,
+        "parallel": 12,
+        "telegram_enabled": True,
+        "min_drop_notify_vnd": 50_000,
     },
     "auto_bet": {
         "enabled": True,
@@ -236,16 +319,23 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "playing_game_max_age_sec": 1800,
         "side_total_by_jackpot_enabled": 1,
         "min_jackpot_vnd": 2_000_000_000,
-        "jackpot_side_mid_vnd": 3_000_000_000,
+        "jackpot_side_step_vnd": 500_000_000,
         "side_total_low_vnd": 50_000,
-        "side_total_high_vnd": 100_000,
+        "side_total_step_vnd": 10_000,
+        "force_game_id": 0,
         "game_ids": [2, 9, 17, 18, 19],
         "side_total_vnd": 100_000,
         "bet_step_vnd": 10_000,
-        "players_per_side": 6,
-        "split_dump_at_player": 6,
+        "max_bet_per_user_vnd": 100_000,
+        "players_per_side": 10,
+        "split_dump_at_player": 10,
         "assign_strategy": 2,
         "assign_match_mode": 1,
+        "consolidate_min_withdraw_vnd": 300_000,
+        "consolidate_no_deposit": True,
+        "consolidate_pair_max_gap_vnd": 0,
+        "consolidate_withdraw_delay_sec": 420,
+        "consolidate_min_ws_balance_vnd": 50_000,
         "PRIORITY_USERS": [],
         "daily_bet_cap_vnd": 892_000,
         "check_balance": True,
@@ -417,11 +507,23 @@ def hardcoded_default_proxy() -> str:
 
 
 def startup_quiet(cfg: dict) -> bool:
-    """verbose=false → không in banner [MAIN]/[API]/[GAME] khi khởi động."""
+    """verbose=true hoặc quiet=false → in banner [MAIN]/[API]/[GAME] khi khởi động."""
     sc = cfg.get("startup_checks") if isinstance(cfg.get("startup_checks"), dict) else {}
     if sc.get("verbose"):
         return False
-    return sc.get("quiet", True)
+    return bool(sc.get("quiet", False))
+
+
+def startup_async_enabled(cfg: dict) -> bool:
+    """True → startup checks chạy nền, không chặn WS worker."""
+    sc = cfg.get("startup_checks") if isinstance(cfg.get("startup_checks"), dict) else {}
+    if bool(sc.get("startup_async")):
+        return True
+    return str(os.environ.get("XOSO66_STARTUP_ASYNC", "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def main_progress(msg: str) -> None:

@@ -7,9 +7,19 @@
     body { font-family: Arial, sans-serif; margin: 0; padding: 16px; background: #f5f6fa; }
     h2 { color: #2c3e50; margin-top: 24px; }
     .form-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .form-grid-one-row {
+      flex-wrap: nowrap; overflow-x: auto; align-items: center;
+      padding-bottom: 4px; margin-bottom: 12px;
+    }
     .form-grid input, .form-grid select {
       padding: 8px; border: 1px solid #ccc; border-radius: 4px; min-width: 160px;
     }
+    .form-grid-one-row input, .form-grid-one-row select {
+      min-width: 88px; flex: 0 0 auto; font-size: 12px; padding: 6px 8px;
+    }
+    .form-grid-one-row #proxy { min-width: 160px; }
+    .form-grid-one-row #username { min-width: 100px; }
+    .form-grid-one-row .btn { flex: 0 0 auto; white-space: nowrap; margin-right: 0; font-size: 12px; padding: 6px 10px; }
     .btn {
       padding: 8px 14px; border: none; border-radius: 4px; color: #fff; cursor: pointer; margin-right: 6px;
     }
@@ -97,16 +107,74 @@
     .acc-list-totals .tot-bal { color: #2ecc71; font-weight: 700; font-size: 16px; }
     .acc-list-totals .tot-bet { color: #f1c40f; font-weight: 700; font-size: 16px; }
     .acc-list-totals .tot-count { color: #ecf0f1; font-size: 13px; }
-    #btnRefreshStatus {
+    .acc-list-totals .tot-m161 { color: #bb8fce; font-weight: 700; font-size: 16px; }
+    .acc-list-totals .tot-m161-ratio { color: #d7bde2; font-weight: 700; font-size: 15px; }
+    .acc-list-totals .tot-mini { color: #f5b041; font-weight: 700; font-size: 16px; }
+    .acc-list-totals .tot-mini-ratio { color: #f8c471; font-weight: 700; font-size: 15px; }
+    .acc-list-header {
+      margin: 20px 0 10px 0;
+    }
+    .acc-list-header h2 { margin: 0; }
+    .acc-pagination-wrap {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 12px;
+      margin: 10px 0;
+      padding-right: min(340px, 35vw);
+      box-sizing: border-box;
+    }
+    .acc-search {
+      justify-self: start;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .acc-search input.acc-search-user {
+      padding: 6px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      min-width: 160px;
+      max-width: 240px;
+      width: 100%;
+      font-size: 13px;
+      box-sizing: border-box;
+    }
+    .acc-search input.acc-search-user:focus {
+      outline: none;
+      border-color: #3498db;
+      box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+    }
+    .acc-pagination {
+      display: flex; gap: 8px; align-items: center; justify-content: center; margin: 0;
+      justify-self: center;
+    }
+    .acc-page-info { font-size: 13px; }
+    .rt-toolbar {
       position: fixed;
       top: 20px;
       right: 30px;
       z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.97);
+      padding: 10px 12px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      font-size: 13px;
+      max-width: min(320px, calc(100vw - 24px));
+    }
+    .rt-toolbar label { cursor: pointer; white-space: nowrap; }
+    .rt-toolbar-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 8px; }
+    #rtStatus { font-size: 12px; color: #666; text-align: right; line-height: 1.3; }
+    #btnRefreshStatus {
       width: 160px;
       padding: 10px;
       font-size: 16px;
       border-radius: 6px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
     }
     #btnRefreshStatus:disabled { opacity: 0.6; cursor: wait; }
     body.page-payments #btnRefreshStatus { background: #2980b9; }
@@ -198,6 +266,7 @@
       background: #1e272e; color: #dfe6e9; padding: 10px; border-radius: 4px;
       font-size: 12px; max-height: 200px; overflow: auto; white-space: pre-wrap; margin-bottom: 16px;
     }
+    #logBox:empty { display: none; margin: 0; padding: 0; }
     table { width: 100%; border-collapse: collapse; background: #fff; }
     th, td { border: 1px solid #ddd; padding: 8px; text-align: center; font-size: 13px; }
     th { background: #8e44ad; color: #fff; }
@@ -221,11 +290,19 @@
       max-width: 300px; width: 100%; border: 2px solid #ddd; border-radius: 8px;
     }
     #qrModalOverlay .btn-close-modal {
-      width: 100%; padding: 12px; font-size: 16px; background: #3498db; color: #fff;
-      border: none; border-radius: 8px; cursor: pointer; font-weight: bold; margin-top: 12px;
+      flex: 1; padding: 12px; font-size: 16px; background: #3498db; color: #fff;
+      border: none; border-radius: 8px; cursor: pointer; font-weight: bold;
+    }
+    #qrModalOverlay .btn-send-deposit {
+      flex: 1; padding: 12px; font-size: 16px; background: #2ecc71; color: #fff;
+      border: none; border-radius: 8px; cursor: pointer; font-weight: bold;
+    }
+    #qrModalOverlay .btn-send-deposit:disabled { opacity: 0.6; cursor: wait; }
+    #qrModalOverlay .qr-modal-actions {
+      display: flex; gap: 10px; margin-top: 12px;
     }
     .cms-nav {
-      display: flex; gap: 8px; margin: 12px 0 20px; flex-wrap: wrap;
+      display: flex; gap: 8px; margin: 8px 0 16px; flex-wrap: wrap;
     }
     .cms-nav .nav-btn {
       padding: 10px 20px; border: 2px solid #8e44ad; border-radius: 6px;
@@ -271,6 +348,25 @@
     .pay-stats .pay-stat-scope { grid-column: 1 / -1; font-size: 11px; color: #8e44ad; margin-bottom: 4px; }
     body.page-deposit-orders #btnRefreshStatus { background: #16a085; }
     body.page-deposit-orders #btnRefreshStatus:hover { background: #138d75; }
+    body.page-daily-profits #btnRefreshStatus { background: #3498db; }
+    body.page-daily-profits #btnRefreshStatus:hover { background: #2980b9; }
+    .dp-summary {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px; margin: 12px 0 16px;
+    }
+    .dp-summary .dp-card {
+      background: #fff; border: 2px solid #3498db; border-radius: 8px;
+      padding: 12px 14px; box-shadow: 0 2px 8px rgba(52, 152, 219, 0.12);
+    }
+    .dp-summary .dp-card label { display: block; font-size: 11px; color: #7f8c8d; text-transform: uppercase; }
+    .dp-summary .dp-card .val { font-size: 18px; font-weight: 700; color: #2c3e50; margin-top: 4px; }
+    .dp-summary .dp-card.profit-pos .val { color: #27ae60; }
+    .dp-summary .dp-card.profit-neg .val { color: #e74c3c; }
+    #dpTbl th { font-size: 12px; }
+    #dpTbl td { font-size: 12px; }
+    #dpTbl td.right { text-align: right; }
+    .profit-pos { color: #27ae60; font-weight: 700; }
+    .profit-neg { color: #e74c3c; font-weight: 700; }
     #depOrderTbl th { font-size: 12px; }
     #depOrderTbl td { font-size: 12px; text-align: left; vertical-align: top; }
     #depOrderTbl td.td-center { text-align: center; vertical-align: middle; }
@@ -290,37 +386,34 @@
   </style>
 </head>
 <body>
-  <h1>XOSO66 CMS <span style="font-size:14px;font-weight:normal;color:#8e44ad">· Tài khoản · Nạp/Rút · Lệnh nạp</span></h1>
-  <p class="hint">
-    Chạy <code>python main.py</code> trong <b>xoso66_standalone</b>.
-    Có thể mở trực tiếp <code>http://127.0.0.1:8799/</code> hoặc từ menu <b>CMS → XOSO66</b> (cùng một trang này).
-    Đăng ký site: bắt buộc <b>proxy</b> host:port:user:pass.
-  </p>
-  <p class="hint" id="connStatus">Đang kiểm tra kết nối…</p>
   <div id="logBox"></div>
 
-  <nav class="cms-nav" aria-label="Menu CMS">
-    <button type="button" class="nav-btn active" data-page="accounts">Tài khoản</button>
-    <button type="button" class="nav-btn" data-page="payments">Nạp / Rút</button>
-    <button type="button" class="nav-btn" data-page="deposit-orders">Quản lý lệnh nạp</button>
-  </nav>
+  <div id="rtToolbar" class="rt-toolbar">
+    <button type="button" id="btnRefreshStatus" class="btn btn-blue" title="Tải lại danh sách từ DB (không gọi site)">
+      🔄 Refresh
+    </button>
+    <div class="rt-toolbar-row">
+      <label>
+        <input type="checkbox" id="rtAuto" onchange="rtSetup()"> Tự động làm mới
+      </label>
+      <label>
+        mỗi
+        <input type="number" id="rtInterval" min="2" step="1" value="10"
+          onchange="rtSetup()"
+          style="width:56px;padding:4px 6px;font-size:13px;border-radius:4px;border:1px solid #ccc;text-align:center;">
+        giây
+      </label>
+    </div>
+    <span id="rtStatus"></span>
+  </div>
 
-  <button type="button" id="btnRefreshStatus" class="btn btn-blue" title="Tải lại danh sách từ DB (không gọi site)">
-    🔄 Refresh
-  </button>
-
-  <div id="pageAccounts" class="page-panel active">
-
-  <h2 id="formTitle">Thêm / đăng ký tài khoản</h2>
   <form id="accForm">
-    <div class="form-grid">
+    <div class="form-grid form-grid-one-row">
       <input type="text" id="username" placeholder="Username *" required>
       <input type="text" id="password" placeholder="Mật khẩu đăng nhập *" value="Valentine1" required>
       <input type="text" id="phone" placeholder="SĐT 10 số *" required maxlength="10">
       <input type="text" id="account_holder" placeholder="Tên đăng ký *" required>
-      <input type="text" id="proxy" placeholder="Proxy host:port:user:pass *" required style="min-width:280px">
-    </div>
-    <div class="form-grid">
+      <input type="text" id="proxy" placeholder="Proxy host:port:user:pass *" required>
       <input type="text" id="fund_password" placeholder="MK rút 6 số" value="270288">
       <select id="bank">
         <option value="">-- Ngân hàng --</option>
@@ -339,37 +432,43 @@
         <option value="Đủ ngày">Đủ ngày</option>
         <option value="Hết Tiền">Hết Tiền</option>
       </select>
+      <button type="button" class="btn btn-blue" id="btnProvision">Đăng ký trên XOSO66</button>
+      <button type="submit" class="btn btn-primary" id="btnSave">Chỉ lưu DB (không đăng ký)</button>
+      <button type="button" class="btn btn-gray" id="btnReset">Reset form</button>
     </div>
-    <button type="button" class="btn btn-blue" id="btnProvision">Đăng ký trên XOSO66</button>
-    <button type="submit" class="btn btn-primary" id="btnSave">Chỉ lưu DB (không đăng ký)</button>
-    <button type="button" class="btn btn-gray" id="btnReset">Reset form</button>
   </form>
 
-  <h2>Đăng ký theo file (hàng loạt)</h2>
-  <p class="hint">
-    File CSV/TXT: <code>username,password,phone,account_holder,proxy,fund_password,bank,account_number,device</code>
-    (có header hoặc không). Dòng <code>#</code> bỏ qua. Ô trống lấy mặc định từ form (MK đăng nhập / MK rút).
-    <a href="/bulk_register.example.csv" download>mẫu CSV</a>
-  </p>
-  <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
-    <input type="file" id="bulkFile" accept=".csv,.txt,.tsv,text/csv,text/plain">
-    <label style="font-size:13px;">Giãn cách (giây):
-      <input type="number" id="bulkDelay" value="5" min="0" max="120" style="width:56px;padding:6px;">
-    </label>
-    <label style="font-size:13px;"><input type="checkbox" id="bulkStopOnError"> Dừng hẳn khi lỗi (mặc định: bỏ qua, chạy acc sau)</label>
-    <button type="button" class="btn btn-blue" id="btnBulkPreview">Xem trước</button>
-    <button type="button" class="btn btn-primary" id="btnBulkRun">Đăng ký hàng loạt</button>
-    <button type="button" class="btn btn-danger" id="btnBulkCancel" style="display:none;">Dừng</button>
-  </div>
-  <p class="hint" id="bulkSummary">Chưa chọn file.</p>
+  <nav class="cms-nav" aria-label="Menu CMS">
+    <button type="button" class="nav-btn active" data-page="accounts">Tài khoản</button>
+    <button type="button" class="nav-btn" data-page="payments">Nạp / Rút</button>
+    <button type="button" class="nav-btn" data-page="daily-profits">Lợi Nhuận Ngày</button>
+    <button type="button" class="nav-btn" data-page="deposit-orders">Quản lý lệnh nạp</button>
+  </nav>
 
-  <h2>Danh sách</h2>
+  <div id="pageAccounts" class="page-panel active">
+
+  <div class="acc-list-header">
+    <h2>Danh sách</h2>
+  </div>
+  <div class="acc-pagination-wrap" data-acc-pagination>
+    <div class="acc-search">
+      <input type="text" class="acc-search-user" placeholder="Tìm username…" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="acc-pagination">
+      <button type="button" class="btn btn-gray btn-sm btn-acc-prev">← Trước</button>
+      <span class="acc-page-info">Trang 1 / 1</span>
+      <button type="button" class="btn btn-gray btn-sm btn-acc-next">Sau →</button>
+    </div>
+    <div aria-hidden="true"></div>
+  </div>
   <div class="acc-list-totals" id="accListTotals" aria-live="polite">
     <span><span class="tot-label">Tổng số dư:</span> <span class="tot-bal" id="accTotalBalance">0</span></span>
     <span><span class="tot-label">Tổng nạp:</span> <span class="tot-dep" id="accTotalDeposit">0</span></span>
     <span><span class="tot-label">Tổng rút:</span> <span class="tot-wd" id="accTotalWithdraw">0</span></span>
     <span><span class="tot-label">Lợi nhuận:</span> <span class="tot-profit" id="accTotalProfit">0</span></span>
     <span><span class="tot-label">Tổng cược ngày:</span> <span class="tot-bet" id="accTotalDailyBet">0</span></span>
+    <span><span class="tot-label">Ngày:</span> <span class="tot-m161-ratio" id="acc161Unclaimed">0</span></span>
+    <span><span class="tot-label">Mini:</span> <span class="tot-mini-ratio" id="accMiniUnclaimed">0</span></span>
     <span class="tot-count" id="accTotalCount">0 tài khoản</span>
   </div>
   <table id="tbl">
@@ -400,6 +499,17 @@
       </tr>
     </tfoot>
   </table>
+  <div class="acc-pagination-wrap" data-acc-pagination>
+    <div class="acc-search">
+      <input type="text" class="acc-search-user" placeholder="Tìm username…" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="acc-pagination">
+      <button type="button" class="btn btn-gray btn-sm btn-acc-prev">← Trước</button>
+      <span class="acc-page-info">Trang 1 / 1</span>
+      <button type="button" class="btn btn-gray btn-sm btn-acc-next">Sau →</button>
+    </div>
+    <div aria-hidden="true"></div>
+  </div>
 
   </div><!-- /pageAccounts -->
 
@@ -456,7 +566,7 @@
         <thead>
           <tr>
             <th>Thời gian</th><th>User</th><th>Loại</th><th>Số tiền</th>
-            <th>Trạng thái</th><th>Serial</th><th>Bank / TK</th><th>Thao tác</th>
+            <th>Poll rút</th><th>Trạng thái</th><th>Serial</th><th>Bank / TK</th><th>Thao tác</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -467,6 +577,52 @@
         <button type="button" class="btn btn-gray btn-sm" id="btnPayNext">Sau →</button>
       </div>
     </div>
+  </div>
+
+  <div id="pageDailyProfits" class="page-panel">
+    <div class="pay-page-header">
+      <div class="pay-header-left">
+        <h2 style="margin-top:0">📊 Lợi Nhuận Ngày</h2>
+        <p class="hint" style="margin-bottom:0">
+          Thống kê cuối ngày (tự lưu <b>23:59</b> giờ VN). Công thức: <code>Rút + Số dư − Nạp</code>.
+          Hôm nay luôn tính lại từ DB khi mở tab.
+        </p>
+      </div>
+    </div>
+    <div class="form-grid" style="margin-top:8px;">
+      <input type="date" id="dpDateFrom" title="Từ ngày">
+      <span style="align-self:center;font-size:13px;">đến</span>
+      <input type="date" id="dpDateTo" title="Đến ngày">
+      <button type="button" class="btn btn-blue btn-sm" id="btnDpFilter">🔍 Lọc</button>
+      <button type="button" class="btn btn-gray btn-sm" id="btnDpClear">❌ Xóa lọc</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btnDpSaveNow" title="Lưu snapshot hôm nay ngay">💾 Lưu hôm nay</button>
+      <span id="dpRecordCount" style="font-size:13px;color:#666;margin-left:auto;">—</span>
+    </div>
+    <div class="dp-summary" id="dpSummary" style="display:none;">
+      <div class="dp-card"><label>Tổng Nạp (all)</label><div class="val" id="dpSumDeposit">0</div></div>
+      <div class="dp-card"><label>Tổng Rút (all)</label><div class="val" id="dpSumWithdraw">0</div></div>
+      <div class="dp-card"><label>Tổng Số Dư</label><div class="val" id="dpSumBalance">0</div></div>
+      <div class="dp-card" id="dpSumProfitCard"><label>Lợi Nhuận Ngày</label><div class="val" id="dpSumProfit">0</div></div>
+      <div class="dp-card"><label>Tổng Cược Ngày</label><div class="val" id="dpSumBetDay">0</div></div>
+    </div>
+    <p id="dpLoading" class="hint">Đang tải…</p>
+    <p id="dpError" class="hint" style="color:#c0392b;display:none;"></p>
+    <table id="dpTbl" style="display:none;">
+      <thead>
+        <tr>
+          <th>STT</th>
+          <th>Ngày</th>
+          <th class="right">Nạp ngày</th>
+          <th class="right">Rút ngày</th>
+          <th class="right">Số dư</th>
+          <th class="right">LN tích lũy</th>
+          <th class="right">LN ngày</th>
+          <th class="right">Cược ngày</th>
+          <th>Số acc</th>
+        </tr>
+      </thead>
+      <tbody id="dpBody"></tbody>
+    </table>
   </div>
 
   <div id="pageDepositOrders" class="page-panel">
@@ -499,6 +655,8 @@
             <th class="td-center">User</th>
             <th class="td-center">Số tiền</th>
             <th class="td-center">Trạng thái</th>
+            <th class="td-center">Device nạp</th>
+            <th class="td-center">Thời gian nạp</th>
             <th class="td-center">Site</th>
             <th>CK / Ngân hàng</th>
             <th>Serial</th>
@@ -720,6 +878,48 @@ function dailyBetToday(row) {
   return Number(row.daily_bet_total) || 0;
 }
 
+function mission161Stats(rows) {
+  let claimed = 0;
+  let unclaimed = 0;
+  for (const row of rows) {
+    if (!row.daily_161_is_today) continue;
+    const st = row.daily_161_status;
+    if (st === 2) claimed++;
+    else if (st === 1) unclaimed++;
+  }
+  return { claimed, unclaimed };
+}
+
+function miniGameUnclaimedCount(rows) {
+  let unclaimed = 0;
+  for (const row of rows) {
+    const cur = Number(row.mini_current_day) || 0;
+    if (cur <= 0) continue;
+    const canClaim = Number(row.mini_can_claim) === 1;
+    const curSt =
+      row.mini_current_status != null && row.mini_current_status !== ''
+        ? parseInt(row.mini_current_status, 10)
+        : null;
+    if (canClaim || curSt === 1) {
+      unclaimed++;
+      continue;
+    }
+    const days = Array.isArray(row.mini_week_days) ? row.mini_week_days : [];
+    const badge = days.find((d) => Number(d.day) === cur);
+    if (badge && badge.status === 1) unclaimed++;
+  }
+  return unclaimed;
+}
+
+function updateAccMissionTotals(rows) {
+  const m161 = mission161Stats(rows);
+  const miniUnclaimed = miniGameUnclaimedCount(rows);
+  const el161Unclaimed = document.getElementById("acc161Unclaimed");
+  const elMiniUnclaimed = document.getElementById("accMiniUnclaimed");
+  if (el161Unclaimed) el161Unclaimed.textContent = String(m161.unclaimed);
+  if (elMiniUnclaimed) elMiniUnclaimed.textContent = String(miniUnclaimed);
+}
+
 function renderDaily161Cell(row) {
   const isToday = row.daily_161_is_today !== false;
   const st = isToday ? row.daily_161_status : null;
@@ -802,7 +1002,7 @@ function renderMiniWeekCell(row) {
   const syncTip = row.mission_synced_at ? " · " + row.mission_synced_at : "";
   return `<div class="mini-cell-wrap">`
     + `<div class="mini-head" title="${escAttr(head + syncTip)}">${head}</div>`
-    + `<div class="mini-days">${badges}<button type="button" class="mini-day mini-check" data-mchk="${esc(row.id || "")}" data-user="${esc(row.username || "")}" title="Check + nhận thưởng (161/MINI) nếu status=1"><span class="mini-day-num">Ck</span><span class="mini-day-icon">↻</span></button></div>`
+    + `<div class="mini-days">${badges}<button type="button" class="mini-day mini-check" data-mchk="${esc(row.id || "")}" data-user="${esc(row.username || "")}" title="Auto-mission (rút + nhận 161/MINI) — log [AUTO-MISSION] trên terminal main.py"><span class="mini-day-num">Ck</span><span class="mini-day-icon">↻</span></button></div>`
     + `</div>`;
 
 }
@@ -969,15 +1169,23 @@ function setFormStatusValue(st) {
   sel.value = v;
 }
 
+function isMaskedSecret(v) {
+  const s = String(v || "").trim();
+  return !s || s === "******" || s === "••••";
+}
+
 function fillForm(row) {
   document.getElementById("username").value = row.username || "";
-  const pw = row.password === "******" ? "" : (row.password || "");
-  document.getElementById("password").value = pw || DEFAULT_LOGIN_PASSWORD;
+  // Không thay ****** bằng Valentine1 — lần Sửa trước đó ghi đè nhầm mật khẩu thật.
+  document.getElementById("password").value = isMaskedSecret(row.password)
+    ? ""
+    : (row.password || "");
   document.getElementById("phone").value = row.phone || "";
   document.getElementById("account_holder").value = row.account_holder || "";
   document.getElementById("proxy").value = row.proxy || "";
-  const fp = row.fund_password === "******" ? "" : (row.fund_password || "");
-  document.getElementById("fund_password").value = fp || DEFAULT_FUND_PASSWORD;
+  document.getElementById("fund_password").value = isMaskedSecret(row.fund_password)
+    ? ""
+    : (row.fund_password || "");
   const bankRaw = row.bank_name || row.bank_code || "";
   const norm = normalizeBankInput(bankRaw);
   const sel = document.getElementById("bank");
@@ -1004,7 +1212,6 @@ function fillForm(row) {
   document.getElementById("vip_level").value = row.vip_level || "";
   setFormStatusValue(row.status);
   editId = row.id;
-  document.getElementById("formTitle").textContent = "Sửa tài khoản: " + (row.username || row.id);
   document.getElementById("btnProvision").style.display = "none";
 }
 
@@ -1013,7 +1220,6 @@ function resetForm() {
   setFormStatusValue("new");
   setFormDefaults();
   editId = null;
-  document.getElementById("formTitle").textContent = "Thêm / đăng ký tài khoản";
   document.getElementById("btnProvision").style.display = "";
 }
 
@@ -1022,21 +1228,27 @@ async function checkConnection() {
   try {
     const r = await fetch(apiPath("/api/health"));
     if (!r.ok) {
-      el.innerHTML = "<b style='color:#c0392b'>API lỗi HTTP " + r.status + "</b>"
-        + (API_PREFIX
-          ? " — thử <button type='button' onclick='parent.loadXoso66&&parent.loadXoso66()'>Tải lại XOSO66</button> hoặc POST /api/xoso66/ensure"
-          : "");
+      if (el) {
+        el.innerHTML = "<b style='color:#c0392b'>API lỗi HTTP " + r.status + "</b>"
+          + (API_PREFIX
+            ? " — thử <button type='button' onclick='parent.loadXoso66&&parent.loadXoso66()'>Tải lại XOSO66</button> hoặc POST /api/xoso66/ensure"
+            : "");
+      }
       return false;
     }
     const h = await r.json();
-    const via = apiOrigin()
-      ? ("API " + apiOrigin() + (API_PREFIX ? " (proxy CMS)" : " (CMS → :8799)"))
-      : "trực tiếp :8799";
-    el.innerHTML = "<span style='color:#27ae60'>API XOSO66 OK</span> — " + (h.status || "ok")
-      + " (" + via + ")";
+    if (el) {
+      const via = apiOrigin()
+        ? ("API " + apiOrigin() + (API_PREFIX ? " (proxy CMS)" : " (CMS → :8799)"))
+        : "trực tiếp :8799";
+      el.innerHTML = "<span style='color:#27ae60'>API XOSO66 OK</span> — " + (h.status || "ok")
+        + " (" + via + ")";
+    }
     return true;
   } catch (e) {
-    el.innerHTML = "<b style='color:#c0392b'>Không kết nối API. Chạy: <code>python main.py</code> (hoặc CMS → XOSO66) rồi mở <code>http://127.0.0.1:8799/</code></b>";
+    if (el) {
+      el.innerHTML = "<b style='color:#c0392b'>Không kết nối API. Chạy: <code>python main.py</code> (hoặc CMS → XOSO66) rồi mở <code>http://127.0.0.1:8799/</code></b>";
+    }
     return false;
   }
 }
@@ -1084,43 +1296,82 @@ async function doVipCheck(accountId, username, btnEl) {
   }
 }
 
+function fmtVndShort(v) {
+  const n = Math.round(Number(v) || 0);
+  if (n >= 1000) {
+    const k = n / 1000;
+    return (k % 1 === 0 ? String(k) : k.toFixed(1)) + "k";
+  }
+  return fmtVnd(n);
+}
+
+function missionStatusShort(st) {
+  if (st === 0) return "chưa đủ";
+  if (st === 1) return "được nhận";
+  if (st === 2) return "đã nhận";
+  if (st == null || st === "") return "—";
+  return "st=" + st;
+}
+
+function formatManualMissionCkDetail(r0) {
+  const parts = [];
+  const dailySt = r0.daily_status != null ? parseInt(r0.daily_status, 10) : null;
+  const doneBet = Number(r0.done_bet_money) || 0;
+  const dailyTotal = Number(r0.daily_bet_total) || 0;
+  let line161 = "161: " + missionStatusShort(dailySt);
+  if (dailySt === 0 && (doneBet > 0 || dailyTotal > 0)) {
+    line161 += " (" + fmtVndShort(doneBet) + " / " + fmtVndShort(dailyTotal) + " cược ngày)";
+  }
+  parts.push(line161);
+
+  const miniDay = Number(r0.mini_current_day) || 0;
+  const miniSt = r0.mini_current_status != null ? parseInt(r0.mini_current_status, 10) : null;
+  if (miniDay > 0) {
+    parts.push("MINI D" + miniDay + ": " + missionStatusShort(miniSt));
+  }
+
+  const pollAttempts = Number(r0.poll_attempts) || 0;
+  if (pollAttempts > 0) parts.push("đã poll " + pollAttempts + " lần");
+  if (r0.force_synced) parts.push("đã sync cược 161 → thử lại");
+
+  return parts.join(" · ");
+}
+
 async function doMissionCheck(accountId, username, btnEl) {
   const label = username || accountId;
   if (btnEl) btnEl.disabled = true;
-  log("Check + nhận thưởng " + label + "…");
+  log("Auto-mission (Ck) " + label + " — xem log [AUTO-MISSION] trên terminal main.py…");
   try {
-    const res = await apiFetch("/api/missions/refresh-status", {
+    const res = await apiFetch("/api/missions/auto-claim", {
       method: "POST",
       body: JSON.stringify({
         account_ids: [accountId],
-        check_only: false,
         wait: true,
-        parallel: 1,
       }),
     });
     const data = await res.json();
     if (!res.ok) {
-      log("Check nhiệm vụ thất bại: " + (data.detail || data.error || res.status)
-        + (res.status === 409 ? " — đang có lượt refresh khác, thử lại sau" : ""));
+      log("Auto-mission thất bại: " + (data.detail || data.error || res.status)
+        + (res.status === 409 ? " — đang có lượt Ck khác, thử lại sau" : ""));
       return;
     }
-    if (data.fail_count) {
-      const err = (data.results || []).find((r) => !r.ok);
-      log("Check nhiệm vụ lỗi: " + (err && err.error ? err.error : data.fail_count + " lỗi"));
+    const r0 = (data.results || [])[0] || {};
+    if (data.fail_count && !r0.ok) {
+      log("Auto-mission lỗi: " + (r0.error || data.fail_count + " lỗi"));
     } else {
-      const r0 = (data.results || [])[0] || {};
-      const claimed = Number(r0.claims_ok) || 0;
-      const claimable = (r0.claimable || []).length;
-      let msg = "✅ Check " + label;
-      if (claimed > 0) msg += " — đã nhận " + claimed + " thưởng";
+      const claimed = Number(r0.claims_ok) || Number(data.claims_ok_total) || 0;
+      const claimable = Number(r0.claimable_count) || 0;
+      let msg = "✅ Auto-mission " + label;
+      if (r0.high_balance_skip) msg += " — hold mode (số dư cao, bỏ nhận)";
+      else if (r0.claim_blocked_by_withdraw) msg += " — chưa nhận (chờ/ lỗi rút)";
+      else if (claimed > 0) msg += " — đã nhận " + claimed + " thưởng";
       else if (claimable > 0) msg += " — có " + claimable + " mức nhưng chưa nhận được";
-      else msg += " — không có thưởng chờ nhận";
-      msg += " (" + (data.elapsed_sec != null ? data.elapsed_sec : "?") + "s)";
+      else msg += " — " + formatManualMissionCkDetail(r0);
       log(msg);
     }
     await loadList();
   } catch (e) {
-    log("Check nhiệm vụ lỗi: " + e.message);
+    log("Auto-mission lỗi: " + e.message);
   } finally {
     if (btnEl) btnEl.disabled = false;
   }
@@ -1137,6 +1388,8 @@ function updateRefreshButtonHint() {
   const page = currentCmsPage();
   if (page === "payments") {
     btn.title = "Tải lại lịch sử nạp/rút từ DB (không gọi site)";
+  } else if (page === "daily-profits") {
+    btn.title = "Tải lại lợi nhuận ngày từ DB";
   } else if (page === "deposit-orders") {
     btn.title = "Tải lại lệnh nạp từ DB (deposit_orders)";
   } else {
@@ -1144,116 +1397,215 @@ function updateRefreshButtonHint() {
   }
 }
 
-async function refreshData() {
+// ================= REALTIME (tự động làm mới) =================
+let rtTimer = null;
+const RT_AUTO_KEY = "xoso66_qlt_rt_auto";
+const RT_SEC_KEY = "xoso66_qlt_rt_sec";
+const RT_SEC_DEFAULT = 10;
+
+function rtGetSec() {
+  const el = document.getElementById("rtInterval");
+  let sec = parseInt(el && el.value, 10);
+  if (!Number.isFinite(sec) || sec < 2) sec = RT_SEC_DEFAULT;
+  return sec;
+}
+
+/** Bỏ qua nhịp realtime khi đang sửa inline, mở modal QR hoặc đang refresh. */
+function rtShouldSkip() {
+  const ae = document.activeElement;
+  if (ae && ae.classList) {
+    if (ae.classList.contains("inline-input") || ae.classList.contains("status-select")) return true;
+  }
+  if (document.getElementById("qrModalOverlay")) return true;
+  const btn = document.getElementById("btnRefreshStatus");
+  if (btn && btn.disabled) return true;
+  return false;
+}
+
+function rtMarkUpdated() {
+  const el = document.getElementById("rtStatus");
+  if (!el) return;
+  const autoEl = document.getElementById("rtAuto");
+  const auto = autoEl && autoEl.checked;
+  const t = new Date().toLocaleTimeString("vi-VN");
+  el.textContent = auto
+    ? `🟢 Tự động mỗi ${rtGetSec()}s · cập nhật ${t}`
+    : `⚪ Đã tắt · cập nhật ${t}`;
+}
+
+function rtTick() {
+  if (rtShouldSkip()) return;
+  refreshCurrentPage({ silent: true });
+}
+
+function rtSetup() {
+  if (rtTimer) { clearInterval(rtTimer); rtTimer = null; }
+  const autoEl = document.getElementById("rtAuto");
+  const auto = !!(autoEl && autoEl.checked);
+  const sec = rtGetSec();
+  try {
+    localStorage.setItem(RT_AUTO_KEY, auto ? "1" : "0");
+    localStorage.setItem(RT_SEC_KEY, String(sec));
+  } catch (_e) {}
+  const el = document.getElementById("rtStatus");
+  if (auto) {
+    rtTimer = setInterval(rtTick, sec * 1000);
+    if (el) el.textContent = `🟢 Tự động mỗi ${sec}s`;
+  } else if (el) {
+    el.textContent = "⚪ Đã tắt tự động";
+  }
+}
+
+function rtRestoreSettings() {
+  let auto = true;
+  let sec = RT_SEC_DEFAULT;
+  try {
+    const a = localStorage.getItem(RT_AUTO_KEY);
+    if (a !== null) auto = a === "1";
+    const s = parseInt(localStorage.getItem(RT_SEC_KEY), 10);
+    if (Number.isFinite(s) && s >= 2) sec = s;
+  } catch (_e) {}
+  const elAuto = document.getElementById("rtAuto");
+  const elSec = document.getElementById("rtInterval");
+  if (elAuto) elAuto.checked = auto;
+  if (elSec) elSec.value = String(sec);
+}
+
+async function refreshData(silent) {
   const scrollY = window.scrollY;
   const btn = document.getElementById("btnRefreshStatus");
   if (btn) btn.disabled = true;
-  log("🔄 Tải lại danh sách…");
-  await loadList();
-  log("✅ Đã tải lại danh sách");
+  if (!silent) log("🔄 Tải lại danh sách…");
+  await loadList({ resetPage: !silent });
+  if (!silent) log("✅ Đã tải lại danh sách");
   if (btn) btn.disabled = false;
   window.scrollTo({ top: scrollY });
 }
 
-async function refreshPaymentsData() {
+async function refreshPaymentsData(silent) {
   const scrollY = window.scrollY;
   const btn = document.getElementById("btnRefreshStatus");
   if (btn) btn.disabled = true;
-  log("🔄 Tải lại lịch sử nạp/rút…");
+  if (!silent) log("🔄 Tải lại lịch sử nạp/rút…");
   payPage = 1;
   await loadPaymentStats();
   await loadPaymentOrders();
-  log("✅ Đã tải lại nạp/rút");
+  if (!silent) log("✅ Đã tải lại nạp/rút");
   if (btn) btn.disabled = false;
   window.scrollTo({ top: scrollY });
 }
 
-async function refreshDepositOrdersData() {
+async function refreshDepositOrdersData(silent) {
   const scrollY = window.scrollY;
   const btn = document.getElementById("btnRefreshStatus");
   if (btn) btn.disabled = true;
-  log("🔄 Tải lại lệnh nạp…");
+  if (!silent) log("🔄 Tải lại lệnh nạp…");
   depOrderPage = 1;
   await loadDepositOrdersPage();
-  log("✅ Đã tải lại lệnh nạp");
+  if (!silent) log("✅ Đã tải lại lệnh nạp");
   if (btn) btn.disabled = false;
   window.scrollTo({ top: scrollY });
 }
 
-async function refreshCurrentPage() {
-  const page = currentCmsPage();
-  if (page === "payments") await refreshPaymentsData();
-  else if (page === "deposit-orders") await refreshDepositOrdersData();
-  else await refreshData();
+async function refreshDailyProfitsData(silent) {
+  const scrollY = window.scrollY;
+  const btn = document.getElementById("btnRefreshStatus");
+  if (btn) btn.disabled = true;
+  if (!silent) log("🔄 Tải lại lợi nhuận ngày…");
+  await loadDailyProfits();
+  if (!silent) log("✅ Đã tải lại lợi nhuận ngày");
+  if (btn) btn.disabled = false;
+  window.scrollTo({ top: scrollY });
 }
 
-async function loadList() {
-  let res;
-  try {
-    res = await apiFetch("/api/accounts");
-  } catch (e) {
-    log("Lỗi tải danh sách: " + e.message);
-    return;
-  }
-  if (!res.ok) {
-    const t = await res.text();
-    log("Lỗi danh sách HTTP " + res.status + (t ? ": " + t.slice(0, 120) : ""));
-    return;
-  }
-  const data = await res.json();
-  const tbody = document.querySelector("#tbl tbody");
-  tbody.innerHTML = "";
-  const rows = sortAccountsForList(Array.isArray(data) ? data : []);
+async function refreshCurrentPage(opts) {
+  const silent = !!(opts && opts.silent);
+  const page = currentCmsPage();
+  if (page === "payments") await refreshPaymentsData(silent);
+  else if (page === "daily-profits") await refreshDailyProfitsData(silent);
+  else if (page === "deposit-orders") await refreshDepositOrdersData(silent);
+  else await refreshData(silent);
+  rtMarkUpdated();
+}
+
+function systemPaymentStatsFromApi(s) {
+  if (!s || s.ok === false) return null;
+  const dep = Number(s.total_deposit);
+  const wd = Number(s.total_withdraw);
+  const bal = Number(s.balance ?? s.total_balance);
+  if (![dep, wd, bal].every((n) => Number.isFinite(n))) return null;
+  const profit = Number.isFinite(Number(s.profit)) ? Number(s.profit) : wd + bal - dep;
+  return { total_deposit: dep, total_withdraw: wd, balance: bal, profit };
+}
+
+let accPage = 1;
+const accLimit = 50;
+let accAllRows = [];
+let accSystemStats = null;
+let accUsernameQuery = "";
+
+function accFilteredRows() {
+  const q = String(accUsernameQuery || "").trim().toLowerCase();
+  if (!q) return accAllRows;
+  return accAllRows.filter((row) => {
+    const user = String(row.username || "").toLowerCase();
+    const id = String(row.id || "").toLowerCase();
+    return user.includes(q) || id.includes(q);
+  });
+}
+
+function accTotalPages() {
+  return Math.max(1, Math.ceil(accFilteredRows().length / accLimit));
+}
+
+function clampAccPage() {
+  const pages = accTotalPages();
+  if (accPage > pages) accPage = pages;
+  if (accPage < 1) accPage = 1;
+}
+
+function syncAccSearchInputs() {
+  document.querySelectorAll(".acc-search-user").forEach((el) => {
+    if (el.value !== accUsernameQuery) el.value = accUsernameQuery;
+  });
+}
+
+function applyAccUsernameFilter(raw, opts) {
+  const next = String(raw || "");
+  const resetPage = !opts || opts.resetPage !== false;
+  if (next === accUsernameQuery && !(opts && opts.force)) return;
+  accUsernameQuery = next;
+  syncAccSearchInputs();
+  if (resetPage) accPage = 1;
+  else clampAccPage();
+  renderAccPage();
+}
+
+function updateAccListTotals(rows, systemStats) {
   let totalDailyBet = 0;
   let totalBalance = 0;
   let totalDeposit = 0;
   let totalWithdraw = 0;
   let totalProfit = 0;
-  rows.forEach((row, idx) => {
+  for (const row of rows) {
     totalDailyBet += dailyBetToday(row);
     totalBalance += Number(row.balance) || 0;
-    totalDeposit += Number(row.total_deposit) || 0;
-    totalWithdraw += Number(row.total_withdraw) || 0;
-    totalProfit += accountProfit(row);
-    const tr = document.createElement("tr");
-    const rowCls = statusRowClass(row.status);
-    if (rowCls) tr.className = rowCls;
-    const id = esc(row.id);
-    const user = esc(row.username);
-    const bankDisp = row.bank_name || (row.bank_code || "").toUpperCase() || "";
-    tr.innerHTML = `
-      <td>${idx + 1}</td>
-      <td>${esc(row.username)}</td>
-      <td class="td-phone td-inline">${renderInlineInput(row.id, "phone", row.phone)}</td>
-      <td class="td-holder td-inline">${renderInlineInput(row.id, "account_holder", row.account_holder)}</td>
-      <td class="td-status">${renderStatusSelect(row.id, row.status)}</td>
-      <td class="td-balance" data-balance-for="${id}">${fmtVnd(row.balance ?? 0)}</td>
-      <td class="td-dep">${fmtVnd(row.total_deposit ?? 0)}</td>
-      <td class="td-wd">${fmtVnd(row.total_withdraw ?? 0)}</td>
-      <td class="${profitTdClass(accountProfit(row))}" title="Rút + số dư − nạp">${fmtProfit(accountProfit(row))}</td>
-      <td title="${escAttr(row.daily_bet_day || "")}">${fmtVnd(dailyBetToday(row))}</td>
-      <td class="td-mission">${renderDaily161Cell(row)}</td>
-      <td class="td-mini">${renderMiniWeekCell(row)}</td>
-      <td class="td-device td-inline">${renderInlineInput(row.id, "device", row.device, "field-device")}</td>
-      <td class="td-proxy td-inline">${renderInlineInput(row.id, "proxy", row.proxy, "field-proxy")}</td>
-      <td class="td-bank td-inline">${renderInlineInput(row.id, "bank_name", bankDisp)}</td>
-      <td class="td-stk td-inline">${renderInlineInput(row.id, "account_number", row.account_number)}</td>
-      <td class="td-vip">${renderVipCell(row)}</td>
-      <td><div class="cell-actions">
-        <button type="button" class="btn btn-deposit btn-sm" data-dep="${id}" data-user="${user}">Nạp</button>
-        <button type="button" class="btn btn-withdraw btn-sm" data-wd="${id}" data-user="${user}">Rút</button>
-      </div></td>
-      <td><div class="cell-actions">
-        <button type="button" class="btn btn-balance btn-sm" data-bal="${id}" data-user="${user}" title="Balance → 10s → Nạp → 10s → Rút">Check</button>
-      </div></td>
-      <td><div class="cell-actions">
-        <button type="button" class="btn btn-blue btn-sm" data-edit="${id}">Sửa</button>
-        <button type="button" class="btn btn-danger btn-sm" data-del="${id}">Xóa</button>
-      </div></td>
-    `;
-    tbody.appendChild(tr);
-  });
-  const dayTip = todayIso() + " — " + rows.length + " tài khoản";
+    if (!systemStats) {
+      totalDeposit += Number(row.total_deposit) || 0;
+      totalWithdraw += Number(row.total_withdraw) || 0;
+      totalProfit += accountProfit(row);
+    }
+  }
+  if (systemStats) {
+    totalDeposit = systemStats.total_deposit;
+    totalWithdraw = systemStats.total_withdraw;
+    totalBalance = systemStats.balance;
+    totalProfit = systemStats.profit;
+  }
+  const totalsTip = systemStats
+    ? "Tổng nạp/rút từ payment_orders · số dư acc còn lại · khớp LN tích lũy"
+    : "Cộng từng dòng acc";
+  const dayTip = todayIso() + " — " + rows.length + " tài khoản · " + totalsTip;
   const balEl = document.getElementById("tblTotalBalance");
   const depEl = document.getElementById("tblTotalDeposit");
   const wdEl = document.getElementById("tblTotalWithdraw");
@@ -1286,7 +1638,7 @@ async function loadList() {
   if (profEl) {
     profEl.textContent = profFmt;
     profEl.className = "tbl-total-profit " + profCls;
-    profEl.title = "Tổng rút + số dư − tổng nạp — " + dayTip;
+    profEl.title = totalsTip + " — " + dayTip;
   }
   if (betEl) {
     betEl.textContent = betFmt;
@@ -1301,32 +1653,44 @@ async function loadList() {
   }
   if (topBet) topBet.textContent = betFmt;
   if (topCnt) topCnt.textContent = rows.length + " tài khoản · " + todayIso();
+  updateAccMissionTotals(rows);
+}
+
+function bindAccTableActions(tbody) {
   bindInlineInputs(tbody);
   bindStatusSelects(tbody);
-  tbody.querySelectorAll("[data-dep]").forEach(btn => {
+  tbody.querySelectorAll("[data-dep]").forEach((btn) => {
     btn.onclick = () => doDeposit(btn.getAttribute("data-dep"), btn.getAttribute("data-user"));
   });
-  tbody.querySelectorAll("[data-wd]").forEach(btn => {
+  tbody.querySelectorAll("[data-wd]").forEach((btn) => {
     btn.onclick = () => doWithdraw(btn.getAttribute("data-wd"), btn.getAttribute("data-user"));
   });
-  tbody.querySelectorAll("[data-bal]").forEach(btn => {
+  tbody.querySelectorAll("[data-bal]").forEach((btn) => {
     btn.onclick = () => doRefreshBalance(btn.getAttribute("data-bal"), btn.getAttribute("data-user"), btn);
   });
-  tbody.querySelectorAll("[data-mchk]").forEach(btn => {
+  tbody.querySelectorAll("[data-sync]").forEach((btn) => {
+    btn.onclick = () => doSyncFromChrome(
+      btn.getAttribute("data-sync"),
+      btn.getAttribute("data-user"),
+      btn.getAttribute("data-device"),
+      btn
+    );
+  });
+  tbody.querySelectorAll("[data-mchk]").forEach((btn) => {
     btn.onclick = () => doMissionCheck(btn.getAttribute("data-mchk"), btn.getAttribute("data-user"), btn);
   });
-  tbody.querySelectorAll("[data-vchk]").forEach(btn => {
+  tbody.querySelectorAll("[data-vchk]").forEach((btn) => {
     btn.onclick = () => doVipCheck(btn.getAttribute("data-vchk"), btn.getAttribute("data-user"), btn);
   });
-  tbody.querySelectorAll("[data-edit]").forEach(btn => {
+  tbody.querySelectorAll("[data-edit]").forEach((btn) => {
     btn.onclick = async () => {
       const id = btn.getAttribute("data-edit");
-      const r = await apiFetch("/api/accounts/" + encodeURIComponent(id) + "?secrets=1");
+      const r = await apiFetch("/api/accounts/" + encodeURIComponent(id) + "?secrets=true");
       const row = await r.json();
       fillForm(row);
     };
   });
-  tbody.querySelectorAll("[data-del]").forEach(btn => {
+  tbody.querySelectorAll("[data-del]").forEach((btn) => {
     btn.onclick = async () => {
       const id = btn.getAttribute("data-del");
       if (!confirm("Xóa " + id + "?")) return;
@@ -1336,6 +1700,106 @@ async function loadList() {
       loadList();
     };
   });
+}
+
+function renderAccPage() {
+  const tbody = document.querySelector("#tbl tbody");
+  if (!tbody) return;
+  clampAccPage();
+  const filtered = accFilteredRows();
+  const pages = accTotalPages();
+  const offset = (accPage - 1) * accLimit;
+  const pageRows = filtered.slice(offset, offset + accLimit);
+  tbody.innerHTML = "";
+  pageRows.forEach((row, idx) => {
+    const tr = document.createElement("tr");
+    const rowCls = statusRowClass(row.status);
+    if (rowCls) tr.className = rowCls;
+    const id = esc(row.id);
+    const user = esc(row.username);
+    const bankDisp = row.bank_name || (row.bank_code || "").toUpperCase() || "";
+    const stt = offset + idx + 1;
+    tr.innerHTML = `
+      <td>${stt}</td>
+      <td>${esc(row.username)}</td>
+      <td class="td-phone td-inline">${renderInlineInput(row.id, "phone", row.phone)}</td>
+      <td class="td-holder td-inline">${renderInlineInput(row.id, "account_holder", row.account_holder)}</td>
+      <td class="td-status">${renderStatusSelect(row.id, row.status)}</td>
+      <td class="td-balance" data-balance-for="${id}">${fmtVnd(row.balance ?? 0)}</td>
+      <td class="td-dep">${fmtVnd(row.total_deposit ?? 0)}</td>
+      <td class="td-wd">${fmtVnd(row.total_withdraw ?? 0)}</td>
+      <td class="${profitTdClass(accountProfit(row))}" title="Rút + số dư − nạp">${fmtProfit(accountProfit(row))}</td>
+      <td title="${escAttr(row.daily_bet_day || "")}">${fmtVnd(dailyBetToday(row))}</td>
+      <td class="td-mission">${renderDaily161Cell(row)}</td>
+      <td class="td-mini">${renderMiniWeekCell(row)}</td>
+      <td class="td-device td-inline">${renderInlineInput(row.id, "device", row.device, "field-device")}</td>
+      <td class="td-proxy td-inline">${renderInlineInput(row.id, "proxy", row.proxy, "field-proxy")}</td>
+      <td class="td-bank td-inline">${renderInlineInput(row.id, "bank_name", bankDisp)}</td>
+      <td class="td-stk td-inline">${renderInlineInput(row.id, "account_number", row.account_number)}</td>
+      <td class="td-vip">${renderVipCell(row)}</td>
+      <td><div class="cell-actions">
+        <button type="button" class="btn btn-deposit btn-sm" data-dep="${id}" data-user="${user}">Nạp</button>
+        <button type="button" class="btn btn-withdraw btn-sm" data-wd="${id}" data-user="${user}">Rút</button>
+      </div></td>
+      <td><div class="cell-actions">
+        <button type="button" class="btn btn-balance btn-sm" data-bal="${id}" data-user="${user}" title="Balance → 10s → Nạp → 10s → Rút">Check</button>
+        <button type="button" class="btn btn-blue btn-sm" data-sync="${id}" data-user="${user}" data-device="${escAttr(row.device || "")}" title="Đồng bộ cf_clearance từ Chrome CMS (giải captcha trong Chrome nếu có)">Chrome</button>
+      </div></td>
+      <td><div class="cell-actions">
+        <button type="button" class="btn btn-blue btn-sm" data-edit="${id}">Sửa</button>
+        <button type="button" class="btn btn-danger btn-sm" data-del="${id}">Xóa</button>
+      </div></td>
+    `;
+    tbody.appendChild(tr);
+  });
+  const filterHint = accUsernameQuery.trim()
+    ? ` · ${filtered.length}/${accAllRows.length} khớp`
+    : "";
+  const pageLabel = `Trang ${accPage} / ${pages}${filterHint}`;
+  document.querySelectorAll("[data-acc-pagination] .acc-page-info").forEach((el) => {
+    el.textContent = pageLabel;
+  });
+  document.querySelectorAll("[data-acc-pagination] .btn-acc-prev").forEach((btn) => {
+    btn.disabled = accPage <= 1;
+  });
+  document.querySelectorAll("[data-acc-pagination] .btn-acc-next").forEach((btn) => {
+    btn.disabled = accPage >= pages;
+  });
+  syncAccSearchInputs();
+  bindAccTableActions(tbody);
+}
+
+async function loadList(opts) {
+  const resetPage = !!(opts && opts.resetPage);
+  let res;
+  let statsRes = null;
+  try {
+    [res, statsRes] = await Promise.all([
+      apiFetch("/api/accounts"),
+      apiFetch("/api/payment-orders/stats").catch(() => null),
+    ]);
+  } catch (e) {
+    log("Lỗi tải danh sách: " + e.message);
+    return;
+  }
+  if (!res.ok) {
+    const t = await res.text();
+    log("Lỗi danh sách HTTP " + res.status + (t ? ": " + t.slice(0, 120) : ""));
+    return;
+  }
+  const data = await res.json();
+  let systemStats = null;
+  if (statsRes && statsRes.ok) {
+    try {
+      systemStats = systemPaymentStatsFromApi(await statsRes.json());
+    } catch (_) {}
+  }
+  accAllRows = sortAccountsForList(Array.isArray(data) ? data : []);
+  accSystemStats = systemStats;
+  if (resetPage) accPage = 1;
+  else clampAccPage();
+  updateAccListTotals(accAllRows, accSystemStats);
+  renderAccPage();
 }
 
 const PROVISION_STEPS = [
@@ -1386,7 +1850,14 @@ function depositQrFileUrl(data) {
 }
 
 function showDepositQRModal(data) {
-  const qrData = data.data || {};
+  const qrData = Object.assign({}, data.data || {}, {
+    orderId: data.order_id || (data.data && data.data.orderId),
+    order_id: data.order_id || (data.data && data.data.order_id),
+    account_id: data.account_id || (data.data && data.data.account_id),
+    qr_base64: data.qr_base64 || (data.data && data.data.qr_base64),
+    qr_image_path: data.qr_image_path || (data.data && data.data.qr_image_path),
+    pay_url: data.pay_url || (data.data && data.data.pay_url),
+  });
   const qrInline = depositQrDataUri(data);
   const qrFileUrl = depositQrFileUrl(data);
   let qrImageSrc = qrInline || qrFileUrl;
@@ -1404,7 +1875,9 @@ function showDepositQRModal(data) {
 
   const info = document.createElement("div");
   info.className = "qr-info";
+  const orderLabel = qrData.orderId || qrData.order_id;
   info.innerHTML =
+    (orderLabel ? "<p><strong>\ud83d\udccb L\u1ec7nh #:</strong> " + orderLabel + "</p>" : "") +
     "<p><strong>\ud83c\udfae User:</strong> " + (qrData.username || "\u2014") + "</p>" +
     "<p><strong>\ud83d\udc64 T\u00ean TK:</strong> " + (qrData.name || qrData.accountHolder || "\u2014") + "</p>" +
     "<p><strong>\ud83c\udfe6 S\u1ed1 TK:</strong> " + (qrData.receiver || qrData.accountNumber || "\u2014") + "</p>" +
@@ -1460,17 +1933,74 @@ function showDepositQRModal(data) {
   hint2.style.cssText = "color:#e74c3c;font-size:12px";
   hint2.innerHTML = "\u23f0 H\u1ebft h\u1ea1n sau: <strong>" + (qrData.expired || 300) + "</strong> gi\u00e2y";
   box.appendChild(hint2);
+  const hint3 = document.createElement("p");
+  hint3.style.cssText = "color:#8e44ad;font-size:12px;margin-top:4px";
+  hint3.textContent = "B\u1ea5m G\u1eedi \u0111\u1ec3 chuy\u1ec3n l\u1ec7nh cho b\u00ean th\u1ee9 3 n\u1ea1p — theo d\u00f5i t\u1ea1i Qu\u1ea3n l\u00fd l\u1ec7nh n\u1ea1p";
+  box.appendChild(hint3);
 
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "btn-close-modal";
-  btn.textContent = "\u0110\u00f3ng";
-  btn.onclick = function () { overlay.remove(); };
-  box.appendChild(btn);
+  const actions = document.createElement("div");
+  actions.className = "qr-modal-actions";
+  const sendBtn = document.createElement("button");
+  sendBtn.type = "button";
+  sendBtn.className = "btn-send-deposit";
+  sendBtn.textContent = "\ud83d\udce4 G\u1eedi";
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "btn-close-modal";
+  closeBtn.textContent = "\u0110\u00f3ng";
+  actions.appendChild(sendBtn);
+  actions.appendChild(closeBtn);
+  box.appendChild(actions);
 
-  overlay.onclick = function (e) { if (e.target === overlay) overlay.remove(); };
+  const closeModal = function () { overlay.remove(); };
+  closeBtn.onclick = closeModal;
+  sendBtn.onclick = async function () {
+    sendBtn.disabled = true;
+    sendBtn.textContent = "\u0110ang g\u1eedi\u2026";
+    try {
+      await sendDepositToThirdParty(qrData);
+      closeModal();
+    } catch (e) {
+      alert("\u274c Kh\u00f4ng g\u1eedi \u0111\u01b0\u1ee3c cho b\u00ean th\u1ee9 3: " + e.message);
+      sendBtn.disabled = false;
+      sendBtn.textContent = "\ud83d\udce4 G\u1eedi";
+    }
+  };
+
+  overlay.onclick = function (e) { if (e.target === overlay) closeModal(); };
   overlay.appendChild(box);
   document.body.appendChild(overlay);
+}
+
+async function sendDepositToThirdParty(qrData) {
+  const payload = {
+    username: qrData.username,
+    account_id: qrData.account_id,
+    amount: Number(qrData.amount || 0),
+    orderId: qrData.orderId || qrData.order_id,
+    accountNumber: qrData.accountNumber || qrData.receiver || "",
+    accountHolder: qrData.accountHolder || qrData.name || "",
+    bank: qrData.bank || qrData.type || "",
+    transferContent: qrData.transferContent || qrData.msg || "",
+    qrBase64: qrData.qrBase64 || qrData.qr_base64 || qrData.qr || "",
+    qrLink: qrData.qrLink || qrData.qr_link || "",
+    qrImagePath: qrData.qrImagePath || qrData.qr_image_path || "",
+    pay_url: qrData.pay_url || "",
+  };
+  if (!payload.username || !payload.orderId) {
+    throw new Error("Thi\u1ebfu username ho\u1eb7c orderId");
+  }
+  const res = await apiFetch("/api/deposit/send-third-party", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || data.detail || "Unknown error");
+  }
+  alert("\u2705 " + (data.message || "\u0110\u00e3 g\u1eedi y\u00eau c\u1ea7u n\u1ea1p ti\u1ec1n cho b\u00ean th\u1ee9 3"));
+  log("\u2705 \u0110\u00e3 g\u1eedi l\u1ec7nh #" + payload.orderId + " cho b\u00ean th\u1ee9 3");
+  loadList();
 }
 
 async function doDeposit(accountId, username) {
@@ -1507,6 +2037,69 @@ const CHECK_STEP_DELAY_MS = 10000;
 
 function sleepMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function doSyncFromChrome(accountId, username, device, btnEl) {
+  const label = username || accountId;
+  const dev = (device || "").trim();
+  if (!dev) {
+    log(`[Chrome] ${label}: chưa gán device CMS (vd. XMSB76) — sửa cột Device trước`);
+    return;
+  }
+  if (
+    !confirm(
+      `Đồng bộ ${label} từ Chrome ${dev}?\n\n` +
+        "Nếu đã đăng nhập trong Chrome CMS — sync ~30 giây. Giải captcha Cloudflare trước nếu có."
+    )
+  ) {
+    return;
+  }
+  if (btnEl) btnEl.disabled = true;
+  try {
+    log(`[Chrome] ${label} — đồng bộ từ ${dev}…`);
+    const res = await apiFetch(
+      "/api/accounts/" + encodeURIComponent(accountId) + "/sync-from-chrome",
+      {
+        method: "POST",
+        body: JSON.stringify({ device: dev, force_login: false, timeout_sec: 30 }),
+      }
+    );
+    const raw = await res.text();
+    let data = {};
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch (_e) {
+      const hint = raw.trim().startsWith("<")
+        ? "API trả HTML (thiếu route — restart CMS Node hoặc mở :8799)"
+        : raw.slice(0, 120);
+      log(`[Chrome] ${label} thất bại: ${hint}`);
+      return;
+    }
+    if (!res.ok) {
+      const msg = data.detail || data.error || res.status;
+      log(`[Chrome] ${label} thất bại: ${msg}`);
+      return;
+    }
+    if (data.proxy_mismatch && data.proxy_mismatch.message) {
+      log(`⚠️ ${data.proxy_mismatch.message}`);
+    }
+    const bal = data.balance;
+    const cell = document.querySelector(
+      'td[data-balance-for="' + CSS.escape(accountId) + '"]'
+    );
+    if (cell != null && bal != null) {
+      cell.textContent = fmtVnd(bal);
+    }
+    log(
+      `✅ [Chrome] ${label}: đồng bộ OK` +
+        (bal != null ? " — balance " + Number(bal).toLocaleString("vi-VN") + "đ" : "")
+    );
+    loadList();
+  } catch (e) {
+    log("[Chrome] lỗi: " + e.message);
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
 }
 
 async function doRefreshBalance(accountId, username, btnEl) {
@@ -1559,7 +2152,13 @@ async function doRefreshBalance(accountId, username, btnEl) {
           (dataDep.detail || dataDep.error || resDep.status)
       );
     } else {
-      log(`✅ Lịch sử nạp: ${dataDep.deposit ?? 0} dòng đồng bộ`);
+      const depSite = dataDep.deposit ?? 0;
+      const depNew = dataDep.deposit_new ?? 0;
+      const depFin = dataDep.deposit_orders_finalized ?? 0;
+      let depMsg = `✅ Lịch sử nạp: ${depSite} dòng site`;
+      if (depNew) depMsg += `, +${depNew} payment_orders`;
+      if (depFin) depMsg += `, ${depFin} lệnh → Thành Công`;
+      log(depMsg);
     }
 
     log(`[Check] ${label} — chờ ${CHECK_STEP_DELAY_MS / 1000}s…`);
@@ -1630,11 +2229,15 @@ async function doWithdraw(accountId, username) {
       return;
     }
     if (data.ok) {
-      log("Rút OK — " + (data.msg || "") + (data.order_no ? " order: " + data.order_no : ""));
+      log("Rút OK — " + (data.msg || "") + (data.serial_no ? " serial: " + data.serial_no : data.order_no ? " order: " + data.order_no : ""));
     } else {
       log("Rút thất bại: " + (data.msg || data.fail_reason || data.error || JSON.stringify(data).slice(0, 200)));
     }
     loadList();
+    if (document.getElementById("pagePayments")?.classList.contains("active")) {
+      loadPaymentStats();
+      loadPaymentOrders();
+    }
   } catch (e) {
     log("Rút lỗi: " + e.message);
   }
@@ -1706,8 +2309,11 @@ document.getElementById("accForm").onsubmit = async (e) => {
   if (editId) {
     url += "/" + encodeURIComponent(editId);
     method = "PUT";
+    // Trống / masked = giữ nguyên DB, không ghi đè về default.
+    if (!body.password || isMaskedSecret(body.password)) delete body.password;
+    if (!body.fund_password || isMaskedSecret(body.fund_password)) delete body.fund_password;
   }
-  const q = editId ? "?secrets=1" : "";
+  const q = editId ? "?secrets=true" : "";
   const res = await apiFetch(url + q, { method, body: JSON.stringify(body) });
   const data = await res.json();
   if (!res.ok) {
@@ -1731,227 +2337,6 @@ document.getElementById("accForm").onsubmit = async (e) => {
 
 document.getElementById("btnReset").onclick = resetForm;
 
-let bulkRows = [];
-let bulkCancel = false;
-
-const BULK_ALIASES = {
-  username: "username", user: "username", tai_khoan: "username", taikhoan: "username",
-  password: "password", pass: "password", mk_dang_nhap: "password",
-  phone: "phone", sdt: "phone", so_dien_thoai: "phone",
-  account_holder: "account_holder", truename: "account_holder", ten: "account_holder",
-  ho_ten: "account_holder", ten_dk: "account_holder",
-  proxy: "proxy",
-  fund_password: "fund_password", mk_rut: "fund_password",
-  bank: "bank", bank_name: "bank", ngan_hang: "bank",
-  account_number: "account_number", stk: "account_number", so_tk: "account_number",
-  device: "device", thiet_bi: "device",
-  vip_level: "vip_level", vip: "vip_level",
-};
-const BULK_POS = ["username","password","phone","account_holder","proxy","fund_password","bank","account_number","device"];
-
-function normBulkHeader(h) {
-  const s = String(h || "").trim().toLowerCase().replace(/[\s\-]+/g, "_").replace(/[^\w]/g, "");
-  return BULK_ALIASES[s] || s;
-}
-
-function detectBulkDelim(line) {
-  if (line.includes("\t") && line.split("\t").length >= line.split(",").length) return "\t";
-  if (line.includes(";") && line.split(";").length > line.split(",").length) return ";";
-  return ",";
-}
-
-function parseCsvLine(line, delim) {
-  const out = [];
-  let cur = "";
-  let q = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (c === '"') { q = !q; continue; }
-    if (!q && c === delim) { out.push(cur.trim()); cur = ""; continue; }
-    cur += c;
-  }
-  out.push(cur.trim());
-  return out;
-}
-
-function looksLikeBulkHeader(cells) {
-  const j = cells.join(" ").toLowerCase();
-  return /username|user|tai_khoan|proxy|phone|sdt/.test(j);
-}
-
-function parseBulkText(text) {
-  const raw = String(text || "").replace(/^\uFEFF/, "").trim();
-  if (!raw) return [];
-  const lines = raw.split(/\r?\n/).filter((ln) => ln.trim() && !ln.trim().startsWith("#"));
-  if (!lines.length) return [];
-  const delim = detectBulkDelim(lines[0]);
-  const parsed = lines.map((ln) => parseCsvLine(ln, delim));
-  let start = 0;
-  let keys = null;
-  if (looksLikeBulkHeader(parsed[0])) {
-    keys = parsed[0].map(normBulkHeader);
-    start = 1;
-  }
-  const rows = [];
-  for (let i = start; i < parsed.length; i++) {
-    const cells = parsed[i];
-    if (!cells.some((c) => c)) continue;
-    const row = {};
-    if (keys) {
-      keys.forEach((k, j) => { if (k && cells[j]) row[k] = cells[j]; });
-    } else {
-      BULK_POS.forEach((k, j) => { if (cells[j]) row[k] = cells[j]; });
-    }
-    if (row.username) rows.push(row);
-  }
-  return rows;
-}
-
-function bulkDefaultsFromForm() {
-  const b = payloadFromForm();
-  return {
-    password: b.password || DEFAULT_LOGIN_PASSWORD,
-    fund_password: b.fund_password || DEFAULT_FUND_PASSWORD,
-    bank: b.bank || b.bank_name || "",
-    bank_name: b.bank_name || "",
-    bank_code: b.bank_code || "",
-    device: b.device || "",
-    vip_level: b.vip_level || "",
-  };
-}
-
-function mergeBulkRow(row) {
-  const d = bulkDefaultsFromForm();
-  const out = { ...d };
-  Object.keys(row).forEach((k) => {
-    if (row[k] != null && String(row[k]).trim() !== "") out[k] = String(row[k]).trim();
-  });
-  const bn = normalizeBankInput(out.bank || out.bank_name || out.bank_code || "");
-  out.bank = bn.bank;
-  out.bank_name = bn.bank_name;
-  out.bank_code = bn.bank_code;
-  return out;
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function readBulkFile() {
-  const f = document.getElementById("bulkFile").files[0];
-  if (!f) throw new Error("Chọn file CSV/TXT");
-  const text = await f.text();
-  bulkRows = parseBulkText(text);
-  document.getElementById("bulkSummary").textContent =
-    bulkRows.length ? `Đã đọc ${bulkRows.length} dòng.` : "Không có dòng hợp lệ.";
-  return bulkRows;
-}
-
-async function provisionAccountAll(body) {
-  const res = await apiFetch("/api/accounts/provision", {
-    method: "POST",
-    body: JSON.stringify({ ...body, step: "all" }),
-  });
-  let data;
-  try { data = await res.json(); } catch { data = {}; }
-  if (!res.ok) {
-    return { ok: false, msg: data.detail || "HTTP " + res.status };
-  }
-  if (data.skipped) {
-    const st = (data.steps || [])[0];
-    return {
-      ok: true,
-      skipped: true,
-      msg: (st && st.msg) || "username đã có trong DB",
-      account_id: data.account_id,
-    };
-  }
-  if (!data.ok) {
-    const failed = (data.steps || []).filter((s) => !s.ok && !s.skipped);
-    const parts = failed.map((s) => (s.step || "?") + (s.msg ? ": " + s.msg : ""));
-    return {
-      ok: false,
-      msg: parts.length ? parts.join(" | ") : "provision thất bại",
-      account_id: data.account_id,
-    };
-  }
-  return { ok: true, account_id: data.account_id, steps: data.steps };
-}
-
-document.getElementById("btnBulkPreview").onclick = async () => {
-  try {
-    await readBulkFile();
-    if (bulkRows[0]) log("Mẫu dòng 1: " + JSON.stringify(mergeBulkRow(bulkRows[0])));
-  } catch (e) {
-    alert(e.message);
-  }
-};
-
-document.getElementById("btnBulkCancel").onclick = () => {
-  bulkCancel = true;
-  log("Đang hủy hàng loạt…");
-};
-
-document.getElementById("btnBulkRun").onclick = async () => {
-  if (!(await checkConnection())) return;
-  try {
-    if (!bulkRows.length) await readBulkFile();
-  } catch (e) {
-    alert(e.message);
-    return;
-  }
-  if (!bulkRows.length) { alert("File trống"); return; }
-  if (!confirm(`Đăng ký ${bulkRows.length} tài khoản lần lượt?`)) return;
-
-  const delaySec = Math.max(0, parseInt(document.getElementById("bulkDelay").value, 10) || 0);
-  const stopOnError = document.getElementById("bulkStopOnError").checked;
-  const btnRun = document.getElementById("btnBulkRun");
-  const btnCancel = document.getElementById("btnBulkCancel");
-  bulkCancel = false;
-  btnRun.disabled = true;
-  btnCancel.style.display = "";
-
-  let okN = 0, failN = 0, skipN = 0;
-  for (let i = 0; i < bulkRows.length; i++) {
-    if (bulkCancel) break;
-    const merged = mergeBulkRow(bulkRows[i]);
-    log(`[${i + 1}/${bulkRows.length}] ${merged.username}…`);
-    if (!merged.proxy) {
-      log("✗ Thiếu proxy");
-      failN++;
-      if (stopOnError) break;
-      continue;
-    }
-    try {
-      const r = await provisionAccountAll(merged);
-      if (r.skipped) {
-        skipN++;
-        log(`⊘ Bỏ qua ${merged.username}: ${r.msg || "đã có trong DB"}`);
-      } else if (r.ok) {
-        okN++;
-        log(`✓ OK ${merged.username}` + (r.account_id ? " → " + r.account_id : ""));
-      } else {
-        failN++;
-        log(`✗ ${merged.username}: ${r.msg || "lỗi"}`);
-        if (stopOnError) break;
-      }
-    } catch (e) {
-      failN++;
-      log(`✗ ${merged.username}: ${e.message}`);
-      if (stopOnError) break;
-    }
-    if (i < bulkRows.length - 1 && delaySec > 0 && !bulkCancel) {
-      await sleep(delaySec * 1000);
-    }
-  }
-  log(`Hàng loạt xong: OK ${okN}, bỏ qua ${skipN}, lỗi ${failN}${bulkCancel ? " (đã hủy)" : ""}`);
-  document.getElementById("bulkSummary").textContent =
-    `Kết quả: OK ${okN} / bỏ qua ${skipN} / lỗi ${failN} / tổng ${bulkRows.length}`;
-  btnRun.disabled = false;
-  btnCancel.style.display = "none";
-  loadList();
-};
-
 let payPage = 1;
 const payLimit = 30;
 let payTotal = 0;
@@ -1962,21 +2347,145 @@ let depOrderTotal = 0;
 function showCmsPage(name) {
   const acc = document.getElementById("pageAccounts");
   const pay = document.getElementById("pagePayments");
+  const dp = document.getElementById("pageDailyProfits");
   const dep = document.getElementById("pageDepositOrders");
   document.querySelectorAll(".cms-nav .nav-btn").forEach((b) => {
     b.classList.toggle("active", b.getAttribute("data-page") === name);
   });
   if (acc) acc.classList.toggle("active", name === "accounts");
   if (pay) pay.classList.toggle("active", name === "payments");
+  if (dp) dp.classList.toggle("active", name === "daily-profits");
   if (dep) dep.classList.toggle("active", name === "deposit-orders");
   document.body.classList.toggle("page-payments", name === "payments");
+  document.body.classList.toggle("page-daily-profits", name === "daily-profits");
   document.body.classList.toggle("page-deposit-orders", name === "deposit-orders");
   updateRefreshButtonHint();
   if (name === "payments") {
     loadPaymentStats();
     loadPaymentOrders();
+  } else if (name === "daily-profits") {
+    loadDailyProfits();
   } else if (name === "deposit-orders") {
     loadDepositOrdersPage();
+  }
+}
+
+function fmtDp(n) {
+  return Math.trunc(Number(n || 0)).toLocaleString("vi-VN");
+}
+
+function renderDailyProfitsTable(profits) {
+  const tbody = document.getElementById("dpBody");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  if (!profits.length) {
+    tbody.innerHTML =
+      '<tr><td colspan="9" style="padding:24px;color:#7f8c8d;">Chưa có dữ liệu — sẽ tự lưu lúc 23:59 hoặc bấm «Lưu hôm nay»</td></tr>';
+    return;
+  }
+  const sortedDesc = [...profits].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const sortedAsc = [...profits].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  sortedDesc.forEach((p, idx) => {
+    const profit = Number(p.profit || 0);
+    const profitCls = profit >= 0 ? "profit-pos" : "profit-neg";
+    const profitSign = profit >= 0 ? "+" : "";
+    const ascIdx = sortedAsc.findIndex((item) => item.date === p.date);
+    let dailyProfit = profit;
+    if (ascIdx > 0) {
+      dailyProfit = profit - Number(sortedAsc[ascIdx - 1].profit || 0);
+    }
+    const dailyCls = dailyProfit >= 0 ? "profit-pos" : "profit-neg";
+    const dailySign = dailyProfit >= 0 ? "+" : "";
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${idx + 1}</td>` +
+      `<td><strong>${p.date}</strong></td>` +
+      `<td class="right">${fmtDp(p.deposit_day || 0)}</td>` +
+      `<td class="right">${fmtDp(p.withdraw_day || 0)}</td>` +
+      `<td class="right">${fmtDp(p.total_balance)}</td>` +
+      `<td class="right ${profitCls}">${profitSign}${fmtDp(profit)}</td>` +
+      `<td class="right ${dailyCls}">${dailySign}${fmtDp(dailyProfit)}</td>` +
+      `<td class="right">${fmtDp(p.total_bet_day)}</td>` +
+      `<td>${p.account_count || 0}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderDailyProfitsSummary(profits) {
+  const box = document.getElementById("dpSummary");
+  if (!box) return;
+  if (!profits.length) {
+    box.style.display = "none";
+    return;
+  }
+  box.style.display = "grid";
+  const sortedAsc = [...profits].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const latest = [...profits].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
+  const sumDepositAll = Number(latest.total_deposit || 0);
+  const sumWithdrawAll = Number(latest.total_withdraw || 0);
+  const todayBalance = Number(latest.total_balance || 0);
+  const todayBetDay = Number(latest.total_bet_day || 0);
+  let todayProfit = Number(latest.profit || 0);
+  const todayIdx = sortedAsc.findIndex((item) => item.date === latest.date);
+  if (todayIdx > 0) {
+    todayProfit = Number(latest.profit || 0) - Number(sortedAsc[todayIdx - 1].profit || 0);
+  }
+  document.getElementById("dpSumDeposit").textContent = fmtDp(sumDepositAll);
+  document.getElementById("dpSumWithdraw").textContent = fmtDp(sumWithdrawAll);
+  document.getElementById("dpSumBalance").textContent = fmtDp(todayBalance);
+  document.getElementById("dpSumBetDay").textContent = fmtDp(todayBetDay);
+  const profitEl = document.getElementById("dpSumProfit");
+  const profitCard = document.getElementById("dpSumProfitCard");
+  profitEl.textContent = (todayProfit >= 0 ? "+" : "") + fmtDp(todayProfit);
+  profitCard.classList.toggle("profit-pos", todayProfit >= 0);
+  profitCard.classList.toggle("profit-neg", todayProfit < 0);
+}
+
+async function loadDailyProfits() {
+  const loading = document.getElementById("dpLoading");
+  const errEl = document.getElementById("dpError");
+  const tbl = document.getElementById("dpTbl");
+  if (loading) loading.style.display = "block";
+  if (errEl) errEl.style.display = "none";
+  if (tbl) tbl.style.display = "none";
+  try {
+    const from = document.getElementById("dpDateFrom")?.value || "";
+    const to = document.getElementById("dpDateTo")?.value || "";
+    let url = "/api/daily-profits";
+    if (from && to) url += `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+    else url += "?limit=30";
+    const res = await apiFetch(url);
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const profits = data.data || [];
+    if (loading) loading.style.display = "none";
+    if (tbl) tbl.style.display = "table";
+    renderDailyProfitsTable(profits);
+    renderDailyProfitsSummary(profits);
+    const cnt = document.getElementById("dpRecordCount");
+    if (cnt) cnt.textContent = `${profits.length} ngày`;
+  } catch (e) {
+    if (loading) loading.style.display = "none";
+    if (errEl) {
+      errEl.style.display = "block";
+      errEl.textContent = "❌ " + e.message;
+    }
+  }
+}
+
+async function saveDailyProfitNow() {
+  const btn = document.getElementById("btnDpSaveNow");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiFetch("/api/daily-profits/save", { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    log(`💾 Đã lưu lợi nhuận ngày ${data.data?.date || ""}`);
+    await loadDailyProfits();
+  } catch (e) {
+    log("Lưu lợi nhuận lỗi: " + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -1994,18 +2503,19 @@ async function loadPaymentStats() {
     const res = await apiFetch("/api/payment-orders/stats" + q);
     if (!res.ok) return;
     const s = await res.json();
-    if (!s.ok) return;
+    const parsed = systemPaymentStatsFromApi(s);
+    if (!parsed) return;
     const scopeEl = document.getElementById("payStatScope");
     if (s.scope === "account" && s.username) {
       scopeEl.textContent = "@" + s.username;
     } else {
       scopeEl.textContent = "Tổng toàn hệ thống";
     }
-    document.getElementById("payStatDeposit").textContent = fmtStatVnd(s.total_deposit);
-    document.getElementById("payStatWithdraw").textContent = fmtStatVnd(s.total_withdraw);
-    document.getElementById("payStatBalance").textContent = fmtStatVnd(s.balance);
+    document.getElementById("payStatDeposit").textContent = fmtStatVnd(parsed.total_deposit);
+    document.getElementById("payStatWithdraw").textContent = fmtStatVnd(parsed.total_withdraw);
+    document.getElementById("payStatBalance").textContent = fmtStatVnd(parsed.balance);
     const profitEl = document.getElementById("payStatProfit");
-    const p = Number(s.profit) || 0;
+    const p = parsed.profit;
     profitEl.textContent = (p >= 0 ? "+" : "") + fmtStatVnd(p);
     profitEl.classList.remove("profit-pos", "profit-neg");
     profitEl.classList.add(p >= 0 ? "profit-pos" : "profit-neg");
@@ -2025,6 +2535,32 @@ function payStatusClass(row) {
 function fmtPayAmount(v) {
   const n = parseInt(String(v || 0).replace(/\D/g, ""), 10);
   return (n || 0).toLocaleString("vi-VN") + "đ";
+}
+
+function fmtDurationLabel(totalSec) {
+  const sec = Math.max(0, parseInt(totalSec, 10) || 0);
+  if (sec <= 0) return "—";
+  const m = Math.floor(sec / 60);
+  const r = sec % 60;
+  return m > 0 ? `${m}p${r}s` : `${r}s`;
+}
+
+function fmtWithdrawPollAttempt(val) {
+  const n = parseInt(val, 10) || 0;
+  if (n <= 0) return "—";
+  return `poll ${n}/20`;
+}
+
+function paymentOrderDurationCell(row) {
+  const ot = parseInt(row.order_type, 10);
+  if (ot !== 2) return "—";
+  return fmtWithdrawPollAttempt(row.confirm_duration_sec);
+}
+
+function depositOrderDurationCell(row) {
+  const st = String(row.status || "").trim();
+  if (st !== "Thành Công") return "—";
+  return fmtDurationLabel(row.confirm_duration_sec);
 }
 
 async function loadPaymentOrders() {
@@ -2059,6 +2595,7 @@ async function loadPaymentOrders() {
       <td>${userLbl}</td>
       <td class="${typeCls}">${typeLbl}</td>
       <td>${amt}</td>
+      <td>${esc(paymentOrderDurationCell(row))}</td>
       <td class="${payStatusClass(row)}">${esc(row.status_formatted || row.status)}</td>
       <td style="font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${serial}">${serial}</td>
       <td style="font-size:11px">${bank}</td>
@@ -2252,6 +2789,8 @@ async function loadDepositOrdersPage() {
       <td class="td-center">${esc(row.username || row.account_id)}</td>
       <td class="td-center">${fmtPayAmount(row.amount)}</td>
       <td class="td-center">${renderDepositOrderStatusSelect(row.id, row.status)}</td>
+      <td class="td-center" style="font-size:11px;max-width:90px;word-break:break-word">${esc(row.device_nap || row.deviceNap || "—")}</td>
+      <td class="td-center">${esc(depositOrderDurationCell(row))}</td>
       <td class="td-center">${esc(siteLbl)}</td>
       <td>${fmtDepositTransferCell(row.transfer_info)}</td>
       <td style="font-size:11px;max-width:120px;word-break:break-all">${esc(row.serial_no || "—")}</td>
@@ -2345,6 +2884,67 @@ document.querySelectorAll(".cms-nav .nav-btn").forEach((btn) => {
 });
 
 document.getElementById("btnPayRefresh").onclick = () => refreshPaymentsData();
+const btnDpFilter = document.getElementById("btnDpFilter");
+if (btnDpFilter) {
+  btnDpFilter.onclick = () => {
+    const from = document.getElementById("dpDateFrom")?.value || "";
+    const to = document.getElementById("dpDateTo")?.value || "";
+    if (!from || !to) { alert("Chọn cả ngày bắt đầu và kết thúc"); return; }
+    if (from > to) { alert("Ngày bắt đầu phải ≤ ngày kết thúc"); return; }
+    loadDailyProfits();
+  };
+}
+const btnDpClear = document.getElementById("btnDpClear");
+if (btnDpClear) {
+  btnDpClear.onclick = () => {
+    const f = document.getElementById("dpDateFrom");
+    const t = document.getElementById("dpDateTo");
+    if (f) f.value = "";
+    if (t) t.value = "";
+    loadDailyProfits();
+  };
+}
+const btnDpSaveNow = document.getElementById("btnDpSaveNow");
+if (btnDpSaveNow) btnDpSaveNow.onclick = () => saveDailyProfitNow();
+const pageAccountsEl = document.getElementById("pageAccounts");
+if (pageAccountsEl) {
+  pageAccountsEl.addEventListener("click", (ev) => {
+    const prevBtn = ev.target.closest(".btn-acc-prev");
+    if (prevBtn) {
+      if (accPage > 1) {
+        accPage--;
+        renderAccPage();
+      }
+      return;
+    }
+    const nextBtn = ev.target.closest(".btn-acc-next");
+    if (nextBtn) {
+      const pages = accTotalPages();
+      if (accPage < pages) {
+        accPage++;
+        renderAccPage();
+      }
+    }
+  });
+  pageAccountsEl.querySelectorAll(".acc-search-user").forEach((el) => {
+    el.addEventListener("input", () => {
+      clearTimeout(el._accSearchDeb);
+      el._accSearchDeb = setTimeout(() => {
+        applyAccUsernameFilter(el.value);
+      }, 250);
+    });
+    el.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        el.value = "";
+        applyAccUsernameFilter("");
+      } else if (ev.key === "Enter") {
+        ev.preventDefault();
+        clearTimeout(el._accSearchDeb);
+        applyAccUsernameFilter(el.value);
+      }
+    });
+  });
+}
 document.getElementById("btnPayPrev").onclick = () => {
   if (payPage > 1) { payPage--; loadPaymentOrders(); }
 };
@@ -2414,58 +3014,29 @@ document.getElementById("btnPayWithdraw").onclick = async () => {
 
 document.getElementById("btnRefreshStatus").onclick = () => refreshCurrentPage();
 updateRefreshButtonHint();
+rtRestoreSettings();
 
 (async () => {
-  const bulkLnk = document.querySelector('a[href="/bulk_register.example.csv"]');
-  if (bulkLnk) bulkLnk.href = apiPath("/bulk_register.example.csv");
   await initApi();
   setFormDefaults();
   await checkConnection();
-  loadList();
-  // Khi mở menu XOSO66 lần đầu, tự cuộn xuống bảng "Danh sách" cho dễ xem
+  await loadList();
+  rtMarkUpdated();
+  rtSetup();
+  // Mở trang từ đầu (menu / header), không tự cuộn xuống thanh tổng.
   if (!location.hash || location.hash === "#accounts") {
-    const accTotals = document.getElementById("accListTotals");
-    if (accTotals) {
-      // Đổi thứ tự: đưa phần "Danh sách" lên trước, còn form đăng ký + đăng ký theo file xuống dưới.
-      // (Làm 1 lần để tránh nhảy loạn khi bấm các nút reload dữ liệu.)
+    const scrollTop = () => {
       try {
-        if (!window.__xoso66AccountsFormMoved) {
-          window.__xoso66AccountsFormMoved = true;
-          const accPanel = document.getElementById("pageAccounts");
-          const formTitle = document.getElementById("formTitle");
-          const tbl = document.getElementById("tbl");
-          const listH2 = Array.from(accPanel?.querySelectorAll("h2") || [])
-            .find((h) => (h.textContent || "").trim() === "Danh sách");
-          if (accPanel && formTitle && listH2 && tbl) {
-            const fragment = document.createDocumentFragment();
-            let cur = formTitle;
-            while (cur && cur !== listH2) {
-              const next = cur.nextSibling;
-              fragment.appendChild(cur);
-              cur = next;
-            }
-            // chèn form block sau bảng danh sách
-            accPanel.insertBefore(fragment, tbl.nextSibling);
-          }
-        }
+        const sc = document.scrollingElement;
+        if (sc && typeof sc.scrollTo === "function") sc.scrollTo({ top: 0, behavior: "auto" });
+        else window.scrollTo({ top: 0, behavior: "auto" });
       } catch (_) {}
-
-      const doScroll = () => {
-        try {
-          const rect = accTotals.getBoundingClientRect();
-          const y = rect.top + window.scrollY - 16; // chừa chút khoảng cách
-          const top = Math.max(0, y);
-          const sc = document.scrollingElement;
-          if (sc && typeof sc.scrollTo === "function") sc.scrollTo({ top, behavior: "auto" });
-          else window.scrollTo({ top, behavior: "auto" });
-        } catch (_) {}
-      };
-      // Chạy muộn hơn để ghi đè khôi phục scroll của trình duyệt.
-      requestAnimationFrame(() => requestAnimationFrame(doScroll));
-      setTimeout(doScroll, 350);
-    }
+    };
+    requestAnimationFrame(scrollTop);
+    setTimeout(scrollTop, 350);
   }
   if (location.hash === "#payments") showCmsPage("payments");
+  else if (location.hash === "#daily-profits") showCmsPage("daily-profits");
   else if (location.hash === "#deposit-orders") showCmsPage("deposit-orders");
 })();
 </script>

@@ -60,6 +60,14 @@ DEFAULT_PORTALS: tuple[dict[str, Any], ...] = (
         "enabled": 1,
         "config_json": {},
     },
+    {
+        "portal_id": "sc88",
+        "display_name": "SC88",
+        "site_url": "https://www.sc881.net/",
+        "transport": "chrome",
+        "enabled": 1,
+        "config_json": {},
+    },
 )
 
 

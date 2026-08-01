@@ -3,8 +3,10 @@
 Lỗi site nghiêm trọng → đổi status acc sang «Lỗi» và dừng auto-mission.
 
 Nhận diện (không phân biệt hoa thường):
-  - Mã xác nhận không chính xác
   - Thao tác trên hệ thống của bạn lặp lại quá thường xuyên
+
+Lưu ý: «Mã xác nhận không chính xác» (captcha) không còn coi là fatal —
+login/register tự giải Capsolver và retry.
 """
 
 from __future__ import annotations
@@ -12,7 +14,6 @@ from __future__ import annotations
 from typing import Any
 
 _FATAL_MSG_MARKERS: tuple[str, ...] = (
-    "mã xác nhận không chính xác",
     "thao tác trên hệ thống của bạn lặp lại quá thường xuyên",
 )
 

@@ -154,9 +154,19 @@ def _start_chrome(url: str, *, proxy: str = "") -> tuple[bool, str]:
         cmd.append("--proxy-bypass-list=<-loopback>;127.0.0.1;localhost")
     cmd.append(url)
     try:
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as e:
         return False, str(e)
+    # Gắn vòng đời relay vào Chrome capture: Chrome đóng -> guardian kill relay.
+    if proxy.strip():
+        try:
+            from c168_proxy import relay_pid_for, spawn_relay_guardian
+
+            rpid = relay_pid_for(proxy)
+            if rpid:
+                spawn_relay_guardian(chrome_pid=proc.pid, relay_pid=rpid)
+        except Exception:
+            pass
     for _ in range(50):
         if _cdp_alive():
             return True, CDP_URL

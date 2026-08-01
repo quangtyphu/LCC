@@ -123,11 +123,13 @@ def check_withdraw_history(
                 att = int(rep.get("attempt") or 0)
                 max_a = int(rep.get("max_attempts") or max_attempts)
                 iv = float(rep.get("poll_interval_sec") or poll_interval_sec)
+                from xoso66_confirm_duration import format_withdraw_poll_attempt_label
                 from xoso66_withdraw_tracking import _format_withdraw_poll_waited
 
                 waited = _format_withdraw_poll_waited(att, iv)
+                poll_lbl = format_withdraw_poll_attempt_label(att, max_a)
                 print(
-                    f"💰 [{user}] Rút Hoàn tất — lần check {att}/{max_a} ({waited}) — "
+                    f"💰 [{user}] Rút Hoàn tất — {poll_lbl} ({waited}) — "
                     f"{_format_item(item)}",
                     flush=True,
                 )
@@ -143,7 +145,13 @@ def check_withdraw_history(
             return rep
         return bool(rep.get("confirmed"))
 
-    items, err = fetch_recent_withdraw_list(session, limit=limit, days=days)
+    items, err = fetch_recent_withdraw_list(
+        session,
+        limit=limit,
+        days=days,
+        account_id=aid,
+        log_prefix="[RÚT]",
+    )
     if err and not items:
         if verbose:
             print(f"❌ [{user}] {err}", flush=True)

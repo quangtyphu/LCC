@@ -40,6 +40,7 @@ def reconcile_once(*, registry: SessionRegistry | None = None) -> dict[str, Any]
 
     closed: list[str] = []
     opened: list[str] = []
+    opened_details: list[dict[str, Any]] = []
     skipped: list[str] = []
     skipped_details: list[dict[str, Any]] = []
 
@@ -83,6 +84,18 @@ def reconcile_once(*, registry: SessionRegistry | None = None) -> dict[str, Any]
             result = transport.connect(acc, registry=reg)
             if result.get("ok"):
                 opened.append(key)
+                opened_details.append(
+                    {
+                        "session_key": key,
+                        "token_alive": result.get("token_alive"),
+                        "balance": result.get("balance"),
+                        "status": result.get("status"),
+                        "code": result.get("code"),
+                        "ready_to_bet": result.get("ready_to_bet"),
+                        "enter_table_ok": result.get("enter_table_ok"),
+                        "enter_table_method": result.get("enter_table_method"),
+                    }
+                )
             else:
                 skipped.append(key)
                 skipped_details.append(
@@ -99,6 +112,7 @@ def reconcile_once(*, registry: SessionRegistry | None = None) -> dict[str, Any]
         "active_count": len(reg.keys()),
         "closed": closed,
         "opened": opened,
+        "opened_details": opened_details,
         "skipped": skipped,
         "skipped_details": skipped_details,
     }

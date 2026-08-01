@@ -139,6 +139,30 @@ def log_startup_services(cfg: dict) -> None:
             f"ngưỡng ≥ {float(ab.get('min_jackpot_vnd') or 0):,.0f} VND",
             flush=True,
         )
+        try:
+            from xoso66_jackpot_picker import force_game_id, forced_picked_game
+
+            fg = force_game_id(cfg)
+            if fg is not None:
+                pg = forced_picked_game(cfg)
+                if pg:
+                    print(
+                        f"[MAIN]     force_game_id = {fg} ({pg.game_name}) — "
+                        "chỉ WS + cược game này",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[MAIN]     ⚠ force_game_id = {fg} không có trong catalog",
+                        flush=True,
+                    )
+            else:
+                print(
+                    "[MAIN]     force_game_id = 0 — chọn game theo hũ (game_ids)",
+                    flush=True,
+                )
+        except Exception:
+            pass
     print(
         f"[MAIN]   session_health = {workers.get('session_health_enabled', True)}",
         flush=True,

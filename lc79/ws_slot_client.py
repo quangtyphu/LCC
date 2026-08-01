@@ -42,6 +42,24 @@ import time
 import warnings
 import contextlib
 from pathlib import Path
+
+_LC79_DIR = Path(__file__).resolve().parent
+_LC79_REPO = _LC79_DIR.parent
+if str(_LC79_DIR) not in sys.path:
+    sys.path.insert(0, str(_LC79_DIR))
+if str(_LC79_REPO) not in sys.path:
+    sys.path.insert(0, str(_LC79_REPO))
+
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
+from shared.console_log import install_timed_print
+
+install_timed_print()
+
 import socks
 import websockets
 import requests
@@ -326,16 +344,6 @@ SLOT_WS_USER_AGENT = (
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-try:
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
-except Exception:
-    pass
-
-
-def _ts() -> str:
-    return time.strftime("%H:%M:%S")
-
 
 def _slot_low_balance_side_effects(username: str, bal: int, threshold: int) -> None:
     """
@@ -351,16 +359,16 @@ def _slot_low_balance_side_effects(username: str, bal: int, threshold: int) -> N
         )
         if ok:
             print(
-                f"[{_ts()}] 💳 [{username}] Đã xếp lệnh nạp (hàng chờ auto-deposit).",
+                f"💳 [{username}] Đã xếp lệnh nạp (hàng chờ auto-deposit).",
                 flush=True,
             )
         else:
             print(
-                f"[{_ts()}] 💳 [{username}] Chưa xếp nạp (cache treo / đã trong hàng chờ).",
+                f"💳 [{username}] Chưa xếp nạp (cache treo / đã trong hàng chờ).",
                 flush=True,
             )
     except Exception as e:
-        print(f"[{_ts()}] ⚠️ [{username}] Xếp nạp: {e}", flush=True)
+        print(f"⚠️ [{username}] Xếp nạp: {e}", flush=True)
     try:
         r = requests.post(
             f"{LC79_MAIN_HTTP}/api/ws-slot-out-of-money",
@@ -369,13 +377,13 @@ def _slot_low_balance_side_effects(username: str, bal: int, threshold: int) -> N
         )
         if r.status_code != 200:
             print(
-                f"[{_ts()}] ⚠️ [{username}] Báo main hết tiền slot HTTP {r.status_code}: "
+                f"⚠️ [{username}] Báo main hết tiền slot HTTP {r.status_code}: "
                 f"{(r.text or '')[:120]}",
                 flush=True,
             )
     except Exception as e:
         print(
-            f"[{_ts()}] ⚠️ [{username}] Không gọi được main ({LC79_MAIN_HTTP}) để loại SLOT_NV: {e}",
+            f"⚠️ [{username}] Không gọi được main ({LC79_MAIN_HTTP}) để loại SLOT_NV: {e}",
             flush=True,
         )
 
@@ -649,7 +657,7 @@ def _maybe_sync_mission_and_claim_daily(
         sync_body = _post_slot_game_daily_set_symbol_count(username, game_slot, api_cur)
         if sync_body is not None:
             print(
-                f"[{_ts()}] SLOT_NV game_slot={game_slot} icon={sym} "
+                f"SLOT_NV game_slot={game_slot} icon={sym} "
                 f"DB {db_sym} → API {api_cur} (mốc NV {api_target})",
                 flush=True,
             )
@@ -685,7 +693,7 @@ def _maybe_sync_mission_and_claim_daily(
         body = _post_slot_game_daily_set_reward_claimed(username, game_slot, 1)
         if body is not None:
             print(
-                f"[{_ts()}] SLOT_DAILY reward_claimed=1 game_slot={game_slot} ({name})",
+                f"SLOT_DAILY reward_claimed=1 game_slot={game_slot} ({name})",
                 flush=True,
             )
             return (True, db_sym)
@@ -818,7 +826,7 @@ async def _handle_slot_incoming(
             and bal_int < stop_spin_if_balance_below
         ):
             print(
-                f"[{_ts()}] ⏹️ [{username}] Dừng quay: số dư {bal_int:,}đ < {stop_spin_if_balance_below:,}đ",
+                f"⏹️ [{username}] Dừng quay: số dư {bal_int:,}đ < {stop_spin_if_balance_below:,}đ",
                 flush=True,
             )
             await asyncio.gather(
@@ -843,7 +851,7 @@ async def _handle_slot_incoming(
         if won_vnd >= SPIN_WIN_LOG_MIN_VND:
             spin_id = payload.get("spinId", "")
             print(
-                f"[{_ts()}] 🎰 [{username}] Thắng {won_vnd:,}đ "
+                f"🎰 [{username}] Thắng {won_vnd:,}đ "
                 f"(≥ {SPIN_WIN_LOG_MIN_VND:,}đ) spinId={spin_id}",
                 flush=True,
             )
@@ -869,7 +877,7 @@ async def _handle_slot_incoming(
         if body is not None:
             if body.get("blocked") and body.get("reason") == "reward_claimed":
                 print(
-                    f"[{_ts()}] SLOT_DAILY đã nhận thưởng hôm nay — dừng quay game_slot={game_slot} "
+                    f"SLOT_DAILY đã nhận thưởng hôm nay — dừng quay game_slot={game_slot} "
                     f"ws_room={ws_room} (spinId={spin_id})",
                     flush=True,
                 )
@@ -902,7 +910,7 @@ async def _handle_slot_incoming(
                 ):
                     session_stats.nv_mission_api_delay_done = True
                     print(
-                        f"[{_ts()}] [{username}] DB symbol_count ≥ {nv_cap} — chờ "
+                        f"[{username}] DB symbol_count ≥ {nv_cap} — chờ "
                         f"{MISSION_API_DELAY_AFTER_SYMBOL_CAP_SEC}s rồi mới gọi API nhiệm vụ game "
                         f"(game có thể cập nhật chậm hơn CMS).",
                         flush=True,
@@ -925,7 +933,7 @@ async def _handle_slot_incoming(
                 if nv_spin_goal_done is not None:
                     nv_spin_goal_done.set()
                 print(
-                    f"[{_ts()}] SLOT_DAILY reward_claimed=1 — dừng quay game_slot={game_slot}",
+                    f"SLOT_DAILY reward_claimed=1 — dừng quay game_slot={game_slot}",
                     flush=True,
                 )
             elif (
@@ -937,7 +945,7 @@ async def _handle_slot_incoming(
                 if nv_spin_goal_done is not None:
                     nv_spin_goal_done.set()
                 print(
-                    f"[{_ts()}] ⏹️ [{username}] Dừng quay: symbol_count CMS (sau NV) = {sy_after_nv} "
+                    f"⏹️ [{username}] Dừng quay: symbol_count CMS (sau NV) = {sy_after_nv} "
                     f"≥ mốc NV {nv_cap} (game_slot={game_slot})",
                     flush=True,
                 )
@@ -1313,7 +1321,7 @@ def main():
             if args.lines is None:
                 ln = default_random_spin_line_one()
                 lines_list = [ln]
-                print(f"[{_ts()}] Dòng quay mặc định: {ln} (random 1–20)", flush=True)
+                print(f"Dòng quay mặc định: {ln} (random 1–20)", flush=True)
             else:
                 lines_list = _parse_lines_arg(args.lines)
         except ValueError:

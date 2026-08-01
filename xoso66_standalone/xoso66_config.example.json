@@ -1,11 +1,15 @@
 {
   "_note": "Chỉ các key dưới đây đọc từ file. Còn lại: xoso66_config_util.py → HARDCODED_CONFIG. Proxy: DEFAULT_PROXY trong file đó hoặc env XOSO66_DEFAULT_PROXY.",
-  "_assign_strategy": "1 = cược ngày cao (còn cap) → slot lớn nhất; 2 = acc cược ngày thấp→cao, mỗi acc 1 mức còn lại (to→nhỏ)",
-  "_assign_match_mode": "0 = khớp được lệnh nào thì cược; 1 = phải khớp hết mức Tài/Xỉu mới cược (hủy phiên nếu dư)",
+  "_assign_strategy": "1 = cược ngày cao (còn cap) → slot lớn nhất; 2 = acc cược ngày thấp→cao, mỗi acc 1 mức còn lại (to→nhỏ); 3 = 1 cặp/phiên — 2 acc chênh số dư nhỏ nhất, cùng mức Tài/Xỉu",
+  "_assign_match_mode": "0 = khớp được lệnh nào thì cược; 1 = phải khớp hết mức Tài/Xỉu mới cược (hủy phiên nếu dư). Strategy 3 bỏ qua — chỉ cần cặp cân.",
+  "_consolidate": "strategy 3: consolidate_min_withdraw_vnd (300k), consolidate_no_deposit (true = không nạp), consolidate_pair_max_gap_vnd (chênh floor 10k liền kề ≤ XXX; 0 = floor bằng nhau), consolidate_withdraw_delay_sec (420=7p), consolidate_min_ws_balance_vnd (sàn mở WS, mặc định 50k)",
+  "_daily_bet_cap": "895000 ≈ điểm danh 888k; 2695000 ≈ Cửa 1 Nhiệm vụ MINI GAME (target 2688000). Nâng cap → acc Đủ ngày còn room tự về Đang Chơi + claim lại (rút ≥300k).",
   "auto_deposit": {
     "amount_vnd": 1000000,
-    "deposit_channel_id": 280,
-    "deposit_channel_name": "TOPAY-Ngân hàng trực tuyến",
+    "deposit_channel_id": 220,
+    "deposit_channel_name": "TIMEPAY-nạp tiền bankking",
+    "deposit_bank_id": 33,
+    "deposit_bank_name": "VPBANK",
     "min_deposit_vnd": 1000000,
     "topay_bank_bid": ""
   },
@@ -18,18 +22,34 @@
     "enabled": true,
     "side_total_by_jackpot_enabled": 1,
     "min_jackpot_vnd": 2000000000,
-    "jackpot_side_mid_vnd": 3000000000,
+    "jackpot_side_step_vnd": 500000000,
     "side_total_low_vnd": 50000,
-    "side_total_high_vnd": 100000,
+    "side_total_step_vnd": 10000,
     "side_total_vnd": 100000,
     "bet_step_vnd": 10000,
     "daily_bet_cap_vnd": 892000,
-    "assign_strategy": 2,
-    "assign_match_mode": 0
+    "assign_strategy": 3,
+    "assign_match_mode": 0,
+    "consolidate_min_withdraw_vnd": 300000,
+    "consolidate_no_deposit": true,
+    "consolidate_pair_max_gap_vnd": 0,
+    "consolidate_withdraw_delay_sec": 420,
+    "consolidate_min_ws_balance_vnd": 50000
   },
   "auto_mission_reward": {
     "min_withdraw_vnd": 300000,
     "withdraw_step_vnd": 100000,
-    "claim_between_delay_sec": 3
+    "max_withdraw_vnd": 500000,
+    "min_balance_after_withdraw_vnd": 50000,
+    "hold_reward_above_min_balance": 0,
+    "hold_reward_poll_max": 5,
+    "withdraw_confirm_poll_max": 20
+  },
+  "balance_reconcile": {
+    "enabled": true,
+    "interval_min": 60,
+    "parallel": 12,
+    "telegram_enabled": true,
+    "min_drop_notify_vnd": 50000
   }
 }
