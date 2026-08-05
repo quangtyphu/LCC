@@ -183,8 +183,6 @@ async def handle_ws(acc, conn_id: str):
                 await close_ws_socks_clean(None, sock)
                 return
 
-        print(f"🔐 [{user}] JWT OK, kết nối WS")
-
         # HTTP API (lịch sử / mission / VIP) dùng game_api_helper: mở circuit + full_check sau khi proxy+JWT đã OK
         try:
             from game_api_helper import clear_proxy_circuit
@@ -192,18 +190,11 @@ async def handle_ws(acc, conn_id: str):
         except Exception as e:
             print(f"⚠️ [{user}] clear_proxy_circuit: {e}", flush=True)
         try:
-            from user_full_check_service import user_full_check_logic
-            import threading
+            from user_full_check_service import schedule_user_full_check
 
-            def _run_full_check():
-                try:
-                    user_full_check_logic(user)
-                except Exception as e:
-                    print(f"⚠️ [{user}] Lỗi khi chạy user_full_check_logic: {e}")
-
-            threading.Thread(target=_run_full_check, daemon=True).start()
+            schedule_user_full_check(user, reason="ws_open")
         except Exception as e:
-            print(f"⚠️ [{user}] Lỗi import hoặc chạy user_full_check_logic: {e}")
+            print(f"⚠️ [{user}] Lỗi schedule user_full_check: {e}")
 
         # ===== 3) Kết nối WS =====
         ws = None

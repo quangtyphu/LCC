@@ -438,6 +438,16 @@ def main() -> int:
     elif not quiet:
         print("[AUTO-LIXI] TẮT (auto_red_packet.enabled=false)", flush=True)
 
+    dcr = cfg.get("daily_bet_cap_reset")
+    if isinstance(dcr, dict) and dcr.get("enabled", True):
+        from xoso66_daily_bet_cap_reset import start_daily_bet_cap_reset_thread
+
+        dcr_t = start_daily_bet_cap_reset_thread(quiet=quiet)
+        if dcr_t is not None:
+            _track_thread(dcr_t)
+    elif not quiet:
+        print("[CAP-RESET] TẮT (daily_bet_cap_reset.enabled=false)", flush=True)
+
     if workers.get("session_health_enabled", True):
         interval = int(workers.get("session_health_interval_sec") or 300)
         _track_thread(

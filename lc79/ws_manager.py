@@ -139,8 +139,6 @@ async def _ensure_ws_unlocked(acc: dict, *, reason: str = "") -> bool:
     }
     task = asyncio.create_task(handle_ws(acc, conn_id))
     active_ws[user]["task"] = task
-    if reason:
-        print(f"🔗 [{user}] Mở WS ({reason}) conn={conn_id[:8]}", flush=True)
     return True
 
 

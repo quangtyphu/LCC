@@ -12,8 +12,8 @@ Config TOP_BET_DAILY_MODE:
   API_USERNAME: user gọi game API (trống → WS đang chạy hoặc user đầu V2/PRIORITY)
 
 Luồng:
-  Sau START (chưa chạy hôm nay): API top500 + CMS → lọc/sort → V2, strategy=8 (MAX outside=0 runtime)
-  Monitor (CHECK_INTERVAL DB + API_INTERVAL game): khi tất cả user V2 gap > EXIT_GAP_MIN_VND
+  Sau START (chưa chạy hôm nay): API top500 + CMS (chỉ Đang Chơi / Hết Tiền) → lọc/sort → V2, strategy=8
+  Monitor: bỏ V2 user không còn Đang Chơi/Hết Tiền; khi mọi user còn lại gap > EXIT_GAP_MIN_VND
     → xóa V2, strategy=3; MAX outside theo config/TIME_WINDOWS; chờ ngày hôm sau mới chọn lại.
   Ngoài phiên V2: không ép strategy/MAX liên tục — chỉ dùng config/TIME_WINDOWS.
 """
@@ -30,10 +30,11 @@ from zoneinfo import ZoneInfo
 
 from constants import load_config, save_config
 from top_bet_daily_checker import (
-    _fetch_all_cms_candidates,
+    _fetch_cms_total_day_by_username,
     _fetch_top_bet_daily_list,
     _money_bet_at_top_idx,
     compute_top_bet_daily_gap_pick,
+    fetch_playing_or_out_usernames,
     format_top_bet_gap_pick_report,
     v2_users_all_above_exit_gap,
 )
@@ -296,6 +297,20 @@ def _apply_v2_and_strategy(cfg: dict, selected: List[str], user_count: int) -> b
     return save_config(cfg)
 
 
+def _prune_v2_to_users(cfg: dict, kept: List[str]) -> bool:
+    """Giữ số slot V2, chỉ còn usernames trong kept (cùng thứ tự)."""
+    v2_old = cfg.get("PRIORITY_USERS_V2")
+    if not isinstance(v2_old, list):
+        v2_old = []
+    slots = max(len(v2_old), len(kept))
+    new_v2 = kept + [""] * (slots - len(kept))
+    new_v2 = new_v2[:slots]
+    if _normalize_v2_slots(v2_old, slots) == new_v2:
+        return False
+    cfg["PRIORITY_USERS_V2"] = new_v2
+    return save_config(cfg)
+
+
 def _should_run_daily_pick(cfg: dict, now: datetime | None = None) -> bool:
     if now is None:
         now = datetime.now(_TZ)
@@ -398,7 +413,7 @@ def top_bet_daily_mode_daily_pick_tick(*, force: bool = False) -> None:
 
 
 def top_bet_daily_mode_monitor_tick() -> None:
-    """Kiểm tra DB: thoát V2 khi mọi user gap > EXIT_GAP_MIN_VND."""
+    """Kiểm tra DB: bỏ user không còn Đang Chơi/Hết Tiền; thoát V2 khi mọi user còn lại gap > EXIT_GAP_MIN_VND."""
     with _config_lock:
         cfg = load_config()
         if not cfg or not top_bet_daily_mode_enabled(cfg):
@@ -411,12 +426,46 @@ def top_bet_daily_mode_monitor_tick() -> None:
             _set_session_active(False)
             return
 
+        allowed_names = fetch_playing_or_out_usernames()
+        if allowed_names is not None:
+            allowed = {u.lower() for u in allowed_names}
+            kept = [u for u in v2_users if u.lower() in allowed]
+            dropped = [u for u in v2_users if u.lower() not in allowed]
+            if dropped:
+                if _prune_v2_to_users(cfg, kept):
+                    print(
+                        f"[TOP-BET-DAY] ✂️ Loại khỏi V2 (không còn Đang Chơi/Hết Tiền): "
+                        f"{', '.join(dropped)}",
+                        flush=True,
+                    )
+                v2_users = kept
+                if not v2_users:
+                    today = _today_str()
+                    cleared = _clear_v2_and_exit(cfg)
+                    _set_session_active(False, last_exit_date=today)
+                    print(
+                        "[TOP-BET-DAY] 🏁 Thoát V2 — không còn user Đang Chơi/Hết Tiền trong V2",
+                        flush=True,
+                    )
+                    if cleared:
+                        print(
+                            f"[TOP-BET-DAY] ASSIGN_STRATEGY={_OUTSIDE_WINDOW_STRATEGY}, "
+                            f"MAX_ACTIVE_USERS_OUTSIDE_V2_V3 theo config/TIME_WINDOWS",
+                            flush=True,
+                        )
+                    return
+
         money_500 = _refresh_top500_cache(cfg)
         if not money_500:
             return
 
         exit_gap = _exit_gap_min(cfg)
-        cms_by = {c["username"].lower(): c for c in _fetch_all_cms_candidates()}
+        # Gap theo bet-totals (không phụ thuộc status API) cho user V2 còn lại
+        day_by = _fetch_cms_total_day_by_username()
+        cms_by = {
+            u.lower(): {"username": u, "total_day": day_by.get(u.lower(), 0), "gap": 0}
+            for u in v2_users
+        }
         all_above, details = v2_users_all_above_exit_gap(
             v2_users, money_500, exit_gap, cms_by_name=cms_by
         )

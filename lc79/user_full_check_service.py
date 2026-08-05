@@ -1,3 +1,4 @@
+import threading
 import time
 from check_deposit_history import check_deposit_history
 from check_withdraw_history import check_withdraw_history
@@ -7,6 +8,69 @@ from vip_point_api import check_and_claim_vip
 
 from get_balance import get_balance
 from status_utils import update_status
+
+# Tránh full_check liên tục khi WS mở lại quanh chu kỳ nạp (lấy lệnh → hết tiền → nạp về).
+FULL_CHECK_COOLDOWN_SEC = 10 * 60
+_full_check_lock = threading.Lock()
+_full_check_running: set[str] = set()
+_full_check_last_done: dict[str, float] = {}
+
+
+def mark_full_check_done(username: str) -> None:
+    """Đánh dấu vừa full_check xong (dùng cho HTTP sync / force)."""
+    u = (username or "").strip()
+    if not u:
+        return
+    with _full_check_lock:
+        _full_check_last_done[u] = time.time()
+
+
+def schedule_user_full_check(
+    username: str,
+    *,
+    reason: str = "",
+    force: bool = False,
+) -> bool:
+    """
+    Spawn daemon thread chạy user_full_check_logic.
+    Skip nếu đang chạy hoặc còn trong cooldown (trừ force=True).
+    Return True nếu đã schedule.
+    """
+    u = (username or "").strip()
+    if not u:
+        return False
+
+    with _full_check_lock:
+        if u in _full_check_running:
+            print(
+                f"⏭️ [{u}] Skip full_check (đang chạy) reason={reason or '-'}",
+                flush=True,
+            )
+            return False
+        if not force:
+            last = _full_check_last_done.get(u)
+            if last is not None and (time.time() - last) < FULL_CHECK_COOLDOWN_SEC:
+                left = int(FULL_CHECK_COOLDOWN_SEC - (time.time() - last))
+                print(
+                    f"⏭️ [{u}] Skip full_check (cooldown ~{left}s) reason={reason or '-'}",
+                    flush=True,
+                )
+                return False
+        _full_check_running.add(u)
+
+    def _run():
+        try:
+            user_full_check_logic(u)
+        except Exception as e:
+            print(f"⚠️ [{u}] Lỗi user_full_check_logic: {e}", flush=True)
+        finally:
+            with _full_check_lock:
+                _full_check_running.discard(u)
+                _full_check_last_done[u] = time.time()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
 
 def user_full_check_logic(username: str) -> dict:
 

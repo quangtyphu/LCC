@@ -752,6 +752,17 @@ def create_deposit():
 			"error": f"Không gửi được cho bên thứ 3: {third_party_result.get('error')}"
 		}), 500
 
+	# Lấy lệnh + gửi banking OK → Đang Chơi sớm (watcher mở WS → full_check nhận thưởng)
+	try:
+		from status_utils import update_status
+		update_status(username, "Đang Chơi")
+		print(
+			f"✅ [{username}] Lấy lệnh nạp OK → Đang Chơi (watcher mở WS / full_check)",
+			flush=True,
+		)
+	except Exception as e:
+		print(f"⚠️ [{username}] Không set Đang Chơi sau lấy lệnh nạp: {e}", flush=True)
+
 	# 3) Thành công
 	return jsonify({
 		"ok": True,

@@ -38,6 +38,9 @@ def refresh_after_deposit_confirm(username: str, order_id=None) -> None:
     """
     Sau khi lệnh nạp Thành Công: làm mới số dư (HTTP) và cập nhật Đang Chơi.
     Không mở WS minigame — watcher sẽ mở handle_ws khi thấy status Đang Chơi.
+
+    Claim NV ngày đã có trong save_deposit_transaction_and_sync_order
+    (mọi GD nạp mới >= 200k) — không gọi lại ở đây.
     """
     key = f"{(username or '').strip()}:{order_id}"
     if key in _deposit_refresh_done:
@@ -264,7 +267,6 @@ def save_deposit_transaction_and_sync_order(
         "deviceNap": dev_nap,
     }
     saved_new = False
-    resp_json: dict = {}
     try:
         resp = requests.post(
             f"{NODE_SERVER_URL}/api/transaction-details",
@@ -273,10 +275,6 @@ def save_deposit_transaction_and_sync_order(
         )
         if resp.status_code in (200, 201):
             saved_new = True
-            try:
-                resp_json = resp.json() if resp.text else {}
-            except Exception:
-                resp_json = {}
             print(
                 f"Đã lưu 1 giao dịch nạp {int(float(amount)):,} cho [{u}] "
                 f"với nội dung {content}",
@@ -294,15 +292,34 @@ def save_deposit_transaction_and_sync_order(
     synced = False
     if saved_new:
         synced = after_deposit_transaction_saved(u, amount, content)
-        if resp_json.get("isFirstDepositToday") or resp_json.get("isEligibleForBonus"):
-            if float(amount or 0) >= 200000:
-                try:
-                    from mission_api import auto_claim_missions
-
-                    auto_claim_missions(u)
-                except Exception as e:
-                    print(f"⚠️ [{u}] Lỗi gọi auto_claim_missions: {e}", flush=True)
+        if float(amount or 0) >= 200000:
+            _schedule_claim_missions_after_deposit(u)
     return saved_new, synced
+
+
+def _schedule_claim_missions_after_deposit(username: str) -> None:
+    """
+    Sau GD nạp mới >= 200k: nhận NV ngày (isWon, chưa claim).
+    Chạy nền + retry ngắn — mission game đôi khi cập nhật chậm hơn lịch sử nạp.
+    """
+    u = (username or "").strip()
+    if not u:
+        return
+
+    def _run() -> None:
+        try:
+            from mission_api import auto_claim_missions
+
+            for attempt in range(1, 4):
+                claimed = auto_claim_missions(u)
+                if claimed:
+                    return
+                if attempt < 3:
+                    time.sleep(5)
+        except Exception as e:
+            print(f"⚠️ [{u}] Lỗi gọi auto_claim_missions: {e}", flush=True)
+
+    threading.Thread(target=_run, daemon=True, name=f"claim-mission-{u}").start()
 
 
 def _try_sync_pending_order_from_transactions(

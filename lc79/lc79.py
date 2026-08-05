@@ -28,7 +28,6 @@ from deposit_api import deposit_full_process
 from withdraw import withdraw
 import threading
 import time
-from user_full_check_service import user_full_check_logic
 from status_utils import update_status
 app = Flask(__name__)
 CORS(app)
@@ -43,7 +42,11 @@ def user_full_check():
     username = data.get('username')
     if not username:
         return jsonify({'ok': False, 'error': 'Thiếu username'}), 400
+    # force: API thủ công bỏ cooldown; chạy sync để trả results như cũ
+    from user_full_check_service import user_full_check_logic, mark_full_check_done
+
     results = user_full_check_logic(username)
+    mark_full_check_done(username)
     return jsonify({'ok': True, 'results': results})
 # =============== API RÚT TIỀN TỪ CMS =======================
 # ============================================================
@@ -94,6 +97,15 @@ def api_deposit():
         result = deposit_full_process(username, amount)
         if not result.get("ok") and result.get("order"):
             return jsonify(result), 409
+        if result.get("ok"):
+            try:
+                update_status(username, "Đang Chơi")
+                print(
+                    f"✅ [{username}] Lấy lệnh nạp OK → Đang Chơi (watcher mở WS / full_check)",
+                    flush=True,
+                )
+            except Exception as e:
+                print(f"⚠️ [{username}] Không set Đang Chơi sau lấy lệnh nạp: {e}", flush=True)
         return jsonify(result)
     except Exception as e:
         import traceback

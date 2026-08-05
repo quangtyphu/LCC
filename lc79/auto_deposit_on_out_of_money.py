@@ -347,7 +347,7 @@ def _perform_deposit_request(user, amount):
                 cache = load_deposit_cache()
                 cache[user] = time.time()
                 save_deposit_cache(cache)
-                # Giữ Hết Tiền / Chờ Nạp — chỉ Đang Chơi sau lệnh Thành Công (refresh_after_deposit_confirm)
+                # Đang Chơi được set trong create_deposit sau gửi banking OK (nhận thưởng sớm qua WS/full_check)
             else:
                 error = result.get("error", "Unknown error")
                 # Bỏ log DEPOSIT FAILED

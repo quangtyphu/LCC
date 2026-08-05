@@ -1,6 +1,8 @@
 # top_bet_daily_checker.py
 """
 Script lấy TOP cược ngày (hạng 500) và chọn user V2 theo gap total_day − top500.
+
+Chỉ xét user status Đang Chơi / Hết Tiền (cùng tuần/tháng).
 """
 
 from __future__ import annotations
@@ -8,7 +10,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import requests
 
@@ -16,8 +18,10 @@ from constants import load_config
 from game_api_helper import game_request_with_retry
 
 API_BASE = "http://127.0.0.1:3000"
+STATUS_FETCH_URL = f"{API_BASE}/api/users/lc79-playing-or-out"
 TARGET_TOP_IDX = 500
 DEFAULT_TOP_500_OFFSET_VND = 500_000
+_ALLOWED_STATUSES = frozenset({"Đang Chơi", "Hết Tiền"})
 
 _TOP_BET_HEADERS = {
     "origin": "https://lc79b.bet",
@@ -37,6 +41,46 @@ def _to_int(val, default=0):
         return default
 
 
+def _parse_users_payload(data) -> List[dict]:
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        for key in ("data", "users", "items"):
+            inner = data.get(key)
+            if isinstance(inner, list):
+                return [x for x in inner if isinstance(x, dict)]
+    return []
+
+
+def _username_from_row(row: dict) -> str:
+    u = row.get("username") or row.get("user") or row.get("name")
+    return str(u).strip() if u else ""
+
+
+def fetch_playing_or_out_usernames() -> Optional[Set[str]]:
+    """
+    Usernames CMS status Đang Chơi / Hết Tiền.
+    None = lỗi gọi API (không prune / không chọn dựa trên status).
+    """
+    try:
+        r = requests.get(STATUS_FETCH_URL, timeout=12)
+        if r.status_code != 200:
+            return None
+        payload = r.json()
+    except Exception:
+        return None
+
+    out: Set[str] = set()
+    for row in _parse_users_payload(payload):
+        status = str(row.get("status") or "").strip()
+        if status not in _ALLOWED_STATUSES:
+            continue
+        u = _username_from_row(row)
+        if u:
+            out.add(u)
+    return out
+
+
 def _fetch_bet_total_rows() -> List[dict]:
     try:
         r = requests.get(
@@ -52,11 +96,15 @@ def _fetch_bet_total_rows() -> List[dict]:
 
 
 def _fetch_all_cms_candidates() -> List[dict]:
-    """User CMS có total_day > 0."""
+    """User CMS: Đang Chơi / Hết Tiền và total_day > 0. API status lỗi → []."""
+    allowed_names = fetch_playing_or_out_usernames()
+    if allowed_names is None:
+        return []
+    allowed = {u.lower() for u in allowed_names}
     candidates: List[dict] = []
     for row in _fetch_bet_total_rows():
         username = str(row.get("username") or row.get("user") or "").strip()
-        if not username:
+        if not username or username.lower() not in allowed:
             continue
         total_day = _to_int(
             row.get("total_day")
@@ -76,6 +124,27 @@ def _fetch_all_cms_candidates() -> List[dict]:
             )
     candidates.sort(key=lambda x: x["total_day"], reverse=True)
     return candidates
+
+
+def _fetch_cms_total_day_by_username() -> Dict[str, int]:
+    """Map username.lower → total_day từ bet-totals (không lọc status; dùng monitor gap)."""
+    out: Dict[str, int] = {}
+    for row in _fetch_bet_total_rows():
+        username = str(row.get("username") or row.get("user") or "").strip()
+        if not username:
+            continue
+        total_day = _to_int(
+            row.get("total_day")
+            or row.get("today_bet")
+            or row.get("todayBet")
+            or row.get("total")
+            or row.get("totalBet"),
+            0,
+        )
+        key = username.lower()
+        if key not in out or total_day > out[key]:
+            out[key] = total_day
+    return out
 
 
 DEFAULT_EXIT_GAP_MIN_VND = 200_000

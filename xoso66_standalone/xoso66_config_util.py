@@ -23,7 +23,8 @@ Chỉnh trong JSON:
   auto_bet.side_total_vnd  (fallback khi tắt bậc hũ / thiếu step)
   auto_bet.bet_step_vnd
   auto_bet.max_bet_per_user_vnd  (mỗi acc tối đa một lệnh; 0 = không giới hạn)
-  auto_bet.daily_bet_cap_vnd  (890000 ≈ điểm danh; 2690000 ≈ Cửa 1 mini game — chỉ dừng cược/Đủ ngày; claim khi chuyển Đủ ngày, nâng cap không reclaim)
+  auto_bet.daily_bet_cap_vnd  (895000 ≈ điểm danh; 2695000 ≈ Cửa 1 mini game — chỉ dừng cược/Đủ ngày; claim khi chuyển Đủ ngày, nâng cap không reclaim)
+  daily_bet_cap_reset  (00:05 VN → ghi lại daily_bet_cap_vnd = value_vnd; mặc định 895000)
   auto_bet.assign_strategy  (1, 2 hoặc 3 — STRATEGY_LABELS; 3 = 2 acc chênh số dư nhỏ nhất, cùng mức Tài/Xỉu)
   auto_bet.assign_match_mode  (0 = khớp lệnh nào cược lệnh đó, pool Tài+Xỉu chung; 1 = khớp hết mới cược)
   auto_bet.consolidate_min_withdraw_vnd  (strategy 3: dừng cược + hẹn rút khi số dư > mức này; mặc định 300k)
@@ -146,6 +147,10 @@ USER_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("auto_bet", "players_per_side"),
     ("auto_bet", "split_dump_at_player"),
     ("auto_bet", "daily_bet_cap_vnd"),
+    ("daily_bet_cap_reset", "enabled"),
+    ("daily_bet_cap_reset", "hour"),
+    ("daily_bet_cap_reset", "minute"),
+    ("daily_bet_cap_reset", "value_vnd"),
     ("auto_bet", "assign_strategy"),
     ("auto_bet", "assign_match_mode"),
     ("auto_bet", "consolidate_min_withdraw_vnd"),
@@ -284,6 +289,13 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "hour": 21,
         "minute": 0,
         "parallel": 5,
+        "worker_tick_sec": 30,
+    },
+    "daily_bet_cap_reset": {
+        "enabled": True,
+        "hour": 0,
+        "minute": 5,
+        "value_vnd": 895_000,
         "worker_tick_sec": 30,
     },
     "auto_mission_reward": {

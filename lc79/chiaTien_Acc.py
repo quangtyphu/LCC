@@ -461,40 +461,8 @@ def _strategy3_print_three_priorities(
     head_after: Optional[int],
     balances: Dict[str, int],
 ) -> None:
-    """In 3 acc ưu tiên strategy 3."""
-    if priority_user:
-        p_line = (
-            f"{priority_user} (mức {priority_amount}, "
-            f"balance={balances.get(priority_user, 0)})"
-        )
-    else:
-        names = [u for u in priority_users if u]
-        if names and min_priority_amount > 0:
-            p_line = (
-                f"{', '.join(names)} (chưa nhận: không có mức >= {min_priority_amount}; "
-                f"không gán nhánh others/random)"
-            )
-        elif names:
-            p_line = f"{', '.join(names)} (chưa nhận lệnh priority phiên này)"
-        else:
-            p_line = "(không cấu hình PRIORITY_USERS)"
-    if user_max_bal and outside_max is not None:
-        b_line = (
-            f"{user_max_bal} → mức {outside_max} "
-            f"(balance={balances.get(user_max_bal, 0)})"
-        )
-    else:
-        b_line = "(không có mức others / không đủ acc)"
-    if head_users:
-        h = head_users[0]
-        after_s = head_after if head_after is not None else "?"
-        h_line = f"{h} (dư sau cược mô phỏng={after_s}, balance={balances.get(h, 0)})"
-    else:
-        h_line = "(không mô phỏng được acc dư nhỏ nhất)"
-    print("[STRAT3] 3 acc ưu tiên phiên:", flush=True)
-    print(f"  1) PRIORITY: {p_line}", flush=True)
-    print(f"  2) Balance cao nhất còn lại: {b_line}", flush=True)
-    print(f"  3) Dư sau cược nhỏ nhất: {h_line}", flush=True)
+    """Giữ signature cho call site; không in log STRAT3."""
+    return
 
 
 def _strategy8_plan_outside_session(
