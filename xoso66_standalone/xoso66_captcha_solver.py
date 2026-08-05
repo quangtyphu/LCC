@@ -231,7 +231,10 @@ def solve_cf_anticloudflare(
     if not api_key:
         return {"ok": False, "error": "Thiếu captcha.api_key (Capsolver AntiCloudflare)"}
     ensure_proxy(session)
-    proxy = str(session.get("proxy") or "").strip()
+    from xoso66_cf import capsolver_proxy_url
+
+    proxy_raw = str(session.get("proxy") or "").strip()
+    proxy = capsolver_proxy_url(proxy_raw) if proxy_raw else ""
     url = str(website_url or f"{BASE_URL}/home/").strip()
     task: dict[str, Any] = {
         "type": "AntiCloudflareTask",

@@ -1018,6 +1018,72 @@ def register_account(
     }
 
 
+def register_account_http_with_captcha(
+    plain: dict,
+    *,
+    proxy: str = "",
+    session: dict | None = None,
+    skip_cf: bool = False,
+) -> dict[str, Any]:
+    """
+    Đăng ký thuần HTTP (POST /server/user/register) — không mở Playwright/Chrome.
+    Lần 1 thường 1011 (thiếu captcha) → Capsolver giải ảnh trong lỗi → gửi lại.
+    """
+    from xoso66_captcha_solver import (
+        captcha_base64_from_payload,
+        captcha_enabled,
+        is_wrong_captcha_response,
+        load_captcha_config,
+        solve_image_captcha_auto,
+    )
+    from xoso66_proxy import require_explicit_proxy
+
+    px = require_explicit_proxy(proxy or (session or {}).get("proxy"))
+    guest = dict(session) if session else new_guest_session(proxy=px)
+    guest["proxy"] = px
+    body = dict(plain)
+    cap_cfg = load_captcha_config()
+    max_attempts = max(1, int(cap_cfg.get("max_attempts") or 3))
+    captcha_meta: dict[str, Any] = {}
+    result: dict[str, Any] = {}
+
+    for attempt in range(max_attempts):
+        result = register_account(guest, body, skip_cf=skip_cf)
+        guest = result.get("session") or guest
+        if result.get("ok"):
+            result["captcha"] = captcha_meta or None
+            return result
+
+        code = result.get("code")
+        msg = str(result.get("msg") or "")
+        raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+        if not is_wrong_captcha_response(code, msg) or attempt + 1 >= max_attempts:
+            break
+        if not captcha_enabled():
+            result["captcha_error"] = "captcha chưa bật / thiếu api_key"
+            break
+        b64 = captcha_base64_from_payload(raw)
+        if not b64:
+            result["captcha_error"] = "lỗi 1011 nhưng không có ảnh captcha"
+            break
+        solved = solve_image_captcha_auto(b64)
+        captcha_meta[f"retry_{attempt + 1}"] = {
+            "ok": solved.get("ok"),
+            "code": code,
+            "text": solved.get("text") if solved.get("ok") else None,
+        }
+        if not solved.get("ok"):
+            result["captcha_error"] = solved.get("error")
+            break
+        body["captcha"] = str(solved.get("text") or "").strip()
+        print(f"[REGISTER] HTTP captcha retry {attempt + 1}: {body['captcha']!r}", flush=True)
+        # lần sau đã có CF/session — khỏi refresh lại
+        skip_cf = True
+
+    result["captcha"] = captcha_meta or None
+    return result
+
+
 def register_account_auto(
     plain: dict,
     session: dict | None = None,
@@ -1026,15 +1092,15 @@ def register_account_auto(
     prefer_playwright: bool = True,
     skip_cf: bool = False,
 ) -> dict[str, Any]:
-    """Playwright trước; HTTP nếu prefer_playwright=False. Proxy bắt buộc."""
+    """HTTP (+ captcha) mặc định khi prefer_playwright=False; Playwright nếu True."""
     from xoso66_proxy import require_explicit_proxy
 
     px = require_explicit_proxy(proxy or (session or {}).get("proxy"))
     if prefer_playwright:
         return register_account_playwright(plain, proxy=px)
-    guest = dict(session) if session else new_guest_session(proxy=px)
-    guest["proxy"] = px
-    return register_account(guest, plain, skip_cf=skip_cf)
+    return register_account_http_with_captcha(
+        plain, proxy=px, session=session, skip_cf=skip_cf
+    )
 
 
 def save_registered_account(account_id: str, username: str, password: str, session: dict) -> dict:

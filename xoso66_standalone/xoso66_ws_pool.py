@@ -16,8 +16,11 @@ Gán cược mỗi phiên vẫn theo assign_strategy (xoso66_bet_assign).
   1) Ngay lập tức: ngắt WS nếu gần đủ cap; ngắt WS nếu DB không còn «Đang Chơi».
      Nick DB < min: giữ WS; sau delay refresh site → đủ tiền thì giữ; vẫn thiếu thì ngắt + Hết Tiền.
   2) Bù slot: tối đa (ws_account_count − slot đang dùng); đếm task + connect + pending + cache nạp.
-  3) Không mở hết «Đang Chơi» — chỉ bù đúng need nick (STT → Đang Chơi thì mở WS qua nạp/resync).
+     List fill: Hết Tiền + Đủ ngày còn room (cùng ws_fill_priority) — không promote «nâng cap».
+  3) Không mở hết «Đang Chơi» — chỉ bù đúng need nick; mở WS → sync status Đang Chơi.
   Sau KQ: chỉ ngắt WS ngay nếu đủ cap ngày; balance thấp (DB) → recheck sau delay + refresh site.
+  Nâng daily_bet_cap: không reclaim mission; Đủ ngày còn room vào pool qua fill thường.
+  Claim thưởng chỉ khi chuyển status → «Đủ ngày» (mốc 890k điểm danh / 2690k mini game).
 
 Ngưỡng tiền WS = bet_step_vnd; cap cược ngày WS = daily_bet_cap_vnd (897k…).
 side_total_vnd chỉ dùng chia cược mỗi phiên Tài/Xỉu, không dùng «Đủ ngày».
@@ -525,76 +528,29 @@ def mark_daily_cap_status(account_ids: list[str], cfg: dict[str, Any]) -> None:
         set_account_status(aid, STATUS_DU_NGAY, reason="đủ cap cược ngày")
 
 
-def sync_du_ngay_under_cap_to_dang_choi(cfg: dict[str, Any]) -> list[str]:
+def reschedule_mission_claims_for_cap(cfg: dict[str, Any]) -> list[str]:
     """
-    «Đủ ngày» nhưng còn room dưới daily_bet_cap mới (nâng cap) → «Đang Chơi».
-    Chỉ nâng tối đa số slot WS còn trống: «Đang Chơi» là nhãn thành viên pool,
-    nâng cả list thì reset cược ngày lúc 00:00 sẽ kéo mọi acc vào pool cùng lúc.
-    Acc chưa tới lượt vẫn nằm list ưu tiên (Đủ ngày) — pool tự bù khi trống slot.
-    Acc đã đủ cap mới mà claimed_cap cũ thấp hơn → hẹn claim lại (Cửa 1…).
-    """
-    resumed: list[str] = []
-    reclaim: list[str] = []
-    under_cap: list[dict[str, Any]] = []
-    for row in list_accounts_by_status(STATUS_DU_NGAY):
-        aid = str(row.get("id") or "").strip()
-        if not aid:
-            continue
-        if not exceeds_ws_daily_cap(row, cfg):
-            if row_allowed_for_ws(row):
-                under_cap.append(row)
-            continue
-        # Đã đủ cap hiện tại — cho hẹn claim lại nếu cap > claimed_cap (queue).
-        try:
-            from xoso66_auto_mission_reward import schedule_mission_claim
+    No-op (giữ API cũ).
 
-            if schedule_mission_claim(aid, reason="đủ cap cược ngày"):
-                reclaim.append(aid)
-        except Exception as e:
-            print(f"[WS-POOL] Hẹn claim lại sau nâng cap: {e}", flush=True)
-    # Đếm theo nhãn DB «Đang Chơi», không dùng ws_slots_need_fill (task/connect).
-    # Nếu đếm slot WS thật: sync chạy 2 lần trước khi connect xong → nâng 16+16=32.
-    already_dc = 0
-    listener = pick_ws_listener_account(cfg)
-    for row in list_accounts_by_status(STATUS_DANG_CHOI):
-        aid = str(row.get("id") or "").strip()
-        if not aid or (listener and aid == listener):
-            continue
-        if row_allowed_for_ws(row):
-            already_dc += 1
-    free_slots = max(0, ws_account_count(cfg) - already_dc)
-    if under_cap and free_slots > 0:
-        for row in sort_rows_ws_fill_priority(under_cap, cfg)[:free_slots]:
-            aid = str(row.get("id") or "").strip()
-            if set_account_status(aid, STATUS_DANG_CHOI, reason="nâng cap cược ngày"):
-                resumed.append(aid)
-    if resumed:
-        names = ", ".join(username_for_log(a) for a in resumed[:8])
-        extra = f"… +{len(resumed) - 8}" if len(resumed) > 8 else ""
-        held = len(under_cap) - len(resumed)
-        held_s = f", giữ {held} acc chờ slot" if held > 0 else ""
-        print(
-            f"[WS-POOL] Nâng cap — {len(resumed)} acc Đủ ngày → Đang Chơi "
-            f"({names}{extra}){held_s}",
-            flush=True,
-        )
-    if reclaim:
-        names = ", ".join(username_for_log(a) for a in reclaim[:8])
-        extra = f"… +{len(reclaim) - 8}" if len(reclaim) > 8 else ""
-        print(
-            f"[WS-POOL] Nâng cap — hẹn claim lại {len(reclaim)} acc đã đủ cap "
-            f"({names}{extra})",
-            flush=True,
-        )
-    return resumed
+    Không hẹn claim khi nâng daily_bet_cap — tránh spam acc đã xong mốc 890k
+    trong khi chưa tới mốc mới (mini game ~2690k). Claim chỉ khi
+    set_account_status → «Đủ ngày» (đủ cap / ngắt WS).
+    """
+    _ = cfg
+    return []
+
+
+def sync_du_ngay_under_cap_to_dang_choi(cfg: dict[str, Any]) -> list[str]:
+    """Alias cũ — không promote Đang Chơi; không reclaim mission."""
+    return reschedule_mission_claims_for_cap(cfg)
 
 
 def sync_exhausted_dang_choi_to_du_ngay(cfg: dict[str, Any]) -> list[str]:
     """
     «Đang Chơi» đã hết room cap (daily >= cap - bet_step) → Đủ ngày + hẹn nhận thưởng.
     Chạy kể cả nick chưa mở WS (trước đây chỉ đổi status khi ngắt WS / gán cược).
+    Claim gắn ở set_account_status(Đủ ngày) — không reclaim hàng loạt khi nâng cap.
     """
-    sync_du_ngay_under_cap_to_dang_choi(cfg)
     daily_limit = float(daily_bet_ws_limit_vnd(cfg))
     status = ws_account_status(cfg)
     exhausted: list[str] = []

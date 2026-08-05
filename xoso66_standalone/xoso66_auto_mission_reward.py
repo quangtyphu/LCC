@@ -7,7 +7,7 @@ Luồng (mỗi acc / ngày VN):
      Không quét lại toàn bộ acc Đủ ngày lúc khởi động main.
   2. mission/list + lưu DB; nếu có level status=1:
        - sign_list: MINI 17 + điểm danh 22/161
-       - mission_list: Cửa MINI GAME (bet_target ≤ daily_bet_cap; Cửa 1 = 2.688.000)
+       - mission_list: Cửa MINI GAME (bet_target ≤ tổng cược ngày thật; Cửa 1 = 2.688.000)
        hold_reward_above_min_balance=0 (mặc định):
          balance ≥ min_withdraw_vnd → rút bội withdraw_step_vnd, tối đa max_withdraw_vnd,
          số dư sau rút ≥ min_balance_after_withdraw_vnd (mặc định 50k), mức rút ≥ min_withdraw_vnd,
@@ -17,11 +17,15 @@ Luồng (mỗi acc / ngày VN):
          balance > min_withdraw_vnd → chỉ refresh số dư + mission/list (không rút, không nhận), xong.
          balance ≤ min_withdraw_vnd → chỉ nhận thưởng (không rút).
   3. Chưa claim được: poll khi (a) done_bet < 888888 VÀ done_bet < tổng cược ngày,
-     hoặc (b) đủ cược cửa ≤ cap nhưng cửa vẫn status=0; tối đa poll_max_attempts.
+     hoặc (b) daily >= bet_target nhưng cửa vẫn status=0; tối đa poll_max_attempts.
      Trong lúc poll: không ghi đè accounts.daily_bet_total bằng 161.
   4. Hết poll (15/15): sync done_bet_money = tổng cược ngày (accounts + mission) → thử rút + nhận lại.
-  5. Nâng daily_bet_cap sau khi queue done: cho schedule lại (claimed_cap < cap mới);
-     ws_pool đưa Đủ ngày còn room về Đang Chơi.
+  5. Claim chỉ khi chuyển status → «Đủ ngày» (đủ cap / ngắt WS):
+       - mốc ~890k → nhận điểm danh (sign_list status=1);
+       - nâng cap rồi chơi tới ~2690k → Đủ ngày lần nữa → nhận mini game (mission_list).
+     Nâng daily_bet_cap trong config không hẹn claim lại.
+     claimed_cap ghi theo tiến độ thật (không ghi full config khi mới xong điểm danh).
+     Đủ ngày còn room vào lại WS qua fill thường (ws_fill_priority).
 """
 
 from __future__ import annotations
@@ -61,6 +65,21 @@ _CONSOLIDATE_WITHDRAW_REASON = "đạt ngưỡng rút strategy 3"
 
 def _is_consolidate_withdraw_reason(reason: str) -> bool:
     return str(reason or "").strip() == _CONSOLIDATE_WITHDRAW_REASON
+
+
+def _is_ws_cap_claim_reason(reason: str) -> bool:
+    """Đủ ngày do ngắt WS / đủ cap — vẫn rút dù không có mission claimable."""
+    return str(reason or "").strip() in ("ngắt WS", "đủ cap cược ngày")
+
+
+def _max_task_done_bet(task_levels: list[dict[str, Any]]) -> int:
+    best = 0
+    for lv in task_levels or []:
+        try:
+            best = max(best, int(lv.get("done_bet_money") or 0))
+        except (TypeError, ValueError):
+            continue
+    return best
 
 
 def _normalize_queue_item(account_id: str, item: dict[str, Any]) -> dict[str, Any]:
@@ -285,11 +304,49 @@ def _consolidate_withdraw_delay_sec() -> float:
         return 420.0
 
 
+def _claimed_cap_from_progress(
+    *,
+    daily_total: int | float,
+    done_bet: int | float,
+    cap_vnd: int,
+    force_full: bool = False,
+) -> int:
+    """
+    claimed_cap ghi theo tiến độ cược thật — không ghi = full config cap khi mới xong điểm danh (~888k).
+    Tránh chặn hẹn Cửa 1 sau này (bug minhhuongkute 03/08).
+    """
+    cap = max(0, int(cap_vnd or 0))
+    if force_full or cap <= 0:
+        return cap
+    progress = max(0, int(daily_total or 0), int(done_bet or 0))
+    step = 10_000
+    try:
+        ab = load_config().get("auto_bet")
+        if isinstance(ab, dict) and ab.get("bet_step_vnd") is not None:
+            step = max(1, int(ab.get("bet_step_vnd") or step))
+    except Exception:
+        pass
+    if progress >= max(0, cap - step):
+        return cap
+    return min(cap, progress)
+
+
+def _bet_step_vnd() -> int:
+    try:
+        ab = load_config().get("auto_bet")
+        if isinstance(ab, dict) and ab.get("bet_step_vnd") is not None:
+            return max(1, int(ab.get("bet_step_vnd") or 10_000))
+    except Exception:
+        pass
+    return 10_000
+
+
 def schedule_mission_claim(account_id: str, *, reason: str = "") -> bool:
     """
     Hẹn nhận thưởng / rút (sau delay).
     Strategy 3 (đạt ngưỡng rút): delay consolidate_withdraw_delay_sec; cho hẹn lại nếu phase done/failed.
-    Cap cao hơn claimed_cap_vnd: cho hẹn lại dù phase=done (nâng daily_bet_cap trong ngày).
+    phase=done cùng ngày: chỉ hẹn lại khi chuyển «Đủ ngày» thật (đã chơi tới mốc cap hiện tại),
+    không reclaim chỉ vì nâng daily_bet_cap trong config.
     """
     if not auto_mission_reward_enabled():
         return False
@@ -301,10 +358,12 @@ def schedule_mission_claim(account_id: str, *, reason: str = "") -> bool:
         return False
     reason_s = str(reason or "").strip()
     is_s3 = _is_consolidate_withdraw_reason(reason_s)
+    is_ws_cap = _is_ws_cap_claim_reason(reason_s)
     delay = _consolidate_withdraw_delay_sec() if is_s3 else _initial_delay_sec()
     vn_day = today_vn_str()
     at = time.time() + delay
     current_cap = _daily_bet_cap_vnd()
+    daily_now = int(daily_bet_today_vnd(row) or 0)
     with _QUEUE_LOCK:
         items = _load_queue_map()
         cur = items.get(aid) or {}
@@ -319,10 +378,15 @@ def schedule_mission_claim(account_id: str, *, reason: str = "") -> bool:
             elif phase in ("scheduled", "polling", "reward_retry"):
                 return False
             elif phase == "done":
-                # Legacy (chưa ghi claimed_cap): coi như đã xong mốc ~900k (điểm danh).
-                # Nâng cap lên Cửa 1 (~2695k) → cho hẹn lại; giữ 895k → không spam.
+                # Đã xong mốc trước (vd 890k điểm danh). Chỉ hẹn lại khi:
+                # chuyển Đủ ngày thật tới mốc cap mới (vd 2690k mini game).
+                if not is_ws_cap:
+                    return False
                 effective_claimed = claimed_cap if claimed_cap > 0 else 900_000
                 if current_cap <= effective_claimed:
+                    return False
+                # Phải đã chơi tới gần cap hiện tại — không reclaim khi mới nâng config.
+                if daily_now < max(0, current_cap - _bet_step_vnd()):
                     return False
         items[aid] = _normalize_queue_item(
             aid,
@@ -654,7 +718,7 @@ def _run_claim_flow(
     from xoso66_mission_db import persist_mission_state
     from xoso66_session import ensure_session, persist_session
     from xoso66_task_mission_reward import (
-        collect_claimable_task_levels_for_cap,
+        collect_claimable_task_levels_for_daily,
         collect_task_levels_from_data,
         needs_task_cua_bet_poll,
     )
@@ -693,13 +757,27 @@ def _run_claim_flow(
 
     data = rep.get("data") or {}
     levels = collect_tracked_levels(data)
+    db_daily_before = int(daily_bet_today_vnd(row))
     mission_snap = persist_mission_state(
         u, aid, levels, phase="list", sync_accounts_daily_bet=sync_accounts_daily_bet
     )
 
     task_levels = collect_task_levels_from_data(data)
+    task_done_max = _max_task_done_bet(task_levels)
+    # max(DB trước sync, sau sync, done_bet Cửa) — tránh lọc Cửa khi 161=888888 ghi sai.
+    daily_total_for_claim = max(
+        int(mission_snap.get("accounts_daily_bet_total") or 0),
+        db_daily_before,
+        task_done_max,
+    )
+    if task_done_max > int(daily_bet_today_vnd(get_account(aid) or {}) or 0):
+        from xoso66_accounts_db import set_daily_bet_from_mission_api
+
+        set_daily_bet_from_mission_api(aid, task_done_max)
     claimable = [x for x in levels if x.get("status") == REWARD_CLAIM_STATUS]
-    claimable.extend(collect_claimable_task_levels_for_cap(data, cap_vnd))
+    claimable.extend(
+        collect_claimable_task_levels_for_daily(data, daily_total_for_claim)
+    )
     if only_level_keys:
         claimable = [
             x
@@ -723,15 +801,21 @@ def _run_claim_flow(
     high_balance_skip = False
     min_v = _min_withdraw_vnd()
 
-    # Strategy 3: luôn thử rút kể cả không có mission claimable.
-    if consolidate_withdraw and withdraw_before and not (claimable and do_claim):
+    # Strategy 3 / Đủ ngày: rút kể cả không có mission claimable.
+    force_withdraw_no_claim = (
+        withdraw_before
+        and not (claimable and do_claim)
+        and (consolidate_withdraw or _is_ws_cap_claim_reason(reason))
+    )
+    if force_withdraw_no_claim:
         if hold_reward_above_min_balance():
             bal = _account_balance_vnd(aid, session)
             if bal > min_v:
                 high_balance_skip = True
+                tag = "strategy 3" if consolidate_withdraw else "Đủ ngày"
                 print(
                     f"[AUTO-MISSION] {u}: hold mode — số dư {int(bal):,} > {min_v:,}, "
-                    "bỏ rút (strategy 3)",
+                    f"bỏ rút ({tag})",
                     flush=True,
                 )
         if not high_balance_skip:
@@ -809,11 +893,9 @@ def _run_claim_flow(
                     )
 
     done_bet = _daily_done_bet_from_levels(levels)
-    daily_total = int(
-        mission_snap.get("accounts_daily_bet_total") or daily_bet_today_vnd(row)
-    )
+    daily_total = daily_total_for_claim
     task_need_poll, task_poll_detail = needs_task_cua_bet_poll(
-        task_levels, daily_total, cap_vnd
+        task_levels, daily_total
     )
 
     return {
@@ -1083,6 +1165,9 @@ def _try_finish_after_claims(
     cap_vnd = int(result.get("cap_vnd") or _daily_bet_cap_vnd())
     task_need_poll = bool(result.get("task_need_poll"))
     task_poll_detail = str(result.get("task_poll_detail") or "")
+    progress_cap = _claimed_cap_from_progress(
+        daily_total=daily_total, done_bet=done_bet, cap_vnd=cap_vnd
+    )
 
     for c in claims:
         if not c.get("ok"):
@@ -1132,11 +1217,11 @@ def _try_finish_after_claims(
         return True
 
     if only_retry:
-        _mark_queue_done(aid, claimed_cap_vnd=cap_vnd)
+        _mark_queue_done(aid, claimed_cap_vnd=progress_cap)
         return True
 
     if had_claimable and claims_ok > 0 and not task_need_poll:
-        _mark_queue_done(aid, claimed_cap_vnd=cap_vnd)
+        _mark_queue_done(aid, claimed_cap_vnd=progress_cap)
         return True
 
     if result.get("claim_blocked_by_withdraw"):
@@ -1283,13 +1368,14 @@ def _try_finish_after_claims(
         else:
             print(
                 f"[AUTO-MISSION] {u}: không có mức status=1 — coi xong "
-                f"(done_bet={done_bet:,}, cược ngày={daily_total:,}, cap={cap_vnd:,})",
+                f"(done_bet={done_bet:,}, cược ngày={daily_total:,}, "
+                f"claimed_cap={progress_cap:,}/{cap_vnd:,})",
                 flush=True,
             )
-        _mark_queue_done(aid, claimed_cap_vnd=cap_vnd)
+        _mark_queue_done(aid, claimed_cap_vnd=progress_cap)
         return True
 
-    _mark_queue_done(aid, claimed_cap_vnd=cap_vnd)
+    _mark_queue_done(aid, claimed_cap_vnd=progress_cap)
     return True
 
 

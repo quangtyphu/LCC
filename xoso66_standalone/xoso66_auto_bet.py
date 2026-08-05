@@ -3,7 +3,8 @@
 Auto cược mini-game (LC79-style):
 
   - Mỗi BẮT ĐẦU PHIÊN: đọc hũ → giữ/đổi game đang chơi → chỉ chia cược đúng game đó
-  - next_info: +2s gán acc; placeOrder theo begin_time+12s (probe 21/21 phiên); stagger 1s
+  - next_info: +2s gán acc; placeOrder theo begin_time+15s; stagger 1s
+    (fire đúng lịch, không chờ HTTP; trễ lịch → neo từ now, vẫn cách 1s)
   - WS kết quả → tính thắng/thua (theo pending issue, kể cả sau khi đổi game)
 """
 
@@ -132,8 +133,9 @@ def _bet_stagger_per_user_sec(acfg: dict) -> float:
     return max(0.0, lo if lo == hi else (lo + hi) / 2)
 
 
-def _bet_place_at_monotonic(first_bet_mono: float, acfg: dict, order_index: int) -> float:
-    return first_bet_mono + order_index * _bet_stagger_per_user_sec(acfg)
+def _bet_place_at_monotonic(place_base_mono: float, acfg: dict, order_index: int) -> float:
+    """Mốc gửi lệnh i: place_base + i * stagger (place_base = max(now, first_bet))."""
+    return place_base_mono + order_index * _bet_stagger_per_user_sec(acfg)
 
 
 def _round_start_log_delay_sec(cfg: dict) -> float:
@@ -1106,64 +1108,41 @@ class AutoBetController:
         price_scale = float(acfg.get("order_price_scale") or 1)
         order_slots = sort_slots_by_amount_desc(slots)
         http_timeout = int(acfg.get("place_order_timeout_sec") or 20)
+        wall_timeout = float(acfg.get("place_order_wall_timeout_sec") or 25)
+        max_per_user = int(acfg.get("max_bet_per_user_vnd") or 0)
 
-        for i, slot in enumerate(order_slots):
-            if stopping():
-                break
-            if cancel is not None and cancel.is_set():
-                print(
-                    f"  [{issue}] Dừng đặt cược — đã có KQ hoặc phiên mới",
-                    flush=True,
-                )
-                break
-            if end_wall is not None and datetime.now() >= end_wall:
-                print(
-                    f"  [{issue}] Dừng đặt cược — hết end_time",
-                    flush=True,
-                )
-                break
-            if not _sleep_until(
-                _bet_place_at_monotonic(first_bet_mono, acfg, i), cancel
-            ):
-                if i == 0:
-                    print(
-                        f"  [{issue}] !! Dừng trước khi gửi placeOrder",
-                        flush=True,
-                    )
-                break
-
-            session = sessions.get(slot.account_id)
-            if not session:
-                fail_n += 1
-                print(f"  !! {slot.username}: thiếu session", flush=True)
-                continue
-
-            price = int(slot.amount_vnd * price_scale)
-            max_per_user = int(acfg.get("max_bet_per_user_vnd") or 0)
-            if max_per_user > 0 and slot.amount_vnd > max_per_user:
-                price = int(max_per_user * price_scale)
-            rep = _place_bet_for_slot(
-                session,
-                BetRequest(
-                    game_key=gkey,
-                    side=slot.side,
-                    amount=price,
-                    issue=str(issue),
-                ),
-                account_id=slot.account_id,
-                username=slot.username,
-                game_key=gkey,
-                cfg=cfg,
-                http_timeout=http_timeout,
-                wall_timeout=float(
-                    acfg.get("place_order_wall_timeout_sec") or 25
-                ),
-                tokens_prevalidated=tokens_prevalidated,
+        # Gửi đúng lịch stagger — không chờ HTTP nick trước xong.
+        # Nếu mốc first_bet đã qua (gán/token chậm) → neo từ now, vẫn cách nhau 1s.
+        stagger = _bet_stagger_per_user_sec(acfg)
+        now_mono = time.monotonic()
+        place_base = max(now_mono, float(first_bet_mono))
+        late_sec = place_base - float(first_bet_mono)
+        if late_sec > 0.25:
+            print(
+                f"  [{issue}] Lịch cược trễ {late_sec:.1f}s — "
+                f"stagger {stagger:.0f}s từ ngay bây giờ",
+                flush=True,
             )
-            if cancel is not None and cancel.is_set():
-                break
+
+        result_lock = threading.Lock()
+        pending_futs: list[Any] = []
+
+        def _on_place_done(
+            fut: Any, slot: BetSlot, price: int, session: dict[str, Any]
+        ) -> None:
+            nonlocal ok_n, fail_n
+            try:
+                rep = fut.result()
+            except Exception as e:
+                with result_lock:
+                    fail_n += 1
+                print(
+                    f"  !! {slot.username} {_side_abbr(slot.side)} "
+                    f"{slot.amount_vnd:,} FAIL — {e}",
+                    flush=True,
+                )
+                return
             if rep.ok:
-                ok_n += 1
                 bal = rep.balance
                 if bal is None:
                     from xoso66_accounts_db import get_account
@@ -1173,6 +1152,8 @@ class AutoBetController:
                         bal = float(row.get("balance") or 0)
                     except (TypeError, ValueError):
                         bal = 0.0
+                with result_lock:
+                    ok_n += 1
                 log_dice_bet(
                     slot.username,
                     side=slot.side,
@@ -1180,20 +1161,87 @@ class AutoBetController:
                     balance=bal or 0,
                     issue=str(rep.issue or issue),
                 )
-            else:
+                return
+            with result_lock:
                 fail_n += 1
-                print(
-                    f"  !! {slot.username} {_side_abbr(slot.side)} "
-                    f"{slot.amount_vnd:,} FAIL — {rep.msg}",
-                    flush=True,
+            print(
+                f"  !! {slot.username} {_side_abbr(slot.side)} "
+                f"{slot.amount_vnd:,} FAIL — {rep.msg}",
+                flush=True,
+            )
+            if _is_insufficient_balance_msg(rep.msg):
+                _refresh_balance_on_insufficient(
+                    slot.account_id,
+                    session,
+                    slot.username,
+                    bet_amount_vnd=price,
                 )
-                if _is_insufficient_balance_msg(rep.msg):
-                    _refresh_balance_on_insufficient(
-                        slot.account_id,
-                        session,
-                        slot.username,
-                        bet_amount_vnd=price,
+
+        with ThreadPoolExecutor(max_workers=max(1, len(order_slots))) as ex:
+            for i, slot in enumerate(order_slots):
+                if stopping():
+                    break
+                if cancel is not None and cancel.is_set():
+                    print(
+                        f"  [{issue}] Dừng đặt cược — đã có KQ hoặc phiên mới",
+                        flush=True,
                     )
+                    break
+                if end_wall is not None and datetime.now() >= end_wall:
+                    print(
+                        f"  [{issue}] Dừng đặt cược — hết end_time",
+                        flush=True,
+                    )
+                    break
+                if not _sleep_until(
+                    _bet_place_at_monotonic(place_base, acfg, i), cancel
+                ):
+                    if i == 0:
+                        print(
+                            f"  [{issue}] !! Dừng trước khi gửi placeOrder",
+                            flush=True,
+                        )
+                    break
+
+                session = sessions.get(slot.account_id)
+                if not session:
+                    with result_lock:
+                        fail_n += 1
+                    print(f"  !! {slot.username}: thiếu session", flush=True)
+                    continue
+
+                price = int(slot.amount_vnd * price_scale)
+                if max_per_user > 0 and slot.amount_vnd > max_per_user:
+                    price = int(max_per_user * price_scale)
+                fut = ex.submit(
+                    _place_bet_for_slot,
+                    session,
+                    BetRequest(
+                        game_key=gkey,
+                        side=slot.side,
+                        amount=price,
+                        issue=str(issue),
+                    ),
+                    account_id=slot.account_id,
+                    username=slot.username,
+                    game_key=gkey,
+                    cfg=cfg,
+                    http_timeout=http_timeout,
+                    wall_timeout=wall_timeout,
+                    tokens_prevalidated=tokens_prevalidated,
+                )
+                fut.add_done_callback(
+                    lambda f, s=slot, p=price, sess=session: _on_place_done(
+                        f, s, p, sess
+                    )
+                )
+                pending_futs.append(fut)
+
+            for fut in pending_futs:
+                try:
+                    fut.result()
+                except Exception:
+                    pass
 
         with round_console_lock():
             log_round_bet_footer(

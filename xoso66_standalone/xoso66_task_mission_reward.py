@@ -106,7 +106,7 @@ def collect_task_levels(
     return rows
 
 
-# Cửa thứ 1 Nhiệm vụ MINI GAME — target cược (site). Cap gợi ý ≈ 2_695_000.
+# Cửa thứ 1 Nhiệm vụ MINI GAME — target cược (site). Muốn chơi tới mốc này: daily_bet_cap ≈ 2_695_000.
 TASK_CUA1_BET_TARGET_VND = 2_688_000
 
 
@@ -120,25 +120,33 @@ def collect_claimable_task_levels(
     ]
 
 
-def collect_claimable_task_levels_for_cap(
+def collect_claimable_task_levels_for_daily(
     data: dict[str, Any] | None,
-    cap_vnd: int,
+    daily_bet_total: int | float,
 ) -> list[dict[str, Any]]:
     """
-    Cửa status=1 có bet_target <= daily_bet_cap (bỏ cửa cao hơn cap đang chạy).
+    Cửa status=1 có bet_target <= tổng cược ngày thật (không lọc theo daily_bet_cap config).
     bet_target<=0: vẫn nhận nếu status=1 (API thiếu target).
     """
     mission = find_minigame_mission(parse_task_missions(data))
     if not mission:
         return []
-    cap = max(0, int(cap_vnd or 0))
+    daily = max(0, int(daily_bet_total or 0))
     out: list[dict[str, Any]] = []
     for lv in collect_claimable_task_levels(mission):
         target = int(lv.get("bet_target") or 0)
-        if target > 0 and target > cap:
+        if target > 0 and target > daily:
             continue
         out.append(lv)
     return out
+
+
+def collect_claimable_task_levels_for_cap(
+    data: dict[str, Any] | None,
+    cap_vnd: int,
+) -> list[dict[str, Any]]:
+    """Alias cũ — tham số là ngưỡng cược (daily thật), không phải config cap."""
+    return collect_claimable_task_levels_for_daily(data, cap_vnd)
 
 
 def collect_task_levels_from_data(
@@ -151,20 +159,20 @@ def collect_task_levels_from_data(
 def needs_task_cua_bet_poll(
     task_levels: list[dict[str, Any]],
     daily_bet_total: int | float,
-    cap_vnd: int,
+    cap_vnd: int | None = None,
 ) -> tuple[bool, str]:
     """
-    Poll chờ site mở cửa: daily >= bet_target <= cap nhưng status vẫn 0.
-    Trả (cần_poll, mô_tả).
+    Poll chờ site mở cửa: daily >= bet_target nhưng status vẫn 0.
+    cap_vnd bỏ qua (giữ chữ ký cũ); ngưỡng chỉ theo cược ngày thật.
     """
+    _ = cap_vnd
     daily = int(daily_bet_total or 0)
-    cap = max(0, int(cap_vnd or 0))
-    if daily <= 0 or cap <= 0:
+    if daily <= 0:
         return False, ""
     pending: list[str] = []
     for lv in task_levels or []:
         target = int(lv.get("bet_target") or 0)
-        if target <= 0 or target > cap:
+        if target <= 0:
             continue
         if daily < target:
             continue

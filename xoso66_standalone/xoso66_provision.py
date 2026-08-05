@@ -20,6 +20,7 @@ from xoso66_banks import normalize_bank
 from xoso66_proxy import ProxyRequiredError, require_explicit_proxy
 from xoso66_register import (
     prepare_register_payload,
+    register_account_http_with_captcha,
     register_account_playwright,
     register_failure_message,
     _resolve_cms_register_context,
@@ -131,8 +132,31 @@ def _provision_register(p: dict[str, Any]) -> dict[str, Any]:
             "saved_to_db": False,
         }
 
+    # Mặc định: Playwright headless (không hiện cửa sổ Chrome).
+    # XOSO66_REGISTER_MODE=http → API thuần; =cms → Chrome CMS có UI.
+    import os
+
+    reg_mode = os.environ.get("XOSO66_REGISTER_MODE", "playwright").strip().lower()
+
     try:
-        reg = register_account_playwright(plain, proxy=p["proxy"], cms_device=cms_device)
+        if reg_mode == "http":
+            print("[PROVISION] register mode=http", flush=True)
+            reg = register_account_http_with_captcha(plain, proxy=p["proxy"])
+        elif reg_mode == "cms":
+            print("[PROVISION] register mode=cms (Chrome UI)", flush=True)
+            reg = register_account_playwright(
+                plain, proxy=p["proxy"], cms_device=cms_device
+            )
+        else:
+            # playwright headless — không native chrome cửa sổ
+            os.environ["XOSO66_REGISTER_MODE"] = "cdp"
+            os.environ["XOSO66_REGISTER_NATIVE_CHROME"] = "0"
+            os.environ.setdefault("XOSO66_REGISTER_HEADLESS", "1")
+            os.environ.setdefault("XOSO66_CF_HEADLESS", "1")
+            print("[PROVISION] register mode=playwright headless", flush=True)
+            reg = register_account_playwright(
+                plain, proxy=p["proxy"], cms_device=cms_device, headless=True
+            )
     except ProxyRequiredError as e:
         return {
             "ok": False,

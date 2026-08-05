@@ -331,9 +331,11 @@ def persist_mission_state(
     Lưu account_missions; có thể ghi accounts.daily_bet_total từ done_bet_money (161).
 
     sync_accounts_daily_bet:
-      None (mặc định): ghi accounts khi done_bet >= tổng cược ngày, hoặc done_bet = 888888.
-      (tránh poll 1..14 làm tụt DB khi API 161 chậm).
-      True: luôn ghi theo API; False: không đụng accounts.daily_bet_total.
+      None (mặc định): ghi accounts khi done_bet >= tổng cược ngày.
+      Sentinel 888888 (điểm danh đủ) chỉ sync khi DB ≤ 888888 — không được hạ
+      daily thật (vd. đã chơi Cửa 1 ~2.688M) xuống 888888.
+      True: luôn ghi theo API (vẫn chặn hạ daily bởi sentinel 888888).
+      False: không đụng accounts.daily_bet_total.
     """
     from xoso66_accounts_db import daily_bet_today_vnd, get_account
 
@@ -344,10 +346,15 @@ def persist_mission_state(
     row = get_account(str(account_id).strip()) or {}
     db_total = int(daily_bet_today_vnd(row))
     should_sync = sync_accounts_daily_bet
-    if is_daily_161_complete_sentinel(daily_bet):
-        should_sync = True
-    elif should_sync is None:
-        should_sync = not (db_total > 0 and daily_bet < db_total)
+    sentinel = is_daily_161_complete_sentinel(daily_bet)
+    if should_sync is None:
+        if sentinel:
+            # 888888 = «đủ điểm danh», không phải tổng cược ngày thật.
+            should_sync = db_total <= daily_bet
+        else:
+            should_sync = not (db_total > 0 and daily_bet < db_total)
+    elif should_sync and sentinel and db_total > daily_bet:
+        should_sync = False
     if should_sync:
         set_daily_bet_from_mission_api(account_id, daily_bet)
         accounts_total = daily_bet

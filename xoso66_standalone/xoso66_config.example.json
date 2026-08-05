@@ -3,7 +3,7 @@
   "_assign_strategy": "1 = cược ngày cao (còn cap) → slot lớn nhất; 2 = acc cược ngày thấp→cao, mỗi acc 1 mức còn lại (to→nhỏ); 3 = 1 cặp/phiên — 2 acc chênh số dư nhỏ nhất, cùng mức Tài/Xỉu",
   "_assign_match_mode": "0 = khớp được lệnh nào thì cược; 1 = phải khớp hết mức Tài/Xỉu mới cược (hủy phiên nếu dư). Strategy 3 bỏ qua — chỉ cần cặp cân.",
   "_consolidate": "strategy 3: consolidate_min_withdraw_vnd (300k), consolidate_no_deposit (true = không nạp), consolidate_pair_max_gap_vnd (chênh floor 10k liền kề ≤ XXX; 0 = floor bằng nhau), consolidate_withdraw_delay_sec (420=7p), consolidate_min_ws_balance_vnd (sàn mở WS, mặc định 50k)",
-  "_daily_bet_cap": "895000 ≈ điểm danh 888k; 2695000 ≈ Cửa 1 Nhiệm vụ MINI GAME (target 2688000). Nâng cap → acc Đủ ngày còn room tự về Đang Chơi + claim lại (rút ≥300k).",
+  "_daily_bet_cap": "895000 ≈ điểm danh 888k; 2695000 ≈ Cửa 1 Nhiệm vụ MINI GAME (target 2688000). Cap chỉ dừng cược; claim theo daily thật. Nâng cap → hẹn claim lại nếu đã đủ cap; Đủ ngày còn room vào WS qua fill (ws_fill_priority).",
   "auto_deposit": {
     "amount_vnd": 1000000,
     "deposit_channel_id": 220,

@@ -13,7 +13,7 @@ Chỉnh trong JSON:
   game_worker.ws_default_username  (WS CLI mặc định)
   game_worker.ws_listener_username  (nick giữ WS nghe phiên — không ngắt cap; fallback ws_default_username)
   game_worker.ws_listener_enabled  (true/false — tắt hẳn WS listener)
-  game_worker.ws_fill_priority  (2 = mọi acc: cược ngày cao→thấp, bằng nhau số dư cao→thấp; 1 = đủ tiền: số dư cao→thấp, thiếu tiền: cược thấp→cao; 0 = mọi acc: số dư thấp→cao, cược cao→thấp)
+  game_worker.ws_fill_priority  (list Hết Tiền+Đủ ngày under-cap: 2 = cược ngày cao→thấp rồi số dư cao→thấp; 1 = đủ tiền số dư cao→thấp, thiếu tiền cược thấp→cao; 0 = số dư thấp→cao rồi cược cao→thấp)
   auto_bet.enabled
   auto_bet.side_total_by_jackpot_enabled  (0 = cố định side_total_low_vnd; 1 = cược tăng theo bậc hũ)
   auto_bet.min_jackpot_vnd  (mốc bắt đầu chơi + mốc cược base)
@@ -23,7 +23,7 @@ Chỉnh trong JSON:
   auto_bet.side_total_vnd  (fallback khi tắt bậc hũ / thiếu step)
   auto_bet.bet_step_vnd
   auto_bet.max_bet_per_user_vnd  (mỗi acc tối đa một lệnh; 0 = không giới hạn)
-  auto_bet.daily_bet_cap_vnd  (895000 ≈ điểm danh 888k; 2695000 ≈ Cửa 1 target 2688000 — nâng cap tự resume + claim lại)
+  auto_bet.daily_bet_cap_vnd  (890000 ≈ điểm danh; 2690000 ≈ Cửa 1 mini game — chỉ dừng cược/Đủ ngày; claim khi chuyển Đủ ngày, nâng cap không reclaim)
   auto_bet.assign_strategy  (1, 2 hoặc 3 — STRATEGY_LABELS; 3 = 2 acc chênh số dư nhỏ nhất, cùng mức Tài/Xỉu)
   auto_bet.assign_match_mode  (0 = khớp lệnh nào cược lệnh đó, pool Tài+Xỉu chung; 1 = khớp hết mới cược)
   auto_bet.consolidate_min_withdraw_vnd  (strategy 3: dừng cược + hẹn rút khi số dư > mức này; mặc định 300k)
