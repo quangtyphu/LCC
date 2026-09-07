@@ -538,6 +538,24 @@ def _money_bet_at_top_idx(data: List[dict], top_idx: int = TARGET_TOP_IDX) -> in
     return None
 
 
+# USER_COUNT theo mốc top 500 (moneyBet):
+#   > 7tr → 1 | 6tr..7tr → 6 | < 6tr → 8
+_TOP500_USER_COUNT_GT_VND = 7_000_000
+_TOP500_USER_COUNT_GE_VND = 6_000_000
+
+
+def resolve_user_count_from_top500(money_500: int, *, fallback: int = 8) -> int:
+    """Số user V2 theo moneyBet hạng 500. money_500≤0 → fallback."""
+    m = _to_int(money_500, 0)
+    if m <= 0:
+        return max(1, int(fallback))
+    if m > _TOP500_USER_COUNT_GT_VND:
+        return 1
+    if m >= _TOP500_USER_COUNT_GE_VND:
+        return 6
+    return 8
+
+
 def compute_top_bet_daily_gap_pick(
     username: str,
     *,
@@ -546,14 +564,11 @@ def compute_top_bet_daily_gap_pick(
     user_count: int | None = None,
     max_entry_gap_vnd: int | None = None,
 ) -> TopBetPickResult:
-    """Lấy mốc top 500, lọc gap, sort total_day, chọn user_count user."""
+    """Lấy mốc top 500, lọc gap, sort total_day, chọn user_count user.
+
+    user_count=None → tự tính theo moneyBet top500 (>7tr→1, 6–7tr→6, <6tr→8).
+    """
     empty = TopBetPickResult()
-    if user_count is None:
-        user_count = _get_v2_target_count(default_count=8)
-    user_count = max(0, int(user_count))
-    if user_count <= 0:
-        empty.rule = "USER_COUNT=0"
-        return empty
 
     data = _fetch_top_bet_daily_list(username, date=date, limit=limit)
     if not data:
@@ -563,6 +578,14 @@ def compute_top_bet_daily_gap_pick(
     money_500_raw = _money_bet_at_top_idx(data, TARGET_TOP_IDX)
     if not money_500_raw:
         empty.rule = f"không có mốc idx={TARGET_TOP_IDX}"
+        return empty
+
+    if user_count is None:
+        user_count = resolve_user_count_from_top500(money_500_raw)
+    user_count = max(0, int(user_count))
+    if user_count <= 0:
+        empty.money_500 = money_500_raw
+        empty.rule = "USER_COUNT=0"
         return empty
 
     entry_gap = _threshold_offset_vnd() if max_entry_gap_vnd is None else max(0, int(max_entry_gap_vnd))
@@ -614,9 +637,6 @@ def compute_top_bet_daily_v2_usernames(
 
 
 def fetch_top_bet_daily(username, date=None, limit=500, nearest_users_count=None):
-    if nearest_users_count is None:
-        nearest_users_count = _get_v2_target_count(default_count=8)
-
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
 
@@ -649,6 +669,13 @@ def fetch_top_bet_daily(username, date=None, limit=500, nearest_users_count=None
     if not money_500_raw:
         print(f"\n⚠️ Không lấy được mốc idx={TARGET_TOP_IDX}.")
         return
+
+    if nearest_users_count is None:
+        nearest_users_count = resolve_user_count_from_top500(money_500_raw)
+    print(
+        f"\nUSER_COUNT={nearest_users_count} "
+        f"(top500={money_500_raw:,}: >7tr→1, 6–7tr→6, <6tr→8)"
+    )
 
     candidates = _fetch_all_cms_candidates()
     entry_gap = _threshold_offset_vnd()

@@ -2,9 +2,10 @@
 """
 Gán acc + số tiền Tài/Xỉu theo chiến lược + trần cược ngày.
 
-Chiến lược 1: acc tổng cược ngày cao nhất (trong số acc còn chỗ cap) → mức cao nhất
-  vừa cap; còn lại random. Acc đầu bảng hết room vẫn đánh phiên bằng acc khác.
-  daily >= cap-step → ngắt WS, thay nick.
+Chiến lược 1: 1) acc tổng cược ngày cao nhất đủ điều kiện → mức lớn nhất vừa cap/số dư;
+  2) mọi mức Tài+Xỉu còn lại duyệt to → nhỏ, gán random acc còn lại (không gán hết
+  một bên trước — tránh phí acc 80k vào mức nhỏ rồi mức 70k không còn ai).
+  Acc đầu bảng hết room vẫn đánh phiên bằng acc khác; daily >= cap-step → ngắt WS.
 Chiến lược 2: acc cược ngày thấp → cao (bằng nhau: balance cao trước); mỗi acc một lệnh —
   trong mức còn lại duyệt to → nhỏ, khớp mức đầu tiên vừa cap + số dư; sang acc kế tiếp.
 Chiến lược 3: mỗi phiên 1 cặp — acc #1 vs #2 (số dư thấp→cao), cùng mức Tài/Xỉu (dồn tiền).
@@ -69,7 +70,7 @@ def _max_bet_per_user_vnd(acfg: dict) -> int:
 
 
 STRATEGY_LABELS: dict[int, str] = {
-    1: "cược ngày cao (còn chỗ cap) → mức lớn nhất vừa cap; còn lại random; đủ cap đổi WS",
+    1: "cược ngày cao → mức lớn nhất vừa; rồi mọi mức Tài+Xỉu to→nhỏ random; đủ cap đổi WS",
     2: "cược ngày thấp→cao (bằng nhau: balance cao trước); mỗi acc 1 mức còn lại (to→nhỏ)",
     3: "1 cặp/phiên — duyệt số dư cao→thấp, ghép liền kề floor gap≤XXX, cùng mức Tài/Xỉu (dồn tiền)",
 }
@@ -245,13 +246,10 @@ def _daily_for_cap(row: dict[str, Any], daily: dict[str, float]) -> float:
 
 
 def _ws_ids_for_assign() -> set[str]:
-    """Nick WS đã connect (ưu tiên); fallback task đang mở socket."""
-    from xoso66_ws_pool import get_connected_ws_accounts, get_ws_task_accounts
+    """A = nick đã kết nối WS — chỉ gán cược vào list này (không fallback task)."""
+    from xoso66_ws_pool import get_connected_ws_accounts
 
-    ids = {str(x) for x in get_connected_ws_accounts() if str(x).strip()}
-    if ids:
-        return ids
-    return {str(x) for x in get_ws_task_accounts() if str(x).strip()}
+    return {str(x) for x in get_connected_ws_accounts() if str(x).strip()}
 
 
 def _build_assign_pool(cfg: dict, acfg: dict) -> tuple[list[dict[str, Any]], str]:
@@ -269,10 +267,10 @@ def _build_assign_pool(cfg: dict, acfg: dict) -> tuple[list[dict[str, Any]], str
     if _assign_ws_pool_only(acfg):
         ws_ids = _ws_ids_for_assign()
         if not ws_ids:
-            return [], "chưa có nick trong pool WS — chờ worker mở WS"
+            return [], "chưa có nick trong A (WS đã kết nối) — chờ worker"
         pool = [r for r in pool if str(r.get("id") or "") in ws_ids]
         if not pool:
-            return [], "không có acc «Đang Chơi» trong pool WS"
+            return [], "không có acc «Đang Chơi» trong A (WS đã kết nối)"
 
     return pool, ""
 
@@ -631,6 +629,87 @@ def _remove_one_amount(amounts: list[int], amount: int) -> list[int]:
     return out
 
 
+def _assign_orders_large_to_small(
+    pool: list[dict[str, Any]],
+    daily: dict[str, float],
+    remaining: list[tuple[int, str]],
+    used: set[str],
+    *,
+    strategy: int,
+    cap_vnd: int,
+    check_balance: bool,
+    min_remainder_vnd: int = 0,
+    match_mode: int = 1,
+    priority_users: list[str] | None = None,
+) -> tuple[list[BetSlot], str, str]:
+    """
+    Duyệt mức (amount, side) từ to → nhỏ; mỗi mức gán 1 acc chưa dùng.
+    Strategy 1: random trong candidates (PRIORITY_USERS trước nếu có).
+    """
+    slots: list[BetSlot] = []
+    skipped: list[tuple[int, str]] = []
+    prio_set: set[str] = set(priority_users or [])
+    prio_order: dict[str, int] = {u: i for i, u in enumerate(priority_users or [])}
+    ordered = sorted(remaining, key=lambda x: (-int(x[0]), str(x[1])))
+    for amount_vnd, side in ordered:
+        amount_vnd = int(amount_vnd)
+        candidates = _candidates_for_order(
+            pool,
+            used,
+            daily,
+            amount_vnd,
+            cap_vnd=cap_vnd,
+            check_balance=check_balance,
+            min_remainder_vnd=min_remainder_vnd,
+        )
+        if not candidates:
+            if match_mode == 0:
+                skipped.append((amount_vnd, side))
+                continue
+            return (
+                [],
+                f"hủy phiên — không gán được {side} {amount_vnd:,} VND "
+                f"(balance/cap; pool {len(pool)} acc, đã dùng {len(used)}; "
+                f"cap ngày {cap_vnd:,})",
+                "",
+            )
+        chosen: dict[str, Any] | None = None
+        if prio_set:
+            prio_candidates = [
+                r for r in candidates if str(r.get("username") or r["id"]) in prio_set
+            ]
+            if prio_candidates:
+                chosen = min(
+                    prio_candidates,
+                    key=lambda r: prio_order.get(
+                        str(r.get("username") or r["id"]), 9999
+                    ),
+                )
+        if chosen is None:
+            if strategy == 1:
+                chosen = random.choice(candidates)
+            else:
+                chosen = _pick_candidate(candidates, strategy=strategy, daily=daily)
+        aid = str(chosen["id"])
+        used.add(aid)
+        slots.append(
+            BetSlot(
+                account_id=aid,
+                username=str(chosen.get("username") or aid),
+                side=side,
+                amount_vnd=amount_vnd,
+            )
+        )
+    if skipped:
+        note = (
+            f"{_format_remaining_levels(skipped)} "
+            f"— pool {len(pool)} acc, đã gán {len(slots)}; cap ngày {cap_vnd:,}"
+        )
+        if match_mode == 0:
+            return slots, "", note
+    return slots, "", ""
+
+
 def _assign_side_orders(
     pool: list[dict[str, Any]],
     daily: dict[str, float],
@@ -645,66 +724,19 @@ def _assign_side_orders(
     match_mode: int = 1,
     priority_users: list[str] | None = None,
 ) -> tuple[list[BetSlot], str, str]:
-    slots: list[BetSlot] = []
-    skipped: list[tuple[int, str]] = []
-    prio_set: set[str] = set(priority_users or [])
-    prio_order: dict[str, int] = {u: i for i, u in enumerate(priority_users or [])}
-    for amount_vnd in sorted((int(a) for a in amounts), reverse=True):
-        candidates = _candidates_for_order(
-            pool,
-            used,
-            daily,
-            amount_vnd,
-            cap_vnd=cap_vnd,
-            check_balance=check_balance,
-            min_remainder_vnd=min_remainder_vnd,
-        )
-        if not candidates:
-            if match_mode == 0:
-                skipped.append((int(amount_vnd), side))
-                continue
-            return (
-                [],
-                f"hủy phiên — không gán được {side} {amount_vnd:,} VND "
-                f"(balance/cap; pool {len(pool)} acc, đã dùng {len(used)}; "
-                f"cap ngày {cap_vnd:,})",
-                "",
-            )
-        # Nếu có PRIORITY_USERS: ưu tiên chọn trong nhóm đó trước cho mọi mức (nhất là mức lớn).
-        # Fallback: giữ hành vi cũ theo strategy.
-        chosen: dict[str, Any] | None = None
-        if prio_set:
-            prio_candidates = [
-                r for r in candidates if str(r.get("username") or r["id"]) in prio_set
-            ]
-            if prio_candidates:
-                chosen = min(
-                    prio_candidates,
-                    key=lambda r: prio_order.get(str(r.get("username") or r["id"]), 9999),
-                )
-        if chosen is None:
-            if strategy == 1:
-                chosen = random.choice(candidates)
-            else:
-                chosen = _pick_candidate(candidates, strategy=strategy, daily=daily)
-        aid = str(chosen["id"])
-        used.add(aid)
-        slots.append(
-            BetSlot(
-                account_id=aid,
-                username=str(chosen.get("username") or aid),
-                side=side,
-                amount_vnd=int(amount_vnd),
-            )
-        )
-    if skipped:
-        note = (
-            f"{_format_remaining_levels(skipped)} "
-            f"— pool {len(pool)} acc, đã gán {len(slots)} bên {side}; cap ngày {cap_vnd:,}"
-        )
-        if match_mode == 0:
-            return slots, "", note
-    return slots, "", ""
+    """Gán một bên (Tài hoặc Xỉu) — mức to → nhỏ."""
+    return _assign_orders_large_to_small(
+        pool,
+        daily,
+        [(int(a), side) for a in amounts],
+        used,
+        strategy=strategy,
+        cap_vnd=cap_vnd,
+        check_balance=check_balance,
+        min_remainder_vnd=min_remainder_vnd,
+        match_mode=match_mode,
+        priority_users=priority_users,
+    )
 
 
 def _pool_sorted_by_balance_desc(pool: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -884,9 +916,9 @@ def verify_pair_balanced(slots: list[BetSlot]) -> str | None:
 def _apply_consolidate_round_aftermath(account_ids: list[str], cfg: dict) -> None:
     from xoso66_accounts_db import (
         STATUS_DU_NGAY,
-        STATUS_HET_TIEN,
         get_account,
         set_account_status,
+        username_for_log,
     )
     from xoso66_sessions_io import load_sessions
     from xoso66_session import refresh_account_balance_to_db
@@ -914,8 +946,12 @@ def _apply_consolidate_round_aftermath(account_ids: list[str], cfg: dict) -> Non
                 print(f"[STRAT3] {aid}: refresh balance: {e}", flush=True)
 
         if bal < min_ws:
-            if set_account_status(aid, STATUS_HET_TIEN, reason=CONSOLIDATE_LOSE_REASON):
-                evict.append(aid)
+            # Không ép Hết Tiền tại đây — để Phiên mới (reconcile) kiểm tra C rồi quyết.
+            print(
+                f"[STRAT3] {username_for_log(aid)}: thua/DB {bal:,.0f} < {min_ws:,} "
+                f"— không ép status; để Phiên mới",
+                flush=True,
+            )
         elif bal > min_withdraw:
             if set_account_status(
                 aid, STATUS_DU_NGAY, reason=CONSOLIDATE_WITHDRAW_REASON
@@ -967,7 +1003,9 @@ def _assign_by_strategy(
     priority_users: list[str] | None = None,
 ) -> tuple[list[BetSlot], str, str]:
     """
-    Chiến lược 1 (full): gán từng bên Tài rồi Xỉu — mỗi acc tối đa 1 lệnh/phiên.
+    Chiến lược 1 (full): 1) user cược ngày cao nhất đủ điều kiện → mức lớn nhất vừa;
+    2) mọi mức Tài+Xỉu còn lại duyệt to → nhỏ, random acc còn lại (không gán hết
+    một bên trước). Mỗi acc tối đa 1 lệnh/phiên.
     assign_match_mode=0 hoặc chiến lược 2: gộp mức Tài+Xỉu, không bắt phải có cả hai bên.
     Nếu có PRIORITY_USERS: thử acc đó trước cho slot mức lớn; không khớp → fallback
     như không có priority (acc cược ngày cao nhất), giống LC79 chiaTien_Acc strategy 1.
@@ -1053,12 +1091,15 @@ def _assign_by_strategy(
             else:
                 xiu_amts = _remove_one_amount(xiu_amts, int(strat_amt))
 
-    partial_notes: list[str] = []
-    tai_slots, err, tai_note = _assign_side_orders(
+    # Tài+Xỉu chung: mức to → nhỏ rồi random — tránh phí balance lớn vào mức nhỏ một bên.
+    remaining: list[tuple[int, str]] = [
+        *((int(a), "tai") for a in tai_amts),
+        *((int(a), "xiu") for a in xiu_amts),
+    ]
+    rest_slots, err, partial_note = _assign_orders_large_to_small(
         pool,
         daily,
-        tai_amts,
-        "tai",
+        remaining,
         used,
         strategy=strategy,
         cap_vnd=cap_vnd,
@@ -1069,34 +1110,11 @@ def _assign_by_strategy(
     )
     if err:
         return [], err, ""
-    if tai_note:
-        partial_notes.append(tai_note)
-    xiu_slots, err, xiu_note = _assign_side_orders(
-        pool,
-        daily,
-        xiu_amts,
-        "xiu",
-        used,
-        strategy=strategy,
-        cap_vnd=cap_vnd,
-        check_balance=check_balance,
-        min_remainder_vnd=min_remainder_vnd,
-        match_mode=match_mode,
-        priority_users=priority_users,
-    )
-    if err:
-        return [], err, ""
-    if xiu_note:
-        partial_notes.append(xiu_note)
-    all_slots = slots_out + tai_slots + xiu_slots
-    if partial_notes:
+    all_slots = slots_out + rest_slots
+    if partial_note:
         if all_slots:
-            return all_slots, "", "; ".join(partial_notes)
-        return (
-            [],
-            f"hủy phiên — {partial_notes[0]}",
-            "",
-        )
+            return all_slots, "", partial_note
+        return [], f"hủy phiên — {partial_note}", ""
     return all_slots, "", ""
 
 

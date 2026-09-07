@@ -500,15 +500,39 @@ def _graceful_loop_shutdown(loop: asyncio.AbstractEventLoop) -> None:
 
 
 def _run_watcher_forever() -> None:
-    """Giữ main sống: RECOVER WinError 10038 trên cùng event loop (không loop.close())."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(watcher_loop())
-    except KeyboardInterrupt:
-        raise
-    finally:
-        _graceful_loop_shutdown(loop)
+    """
+    Giữ main sống qua WinError 10038.
+
+    Lỗi 10038 thường nổ trong ``selector.select()`` (tầng event loop), không phải
+    trong coroutine — ``try/except`` trong ``watcher_loop`` không bắt được.
+    Khi đó phải đóng loop hỏng và tạo loop mới, rồi chạy lại ``watcher_loop``.
+    """
+    recover_backoff_s = 2.0
+    while not _shutdown_lc79_done:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(watcher_loop())
+            break
+        except KeyboardInterrupt:
+            raise
+        except OSError as e:
+            if getattr(e, "winerror", None) != 10038:
+                raise
+            print(
+                f"[RECOVER] Event-loop selector WinError 10038 — "
+                f"loop mới sau {recover_backoff_s:.1f}s "
+                f"(active_ws={len(active_ws)})",
+                flush=True,
+            )
+            try:
+                active_ws.clear()
+            except Exception:
+                pass
+            time.sleep(recover_backoff_s)
+            recover_backoff_s = min(recover_backoff_s * 1.5, 30.0)
+        finally:
+            _graceful_loop_shutdown(loop)
 
 
 def shutdown_lc79_background_services() -> None:
@@ -543,8 +567,78 @@ def shutdown_lc79_background_services() -> None:
         print(f"[SHUTDOWN] WS tài xỉu: {e}", flush=True)
 
 
+def _ensure_single_lc79_instance() -> object:
+    """Chỉ cho 1 tiến trình lc79.py. Instance 2 thoát ngay (khóa file OS)."""
+    import atexit
+    import json
+
+    lock_path = _LC79_REPO / "lc79.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fp = open(lock_path, "a+b", buffering=0)
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            fp.seek(0)
+            msvcrt.locking(fp.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        other_pid = "?"
+        try:
+            fp.seek(0)
+            raw = fp.read().decode("utf-8", errors="ignore").strip()
+            if raw:
+                other_pid = str((json.loads(raw) or {}).get("pid") or "?")
+        except Exception:
+            pass
+        try:
+            fp.close()
+        except Exception:
+            pass
+        print(
+            f"❌ lc79.py đã chạy (pid={other_pid}). Chỉ được 1 tiến trình — "
+            f"tắt instance kia rồi chạy lại.\n   Lock: {lock_path}",
+            flush=True,
+        )
+        sys.exit(1)
+
+    meta = json.dumps({"pid": os.getpid(), "script": "lc79.py"}, ensure_ascii=False) + "\n"
+    fp.seek(0)
+    fp.write(meta.encode("utf-8"))
+    fp.truncate()
+    fp.flush()
+
+    def _release() -> None:
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                fp.seek(0)
+                msvcrt.locking(fp.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            fp.close()
+        except Exception:
+            pass
+
+    atexit.register(_release)
+    print(f"🔒 lc79.py single-instance OK (pid={os.getpid()})", flush=True)
+    return fp
+
+
 if __name__ == "__main__":
     import atexit
+
+    # Giữ handle sống suốt process — nhả lock khi thoát.
+    _lc79_instance_lock = _ensure_single_lc79_instance()
 
     atexit.register(shutdown_lc79_background_services)
 

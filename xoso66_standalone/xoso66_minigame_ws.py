@@ -513,11 +513,13 @@ def _print_watch_phiên_mới_from_next(
         reporter = state.ws_account or (
             state.broadcast.reporter_of(f"s:{gid}:{issue}") if state.broadcast else ""
         )
+        nxt_payload = dict(nxt)
+        nxt_payload["_claimed_at_mono"] = time.monotonic()
         for handler in _ROUND_START_HANDLERS:
             try:
-                handler(gid, issue, dict(nxt), reporter=reporter)
+                handler(gid, issue, nxt_payload, reporter=reporter)
             except TypeError:
-                handler(gid, issue, dict(nxt))
+                handler(gid, issue, nxt_payload)
             except Exception as e:
                 print(f"{state.log_prefix}[AUTO] round handler: {e}", flush=True)
 
@@ -673,6 +675,12 @@ _WS_TRANSPORT_ERR_HINTS = (
     "eof",
     "timed out",
     "incomplete read",
+    "not a socket",
+    "10038",
+    "10054",
+    "10053",
+    "winerror",
+    "opening handshake",
 )
 
 
@@ -689,16 +697,12 @@ def _clear_ws_token_cache(session: dict) -> None:
 
 
 def _cached_ws_token_if_ok(session: dict) -> str | None:
-    from xoso66_minigame_refresh import _ws_token_age_ok, user_token_status
-
+    """Lấy ws_token trong session nếu có — không check age / không ping."""
     mg = get_minigame(session)
     tok = mg.get("ws_token")
-    if not tok or not _ws_token_age_ok(mg):
+    if not tok:
         return None
-    st = user_token_status(session, do_ping=False)
-    if not st.get("has_token") or st.get("needs_refresh"):
-        return None
-    return str(tok)
+    return str(tok).strip() or None
 
 # Tránh vipList + nhận thưởng spam mỗi lần WS reconnect (cùng nick).
 _WS_AFTER_CONNECT_VIP_LAST_TS: dict[str, float] = {}
@@ -1223,8 +1227,11 @@ async def _connect_ws(
 
     sock, _ph, _pp = _build_socks(proxy_str)
     try:
-        sock.connect((WS_HOST, 443))
+        # Không block event loop khi SOCKS/proxy chậm — tránh đơ cả cụm WS.
+        await asyncio.to_thread(sock.connect, (WS_HOST, 443))
     except Exception as e:
+        with contextlib.suppress(Exception):
+            sock.close()
         raise ConnectionError(f"SOCKS connect {WS_HOST}:443 failed: {e}") from e
 
     try:
@@ -1241,9 +1248,11 @@ async def _connect_ws(
             max_size=2**22,
         )
     except Exception:
-        sock.close()
+        with contextlib.suppress(Exception):
+            sock.close()
         raise
-    return ws, sock
+    # websockets đã nhận ownership sock — không đóng sock lần nữa (WinError 10038).
+    return ws, None
 
 
 async def listen_minigame_ws(
@@ -1265,15 +1274,15 @@ async def listen_minigame_ws(
     jackpot_store: Any = None,
     log_game_info: bool = False,
     broadcast_coordinator: WsBroadcastCoordinator | None = None,
+    conn_gen: str | None = None,
 ) -> JackpotState:
     """
     Kết nối WS, giữ ping, in jackpot + phiên/kết quả. duration_sec=0 → chạy đến Ctrl+C.
     """
     from xoso66_minigame_session import get_ws_token
     from xoso66_minigame_catalog import game_by_key
-    from xoso66_minigame_refresh import prep_tokens_before_ws
     from xoso66_proxy import ensure_proxy
-    from xoso66_session import ensure_session, prep_site_session_before_ws
+    from xoso66_session import ensure_session
 
     g = game_by_key(game_key)
     primary_gid = int(g["game_id"])
@@ -1299,44 +1308,17 @@ async def listen_minigame_ws(
     from xoso66_accounts_db import username_for_log
 
     aid = account_id or str(session.get("id") or "")
-    prep_ok = await asyncio.to_thread(prep_site_session_before_ws, aid)
-    if not prep_ok:
-        raise RuntimeError(
-            "Không mở WS — prep session/balance thất bại hoặc số dư dưới ngưỡng"
-        )
+    # Chỉ load session + proxy — không check balance, không ping/prep token.
+    # Có ws_token cache thì dùng; thiếu thì get_ws_token trong vòng connect (lỗi → retry sau).
     session = await asyncio.to_thread(ensure_session, aid, force_login=False)
     await asyncio.to_thread(ensure_proxy, session)
 
     username = username_for_log(aid, session)
 
-    await asyncio.to_thread(
-        lambda: _maybe_sync_withdraw_before_ws(session, aid, username),
-    )
+    if game_watch:
+        from xoso66_round_log import log_ws_connecting
 
-    if not ws_token_override:
-        rep = await asyncio.to_thread(
-            prep_tokens_before_ws,
-            session,
-            aid,
-            game_key=game_key,
-            force_ws=bool(refresh_before_connect),
-        )
-        if not rep.get("user_token_ok"):
-            err = rep.get("error") or "user-token không dùng được trước WS"
-            raise RuntimeError(f"Không mở WS — {err}")
-        if not rep.get("ok") or not rep.get("has_ws_token"):
-            ws_err = rep.get("ws_token") or {}
-            err = (
-                rep.get("error")
-                or ws_err.get("msg")
-                or ws_err.get("error")
-                or "không lấy được ws_token"
-            )
-            raise RuntimeError(f"Không mở WS — {err}")
-        if game_watch:
-            from xoso66_round_log import log_ws_connecting
-
-            log_ws_connecting(username, user_token_ok=True)
+        log_ws_connecting(username, user_token_ok=True)
 
     proxy_str = session["proxy"]
 
@@ -1389,7 +1371,10 @@ async def listen_minigame_ws(
     verify_fail_streak = 0
     had_live_ws = False
     transport_fail_streak = 0
-    force_fresh_tokens = bool(refresh_before_connect)
+    # Lần mở đầu: lấy ws_token mới (getToken) — cache chết → verification failed hàng loạt.
+    # Sau khi đã live 1 lần: tin cache; verification → refresh như cũ.
+    force_fresh_tokens = True
+    _ = refresh_before_connect
 
     from xoso66_shutdown import stopping
 
@@ -1398,6 +1383,11 @@ async def listen_minigame_ws(
             break
         if deadline and time.time() >= deadline:
             break
+
+        with contextlib.suppress(Exception):
+            from xoso66_minigame_ws_worker import note_ws_task_activity
+
+            note_ws_task_activity(aid)
 
         if need_minigame_refresh:
             need_minigame_refresh = False
@@ -1433,12 +1423,7 @@ async def listen_minigame_ws(
                 mg["ws_token"] = token
                 mg["ws_url"] = ws_url_from_token(token)
             else:
-                skip_cache = (
-                    force_fresh_tokens
-                    or need_ws_refresh
-                    or need_minigame_refresh
-                    or verify_fail_streak > 0
-                )
+                skip_cache = force_fresh_tokens or need_ws_refresh
                 cached = None if skip_cache else _cached_ws_token_if_ok(session)
                 if cached:
                     token = cached
@@ -1448,12 +1433,13 @@ async def listen_minigame_ws(
                             f"🔐 [{username}] đang lấy lại ws_token…",
                             flush=True,
                         )
+                    # Chỉ fetch khi không có cache — không ping user-token trước.
                     token = await asyncio.to_thread(
                         get_ws_token,
                         session,
                         aid,
                         game_key=game_key,
-                        force_refresh=need_ws_refresh,
+                        force_refresh=bool(need_ws_refresh or force_fresh_tokens),
                     )
                 need_ws_refresh = False
                 manual_ws_token = False
@@ -1469,10 +1455,9 @@ async def listen_minigame_ws(
                 source="ws_token",
             )
             print(f"[WS] [{username}] ws_token failed: {e}", flush=True)
-            if deadline:
-                await asyncio.sleep(reconnect_delay)
-                continue
-            raise
+            # Pool mode (duration=0): luôn sleep rồi thử lại — không raise thoát task.
+            await asyncio.sleep(max(1.0, float(reconnect_delay)))
+            continue
 
         ws_url = ws_url_from_token(token)
 
@@ -1501,129 +1486,214 @@ async def listen_minigame_ws(
                 from xoso66_round_log import log_ws_connected
                 from xoso66_ws_pool import register_ws_connected
 
-                register_ws_connected(aid)
+                register_ws_connected(aid, conn_gen=conn_gen)
                 first_live = not had_live_ws
                 if first_live:
                     log_ws_connected(username, account_id=aid)
                     _schedule_vip_after_ws_connect(
                         aid, username, game_watch=game_watch
                     )
+                    # Sync rút sau connect — không chặn handshake hàng loạt.
+                    asyncio.create_task(
+                        asyncio.to_thread(
+                            _maybe_sync_withdraw_before_ws,
+                            session,
+                            aid,
+                            username,
+                        ),
+                        name=f"ws-wd-{aid}",
+                    )
                 had_live_ws = True
                 transport_fail_streak = 0
+                force_fresh_tokens = False
+                verify_fail_streak = 0
             if verbose and not game_watch:
                 print(
                     f"[WS] {username} connected subscribe={subscribe_plan} ping={ping_gid}",
                     flush=True,
                 )
 
-            while True:
-                if stopping():
-                    break
-                if deadline and time.time() >= deadline:
-                    break
+            # Reader riêng: KHÔNG hủy ws.recv() (Windows selector + SOCKS → WinError 10038).
+            inbound: asyncio.Queue = asyncio.Queue(maxsize=256)
+            last_msg_at = time.time()
+            idle_reconnect_sec = 120.0
+
+            async def _ws_reader() -> None:
                 try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=45.0)
-                except asyncio.TimeoutError:
+                    while True:
+                        msg = await ws.recv()
+                        await inbound.put(msg)
+                except Exception:
+                    pass
+                finally:
+                    with contextlib.suppress(Exception):
+                        await inbound.put(None)
+
+            reader_task = asyncio.create_task(
+                _ws_reader(), name=f"ws-reader-{aid}"
+            )
+            try:
+                while True:
                     if stopping():
                         break
-                    if verbose:
-                        print("[WS] recv timeout (45s) — keep-alive", flush=True)
-                    continue
+                    if deadline and time.time() >= deadline:
+                        break
+                    if time.time() - last_msg_at > idle_reconnect_sec:
+                        if verbose or game_watch:
+                            print(
+                                f"[WS] [{username}] idle {idle_reconnect_sec:.0f}s "
+                                f"— reconnect",
+                                flush=True,
+                            )
+                        break
+                    try:
+                        raw = await asyncio.wait_for(inbound.get(), timeout=0.2)
+                    except asyncio.TimeoutError:
+                        continue
+                    if raw is None:
+                        break
+                    last_msg_at = time.time()
 
-                state.msg_count += 1
-                obj = _decode_message(raw)
+                    state.msg_count += 1
+                    obj = _decode_message(raw)
 
-                if watch is not None and handle_game_watch_message(
-                    obj, watch, debug_ws=debug_ws
-                ):
-                    continue
+                    if watch is not None and handle_game_watch_message(
+                        obj, watch, debug_ws=debug_ws
+                    ):
+                        continue
 
-                if isinstance(obj, dict) and str(obj.get("type") or "").lower() == "logout":
-                    logout_msg = str(obj.get("msg") or "")
-                    full, ws_only = _ws_reconnect_flags_after_logout(logout_msg)
-                    action = (
-                        "refresh full mini-game"
-                        if full
-                        else "refresh ws token"
-                    )
-                    print(
-                        f"[WS] logout: {logout_msg or '?'} — {action}",
-                        flush=True,
-                    )
-                    if "verification" in logout_msg.lower():
-                        verify_fail_streak += 1
-                        force_fresh_tokens = True
-                        _clear_ws_token_cache(session)
-                        reconnect_delay = min(
-                            45.0,
-                            reconnect_delay * (1.0 + 0.5 * verify_fail_streak),
+                    if isinstance(obj, dict) and str(obj.get("type") or "").lower() == "logout":
+                        logout_msg = str(obj.get("msg") or "")
+                        full, ws_only = _ws_reconnect_flags_after_logout(logout_msg)
+                        action = (
+                            "refresh full mini-game"
+                            if full
+                            else "refresh ws token"
                         )
-                    else:
-                        verify_fail_streak = 0
-                    need_minigame_refresh = need_minigame_refresh or full
-                    need_ws_refresh = need_ws_refresh or ws_only
-                    if "verification" in logout_msg.lower():
-                        need_minigame_refresh = True
-                        need_ws_refresh = False
-                    manual_ws_token = False
-                    ws_token_override = None
-                    break
+                        print(
+                            f"[WS] logout: {logout_msg or '?'} — {action}",
+                            flush=True,
+                        )
+                        if "verification" in logout_msg.lower():
+                            verify_fail_streak += 1
+                            force_fresh_tokens = True
+                            _clear_ws_token_cache(session)
+                            reconnect_delay = min(
+                                45.0,
+                                reconnect_delay * (1.0 + 0.5 * verify_fail_streak),
+                            )
+                        else:
+                            verify_fail_streak = 0
+                        need_minigame_refresh = need_minigame_refresh or full
+                        need_ws_refresh = need_ws_refresh or ws_only
+                        if "verification" in logout_msg.lower():
+                            need_minigame_refresh = True
+                            need_ws_refresh = False
+                        manual_ws_token = False
+                        ws_token_override = None
+                        break
 
-                if watch is not None:
-                    continue
+                    if watch is not None:
+                        continue
 
-                if isinstance(obj, dict) and str(obj.get("type") or "").lower() in (
-                    "jackpot",
-                    "jackpots",
-                    "jackpot_update",
-                    "jackpot_money",
-                    "pool",
-                    "pool_update",
-                ):
+                    if isinstance(obj, dict) and str(obj.get("type") or "").lower() in (
+                        "jackpot",
+                        "jackpots",
+                        "jackpot_update",
+                        "jackpot_money",
+                        "pool",
+                        "pool_update",
+                    ):
+                        found: list[dict[str, Any]] = []
+                        _walk_extract_jackpots(obj, found)
+                        if not found:
+                            found.append(
+                                {
+                                    "game_id": obj.get("game_id"),
+                                    "jackpot": obj.get("data") or obj,
+                                    "raw": True,
+                                }
+                            )
+                        if apply_jackpot_updates(state, found):
+                            print(
+                                f"\n[JACKPOT] #{state.jackpot_updates} @ {time.strftime('%H:%M:%S')}\n"
+                                f"{format_jackpot_table(state)}\n",
+                                flush=True,
+                            )
+                        continue
+
+                    if isinstance(obj, dict) and obj.get("_app_ping"):
+                        await ws.send("pong")
+                        continue
+
+                    if _is_ping_payload(obj):
+                        reply = _pong_reply(obj)
+                        if reply:
+                            await ws.send(reply)
+                        continue
+
                     found: list[dict[str, Any]] = []
                     _walk_extract_jackpots(obj, found)
-                    if not found:
-                        found.append(
-                            {
-                                "game_id": obj.get("game_id"),
-                                "jackpot": obj.get("data") or obj,
-                                "raw": True,
-                            }
-                        )
                     if apply_jackpot_updates(state, found):
                         print(
                             f"\n[JACKPOT] #{state.jackpot_updates} @ {time.strftime('%H:%M:%S')}\n"
                             f"{format_jackpot_table(state)}\n",
                             flush=True,
                         )
-                    continue
-
-                if isinstance(obj, dict) and obj.get("_app_ping"):
-                    await ws.send("pong")
-                    continue
-
-                if _is_ping_payload(obj):
-                    reply = _pong_reply(obj)
-                    if reply:
-                        await ws.send(reply)
-                    continue
-
-                found: list[dict[str, Any]] = []
-                _walk_extract_jackpots(obj, found)
-                if apply_jackpot_updates(state, found):
-                    print(
-                        f"\n[JACKPOT] #{state.jackpot_updates} @ {time.strftime('%H:%M:%S')}\n"
-                        f"{format_jackpot_table(state)}\n",
-                        flush=True,
-                    )
-                elif verbose and state.msg_count <= 15:
-                    preview = raw if isinstance(raw, str) else str(raw)[:300]
-                    print(f"[WS] msg#{state.msg_count}: {preview[:280]}", flush=True)
-                elif verbose and state.msg_count == 16:
-                    print("[WS] (suppress raw log — jackpot only)", flush=True)
+                    elif verbose and state.msg_count <= 15:
+                        preview = raw if isinstance(raw, str) else str(raw)[:300]
+                        print(f"[WS] msg#{state.msg_count}: {preview[:280]}", flush=True)
+                    elif verbose and state.msg_count == 16:
+                        print("[WS] (suppress raw log — jackpot only)", flush=True)
+            finally:
+                reader_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await reader_task
 
         except asyncio.CancelledError:
             raise
+        except (ConnectionResetError, OSError) as e:
+            # WinError 10038/995: nuốt tại nick — không lan pool (LC79).
+            winerr = getattr(e, "winerror", None)
+            if winerr in (995, 10038):
+                reconnect_delay = 2.0
+                if game_watch:
+                    print(
+                        f"[WS] [{username}] socket {winerr} — chỉ nick này, "
+                        f"reconnect {reconnect_delay:.0f}s",
+                        flush=True,
+                    )
+            else:
+                err_s = str(e)
+                if "socks connect" in err_s.lower():
+                    from xoso66_proxy import maybe_report_proxy_dead_from_exception
+
+                    maybe_report_proxy_dead_from_exception(
+                        aid,
+                        e,
+                        proxy_str=proxy_str,
+                        source="WS connect",
+                    )
+                full, ws_only = _ws_reconnect_flags_after_logout(err_s)
+                if "verification" in err_s.lower():
+                    verify_fail_streak += 1
+                    force_fresh_tokens = True
+                    _clear_ws_token_cache(session)
+                    reconnect_delay = min(
+                        45.0,
+                        reconnect_delay * (1.0 + 0.5 * verify_fail_streak),
+                    )
+                else:
+                    verify_fail_streak = 0
+                need_minigame_refresh = need_minigame_refresh or full
+                need_ws_refresh = need_ws_refresh or ws_only
+                if "verification" in err_s.lower():
+                    need_minigame_refresh = True
+                    need_ws_refresh = False
+                print(
+                    f"Mất kết nối: {e} — đóng WS, reconnect sau {reconnect_delay}s",
+                    flush=True,
+                )
         except ConnectionError as e:
             err_s = str(e)
             if "socks connect" in err_s.lower():
@@ -1655,12 +1725,13 @@ async def listen_minigame_ws(
                 f"Mất kết nối: {e} — đóng WS, reconnect sau {reconnect_delay}s",
                 flush=True,
             )
-            break
+            # Không break outer while — fallthrough finally → sleep → mở lại.
         except Exception as e:
             err_s = str(e).lower()
             if _is_transport_ws_error(err_s):
                 from xoso66_proxy import maybe_report_proxy_dead_from_exception
 
+                # Handshake timeout ≠ proxy chết (maybe_* tự bỏ qua).
                 maybe_report_proxy_dead_from_exception(
                     aid,
                     e,
@@ -1668,50 +1739,27 @@ async def listen_minigame_ws(
                     source="WS transport",
                 )
                 transport_fail_streak += 1
-                need_ws_refresh = False
-                need_minigame_refresh = False
-                reconnect_delay = min(
-                    30.0,
-                    reconnect_delay + min(10.0, 2.0 * transport_fail_streak),
-                )
-                if game_watch and had_live_ws:
-                    print(
-                        f"[WS] [{username}] mất kết nối tạm ({e}) — "
-                        f"giữ ws_token, thử lại sau {reconnect_delay:.0f}s",
-                        flush=True,
-                    )
-                    from xoso66_minigame_refresh import (
-                        request_urgent_token_refresh,
-                        user_token_status,
-                    )
-
-                    gname_drop = str(g.get("gamename") or "lobby")
-                    st_drop = await asyncio.to_thread(
-                        user_token_status,
-                        session,
-                        game_id=primary_gid,
-                        gamename=gname_drop,
-                    )
-                    if st_drop.get("ping_ok") is False:
-                        need_minigame_refresh = True
-                        request_urgent_token_refresh(aid, game_key=game_key)
+                # Reconnect nhanh — không backoff dài / không ban 600s.
+                if "opening handshake" in err_s or "timed out" in err_s:
+                    reconnect_delay = 2.0
                 else:
-                    print(
-                        f"[WS] Error: {e} — reconnect in {reconnect_delay}s",
-                        flush=True,
-                    )
+                    reconnect_delay = min(12.0, 2.0 + float(transport_fail_streak))
+                print(
+                    f"[WS] Error: {e} — reconnect in {reconnect_delay:.0f}s",
+                    flush=True,
+                )
             else:
                 if _ws_logout_needs_full_refresh(err_s):
                     need_minigame_refresh = True
                 elif "ws_token" in err_s or "user-token" in err_s:
                     need_ws_refresh = True
                 print(f"[WS] Error: {e} — reconnect in {reconnect_delay}s", flush=True)
-            break
+            # Không break outer while — fallthrough finally → sleep → mở lại.
         finally:
             if game_watch:
                 from xoso66_ws_pool import unregister_ws_connected
 
-                unregister_ws_connected(aid)
+                unregister_ws_connected(aid, conn_gen=conn_gen)
             ping_stop.set()
             if ping_task is not None:
                 ping_task.cancel()
@@ -1720,7 +1768,8 @@ async def listen_minigame_ws(
             if ws is not None:
                 with contextlib.suppress(Exception):
                     await ws.close()
-            if sock is not None:
+                # sock đã thuộc websockets — không sock.close() (tránh WinError 10038 lan loop).
+            elif sock is not None:
                 with contextlib.suppress(Exception):
                     sock.close()
 

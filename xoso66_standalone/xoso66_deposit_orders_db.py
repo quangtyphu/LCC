@@ -306,3 +306,46 @@ def has_pending_deposit(account_id: str, *, max_age_sec: int = 900) -> bool:
             continue
         return True
     return False
+
+
+# Lệnh còn đang xử lý — chưa kết luận thành công/thất bại.
+_DEPOSIT_PENDING_STATUSES = frozenset({
+    "Chờ Nạp",
+    "Chờ bên thứ 3",
+    "Đã Nạp",
+    "Đang Nạp",
+})
+DEPOSIT_SUCCESS_STATUS = "Thành Công"
+# Đã có N lệnh thất bại liên tục → khoá trước khi lấy thêm (tránh lần 3 bị game khoá).
+CONSECUTIVE_DEPOSIT_FAIL_LOCK = 2
+
+
+def consecutive_deposit_failures(account_id: str, *, limit: int = 30) -> int:
+    """
+    Số lệnh nạp thất bại liên tục gần nhất (mới → cũ).
+    Thất bại = status khác «Thành Công»; bỏ qua lệnh còn pending.
+    Gặp «Thành Công» thì dừng đếm.
+    """
+    aid = str(account_id or "").strip()
+    if not aid:
+        return 0
+    init_deposit_orders_table()
+    with db_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT status FROM deposit_orders
+            WHERE account_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (aid, max(1, int(limit))),
+        ).fetchall()
+    n = 0
+    for r in rows:
+        st = str(r["status"] or "").strip()
+        if not st or st in _DEPOSIT_PENDING_STATUSES:
+            continue
+        if st == DEPOSIT_SUCCESS_STATUS:
+            break
+        n += 1
+    return n

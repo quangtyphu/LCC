@@ -3,7 +3,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 src = Path(
-    r"C:\Users\Quang\Documents\CMS\chrome_profiles_data\cp_mrefygry_a7ox5kxq\Default\Network\Cookies"
+    r"C:\Users\Quang\Documents\chrome_profiles_data\cp_mrefygry_a7ox5kxq\Default\Network\Cookies"
 )
 dst = Path(r"C:\Users\Quang\AppData\Local\Temp\ctypes_cookies_test.db")
 

@@ -14,6 +14,7 @@ Chỉnh trong JSON:
   game_worker.ws_listener_username  (nick giữ WS nghe phiên — không ngắt cap; fallback ws_default_username)
   game_worker.ws_listener_enabled  (true/false — tắt hẳn WS listener)
   game_worker.ws_fill_priority  (list Hết Tiền+Đủ ngày under-cap: 2 = cược ngày cao→thấp rồi số dư cao→thấp; 1 = đủ tiền số dư cao→thấp, thiếu tiền cược thấp→cao; 0 = số dư thấp→cao rồi cược cao→thấp)
+  game_worker.win_credit_recheck_delays_sec  (thắng + DB < min: mốc giây refresh sau KQ, tối đa 5; mặc định [10,20,30,40,50])
   auto_bet.enabled
   auto_bet.side_total_by_jackpot_enabled  (0 = cố định side_total_low_vnd; 1 = cược tăng theo bậc hũ)
   auto_bet.min_jackpot_vnd  (mốc bắt đầu chơi + mốc cược base)
@@ -24,6 +25,8 @@ Chỉnh trong JSON:
   auto_bet.bet_step_vnd
   auto_bet.max_bet_per_user_vnd  (mỗi acc tối đa một lệnh; 0 = không giới hạn)
   auto_bet.daily_bet_cap_vnd  (895000 ≈ điểm danh; 2695000 ≈ Cửa 1 mini game — chỉ dừng cược/Đủ ngày; claim khi chuyển Đủ ngày, nâng cap không reclaim)
+  auto_bet.daily_bet_cap_raise_enabled  (true = hết room cap → nâng daily_bet_cap_vnd; false = chuyển assign_strategy=2, không nâng cap)
+  auto_bet.daily_bet_cap_raise_vnd  (mốc nâng khi raise_enabled=true; mặc định 2695000; không đổi assign_strategy)
   daily_bet_cap_reset  (00:05 VN → ghi lại daily_bet_cap_vnd = value_vnd; mặc định 895000)
   auto_bet.assign_strategy  (1, 2 hoặc 3 — STRATEGY_LABELS; 3 = 2 acc chênh số dư nhỏ nhất, cùng mức Tài/Xỉu)
   auto_bet.assign_match_mode  (0 = khớp lệnh nào cược lệnh đó, pool Tài+Xỉu chung; 1 = khớp hết mới cược)
@@ -135,6 +138,8 @@ USER_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("game_worker", "ws_listener_username"),
     ("game_worker", "ws_listener_enabled"),
     ("game_worker", "ws_fill_priority"),
+    ("game_worker", "win_credit_recheck_delays_sec"),
+    ("game_worker", "round_start_balance_check_delay_sec"),
     ("auto_bet", "enabled"),
     ("auto_bet", "side_total_by_jackpot_enabled"),
     ("auto_bet", "min_jackpot_vnd"),
@@ -147,12 +152,17 @@ USER_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("auto_bet", "players_per_side"),
     ("auto_bet", "split_dump_at_player"),
     ("auto_bet", "daily_bet_cap_vnd"),
+    ("auto_bet", "daily_bet_cap_raise_enabled"),
+    ("auto_bet", "daily_bet_cap_raise_vnd"),
     ("daily_bet_cap_reset", "enabled"),
     ("daily_bet_cap_reset", "hour"),
     ("daily_bet_cap_reset", "minute"),
     ("daily_bet_cap_reset", "value_vnd"),
     ("auto_bet", "assign_strategy"),
     ("auto_bet", "assign_match_mode"),
+    ("auto_bet", "bet_place_after_sec"),
+    ("auto_bet", "assign_delay_after_next_info_sec"),
+    ("auto_bet", "plan_deadline_sec"),
     ("auto_bet", "consolidate_min_withdraw_vnd"),
     ("auto_bet", "consolidate_no_deposit"),
     ("auto_bet", "consolidate_pair_max_gap_vnd"),
@@ -167,12 +177,19 @@ USER_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("auto_mission_reward", "hold_reward_above_min_balance"),
     ("auto_mission_reward", "hold_reward_poll_max"),
     ("auto_mission_reward", "withdraw_confirm_poll_max"),
+    ("startup_checks", "enabled"),
     ("startup_checks", "startup_async"),
     ("balance_reconcile", "enabled"),
     ("balance_reconcile", "interval_min"),
     ("balance_reconcile", "parallel"),
     ("balance_reconcile", "telegram_enabled"),
     ("balance_reconcile", "min_drop_notify_vnd"),
+    ("game_domains", "default_base_url"),
+    ("game_domains", "candidates"),
+    ("game_domains", "auto_rotate_enabled"),
+    ("game_domains", "rotate_cooldown_sec"),
+    ("game_domains", "max_rotates_per_hour"),
+    ("game_domains", "probe_timeout_sec"),
 )
 
 HARDCODED_CONFIG: dict[str, Any] = {
@@ -180,6 +197,22 @@ HARDCODED_CONFIG: dict[str, Any] = {
     "api_key": "doi-api-key-cms",
     "api_host": "0.0.0.0",
     "api_port": 8799,
+    "game_domains": {
+        "default_base_url": "https://hnwp57e0.whskxk5.com",
+        "candidates": [
+            "https://g3lbe63d.whskxk1.com",
+            "https://whvcrgfb.whskxk2.com",
+            "https://qyhg72o0.whskxk3.com",
+            "https://sr8i5ehf.whskxk4.com",
+            "https://oz8chipd.whskxk5.com",
+            "https://go8iuckl.whskxk5.com",
+            "https://hnwp57e0.whskxk5.com",
+        ],
+        "auto_rotate_enabled": True,
+        "rotate_cooldown_sec": 600,
+        "max_rotates_per_hour": 3,
+        "probe_timeout_sec": 5,
+    },
     "captcha": {
         "enabled": True,
         "provider": "capsolver",
@@ -254,18 +287,25 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "min_balance_vnd": 10_000,
         "deposit_wait_confirm": True,
         "round_start_log_delay_sec": 8,
-        "round_start_balance_check_delay_sec": 10,
+        "round_start_balance_check_delay_sec": 20,
+        # Thắng + DB < min: refresh tại các mốc giây sau KQ (tối đa 5). Hết mốc vẫn thiếu → Hết Tiền.
+        "win_credit_recheck_delays_sec": [10, 20, 30, 40, 50],
+        "ws_pool_resync_delay_after_round_sec": 8,
         "ws_pool_resync_enabled": True,
         "ws_pool_resync_interval_sec": 60,
         "ws_pool_resync_only_expand": True,
-        "ws_connect_batch_size": 8,
-        "ws_connect_batch_delay_sec": 0.35,
+        "ws_connect_batch_size": 1,
+        "ws_connect_batch_delay_sec": 0.5,
         "ws_bulk_refresh_threshold": 5,
         "ws_listener_enabled": True,
         "ws_fill_priority": 2,
         "ws_listener_account_id": "",
         "ws_listener_username": "quangtyphu",
         "ws_default_username": "quangtyphu",
+        "ws_worker_restart_backoff_sec": 5,
+        "ws_worker_restart_backoff_max_sec": 120,
+        "ws_health_log_interval_sec": 120,
+        "ws_watchdog_interval_sec": 30,
         "account_status": "Đang Chơi",
         "balance_monitor_enabled": False,
         "balance_monitor_interval_sec": 90,
@@ -274,13 +314,15 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "ws_vip_after_connect_cooldown_sec": 3600,
         "ws_vip_after_claim_refresh_balance": True,
         "withdraw_sync_on_ws_open": True,
+        # false = sync rút sau khi WS đã connect (không chặn mở WS hàng loạt).
+        "withdraw_sync_before_connect": False,
         "withdraw_sync_list_limit": 10,
         "withdraw_sync_days": 7,
         "withdraw_sync_on_ws_cooldown_sec": 120,
     },
     "device_balance": {
         "banking_api_url": "http://127.0.0.1:8888",
-        # banking-db Node — credit XMSB* (giống CMS BANKING_CREDIT_URL / :3010)
+        # banking-db Node — mọi rút thành công credit về đây (:3010)
         "banking_credit_url": "http://127.0.0.1:3010",
         "cms_api_url": "http://127.0.0.1:3000",
     },
@@ -302,7 +344,7 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "enabled": True,
         "initial_delay_sec": 300,
         "poll_interval_sec": 60,
-        "poll_max_attempts": 15,
+        "poll_max_attempts": 5,
         "min_withdraw_vnd": 300_000,
         "withdraw_step_vnd": 100_000,
         "max_withdraw_vnd": 500_000,
@@ -350,6 +392,8 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "consolidate_min_ws_balance_vnd": 50_000,
         "PRIORITY_USERS": [],
         "daily_bet_cap_vnd": 892_000,
+        "daily_bet_cap_raise_enabled": True,
+        "daily_bet_cap_raise_vnd": 2_695_000,
         "check_balance": True,
         "assign_ws_pool_only": True,
         "assign_bets_enabled": True,
@@ -363,14 +407,15 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "bet_delay_min_sec": 3,
         "bet_delay_max_sec": 12,
         "bet_place_after_sec": 15,
-        "bet_stagger_per_user_sec": 1,
-        "plan_deadline_sec": 10,
-        "bet_stagger_min_sec": 1,
-        "bet_stagger_max_sec": 1,
+        "bet_stagger_per_user_sec": 0,
+        "assign_delay_after_next_info_sec": 0,
+        "plan_deadline_sec": 5,
+        "bet_stagger_min_sec": 0,
+        "bet_stagger_max_sec": 0,
         "win_payout_rate": 0.98,
         "win_total_return_multiplier": 1.98,
         "result_balance_wait_sec": 12,
-        "token_check_before_bet": True,
+        "token_check_before_bet": False,
         "token_refresh_playwright_on_bet": True,
         "token_refresh_auto_on_fail": True,
         "token_validate_timeout_sec": 12,

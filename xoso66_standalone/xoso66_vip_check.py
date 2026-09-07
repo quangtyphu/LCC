@@ -34,19 +34,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from xoso66_game_domain import resolve_base_url
 from xoso66_accounts_db import (
     get_account,
     get_account_by_username,
     init_db,
     list_accounts,
-    list_accounts_by_status,
+    list_accounts_by_status
 )
 from xoso66_deposit import (
-    BASE_URL,
     apply_response_tokens,
     build_common_headers,
     get_form_token,
-    _game_http,
+    _game_http
 )
 from xoso66_session import _merge_response_cookies, ensure_session, persist_session
 
@@ -149,7 +149,7 @@ def fetch_vip_list(session: dict) -> dict[str, Any]:
         form_token=form_token,
         content_type="application/json",
     )
-    url = f"{BASE_URL}{VIP_LIST_PATH}"
+    url = f"{resolve_base_url(session)}{VIP_LIST_PATH}"
     r = _game_http(session).get(url, headers=headers, timeout=35)
     apply_response_tokens(session, r.headers)
     _merge_response_cookies(session, r)
@@ -312,7 +312,7 @@ def fetch_vip_activity_reward(
         form_token=form_token,
         content_type="application/x-www-form-urlencoded/json",
     )
-    url = f"{BASE_URL}{VIP_ACTIVITY_REWARD_PATH}"
+    url = f"{resolve_base_url(session)}{VIP_ACTIVITY_REWARD_PATH}"
     body = json.dumps(plain, separators=(",", ":"))
     r = _game_http(session).post(url, data=body, headers=headers, timeout=35)
     apply_response_tokens(session, r.headers)

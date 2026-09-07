@@ -415,17 +415,6 @@ def poll_deposit_until_confirmed(
             list_limit=list_limit,
         )
         last = chk
-        new_n = int((chk.get("sync") or {}).get("count_new") or 0)
-        if new_n:
-            from xoso66_accounts_db import username_for_log
-
-            user = username_for_log(account_id)
-            serials = (chk.get("sync") or {}).get("new_serials") or []
-            print(
-                f"[DEPOSIT-POLL] [{user}] +{new_n} nạp Hoàn tất vào payment_orders"
-                + (f" (serial {serials[0]}…)" if serials else ""),
-                flush=True,
-            )
         if chk.get("confirmed") and chk.get("success"):
             chk["attempt"] = attempt
             chk["done"] = True

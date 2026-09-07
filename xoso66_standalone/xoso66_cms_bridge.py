@@ -195,6 +195,43 @@ def cmd_minigame_refresh(body: dict) -> dict:
     )
 
 
+def cmd_set_domain(body: dict) -> dict:
+    """Gắn domain từ CMS UI: ghi base_url + clear session + login + token."""
+    from xoso66_accounts_db import account_to_session_dict, get_account
+    from xoso66_game_domain import set_account_domain
+
+    aid = str(body.get("account_id") or "").strip()
+    if not aid:
+        raise ValueError("account_id bắt buộc")
+    row = get_account(aid)
+    if not row:
+        raise ValueError(f"Không tìm thấy account {aid}")
+    session = account_to_session_dict(row)
+    return set_account_domain(
+        aid,
+        session,
+        str(body.get("base_url") or ""),
+        relogin=bool(body.get("relogin", True)),
+    )
+
+
+def cmd_rotate_domain(body: dict) -> dict:
+    """Ép rotate domain (probe) + relogin — dùng nút tay / API."""
+    from xoso66_accounts_db import account_to_session_dict, get_account
+    from xoso66_game_domain import maybe_rotate_domain
+
+    aid = str(body.get("account_id") or "").strip()
+    if not aid:
+        raise ValueError("account_id bắt buộc")
+    row = get_account(aid)
+    if not row:
+        raise ValueError(f"Không tìm thấy account {aid}")
+    session = account_to_session_dict(row)
+    return maybe_rotate_domain(
+        aid, session, "manual_cms", force=True, relogin=True
+    )
+
+
 def cmd_check_withdraw(body: dict) -> dict:
     import time
 
@@ -258,6 +295,8 @@ _ACTIONS = {
     "auto_mission_claim": cmd_auto_mission_claim,
     "refresh_vip": cmd_refresh_vip,
     "minigame_refresh": cmd_minigame_refresh,
+    "set_domain": cmd_set_domain,
+    "rotate_domain": cmd_rotate_domain,
     "check_withdraw": cmd_check_withdraw,
     "release_deposit_order": cmd_release_deposit_order,
     "sync_from_chrome": cmd_sync_from_chrome,

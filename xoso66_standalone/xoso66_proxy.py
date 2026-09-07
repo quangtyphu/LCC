@@ -29,7 +29,7 @@ import socks
 _PROXY_DEAD_UNTIL: dict[str, float] = {}
 _PROXY_DEAD_LOCK = threading.Lock()
 _PROXY_LAST_INCR_AT: dict[str, float] = {}
-PROXY_DEAD_COOLDOWN_SEC = float(os.environ.get("XOSO66_PROXY_DEAD_COOLDOWN_SEC", "600"))
+PROXY_DEAD_COOLDOWN_SEC = float(os.environ.get("XOSO66_PROXY_DEAD_COOLDOWN_SEC", "60"))
 PROXY_PROBE_TIMEOUT_SEC = float(os.environ.get("XOSO66_PROXY_PROBE_TIMEOUT_SEC", "8"))
 PROXY_FAIL_MAX_ATTEMPTS = int(os.environ.get("XOSO66_PROXY_FAIL_MAX_ATTEMPTS", "3"))
 # Debounce fail_count khi nhiều lớp (HTTP wrap + caller) báo cùng một lần chết.
@@ -184,52 +184,38 @@ def site_host(base_url: str) -> str:
 
 
 _PROXY_ERROR_MARKERS = (
-    "proxy",
+    "proxyerror",
     "socks",
-    "connecttimeout",
-    "timed out",
-    "timeout",
-    "connection refused",
-    "connection closed unexpectedly",
+    "sockshttpsconnectionpool",
     "generalproxyerror",
+    "proxy connection",
+    "unable to connect to proxy",
     "socks connect",
-    "max retries exceeded",
+    "connection refused",
 )
+
+# Chỉ coi là proxy khi có marker trên — KHÔNG ban vì "timeout"/"opening handshake"
+# (WS handshake timeout thường do tranh cổng / token / server, proxy vẫn sống).
 
 
 def is_proxy_error_message(msg: str | None) -> bool:
-    """True nếu chuỗi lỗi trông như proxy/SOCKS chết (vd. SOCKSHTTPSConnectionPool)."""
+    """True nếu chuỗi lỗi rõ ràng là proxy/SOCKS chết (không gồm timeout WS chung)."""
     err = str(msg or "").lower()
-    return bool(err) and any(m in err for m in _PROXY_ERROR_MARKERS)
+    if not err:
+        return False
+    # Handshake WS timeout ≠ proxy chết.
+    if "opening handshake" in err:
+        return False
+    return any(m in err for m in _PROXY_ERROR_MARKERS)
 
 
 def is_proxy_transport_error(exc: BaseException | None) -> bool:
-    """True nếu lỗi do proxy/SOCKS không kết nối được (không phải CF/site)."""
+    """True nếu lỗi do proxy/SOCKS không kết nối được (không phải CF/site/WS handshake)."""
     if exc is None:
         return False
-    if isinstance(exc, (TimeoutError, ConnectionError, socket.timeout)):
-        return True
-    if isinstance(exc, OSError) and getattr(exc, "errno", None) in (
-        10060,
-        10061,
-        110,
-        111,
-    ):
-        return True
-    try:
-        import requests
-
-        if isinstance(
-            exc,
-            (
-                requests.exceptions.ConnectTimeout,
-                requests.exceptions.ProxyError,
-                requests.exceptions.ConnectionError,
-            ),
-        ):
-            return True
-    except Exception:
-        pass
+    msg = str(exc).lower()
+    if "opening handshake" in msg:
+        return False
     try:
         from socks import GeneralProxyError
 
@@ -237,7 +223,20 @@ def is_proxy_transport_error(exc: BaseException | None) -> bool:
             return True
     except Exception:
         pass
-    if is_proxy_error_message(str(exc)):
+    try:
+        import requests
+
+        if isinstance(exc, requests.exceptions.ProxyError):
+            return True
+    except Exception:
+        pass
+    # Timeout/ConnectionError chỉ tính proxy khi message có socks/proxy rõ.
+    if is_proxy_error_message(msg):
+        return True
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) in (
+        10061,  # connection refused
+        111,
+    ):
         return True
     cause = exc.__cause__
     if cause is not None and cause is not exc:
@@ -356,6 +355,25 @@ def clear_proxy_dead(account_id: str) -> None:
     _clear_proxy_fail_count(aid)
 
 
+def _evict_ws_on_proxy_dead(account_id: str) -> None:
+    """Proxy chết — bỏ WS task/connect để slot WS không bị ghost; bù lại sau cooldown."""
+    aid = str(account_id or "").strip()
+    if not aid:
+        return
+    try:
+        from xoso66_ws_pool import (
+            clear_pending_ws_slot,
+            request_ws_evict_and_resync,
+            unregister_ws_connected,
+        )
+
+        clear_pending_ws_slot(aid)
+        unregister_ws_connected(aid)
+        request_ws_evict_and_resync([aid])
+    except Exception:
+        pass
+
+
 def report_proxy_dead(
     account_id: str,
     *,
@@ -418,12 +436,7 @@ def report_proxy_dead(
         )
 
     if not do_incr:
-        try:
-            from xoso66_ws_pool import clear_pending_ws_slot
-
-            clear_pending_ws_slot(aid)
-        except Exception:
-            pass
+        _evict_ws_on_proxy_dead(aid)
         return
 
     fail_n = _incr_proxy_fail_count(aid)
@@ -434,12 +447,7 @@ def report_proxy_dead(
         )
         return
 
-    try:
-        from xoso66_ws_pool import clear_pending_ws_slot
-
-        clear_pending_ws_slot(aid)
-    except Exception:
-        pass
+    _evict_ws_on_proxy_dead(aid)
 
 
 def account_id_from_session(session: dict | None) -> str:

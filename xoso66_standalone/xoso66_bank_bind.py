@@ -31,13 +31,13 @@ import sys
 from typing import Any
 
 from xoso66_fund_password import _parse_api_body, get_user_info
+from xoso66_game_domain import resolve_base_url
 from xoso66_session import (
-    BASE_URL,
     ensure_session,
     merge_playwright_cookies,
     post_encrypted,
     _merge_response_cookies,
-    _requests_session,
+    _requests_session
 )
 from xoso66_sessions_io import load_sessions, save_sessions
 
@@ -58,7 +58,7 @@ def _get_encrypted(session: dict, path: str, params: dict | None = None) -> tupl
         build_request_headers,
         decrypt_deposit_body,
         encrypt_deposit_body,
-        get_form_token,
+        get_form_token
     )
 
     params = params if params is not None else {}
@@ -66,7 +66,7 @@ def _get_encrypted(session: dict, path: str, params: dict | None = None) -> tupl
     _, cek_k, aes_key = encrypt_deposit_body(session, params)
     headers = build_request_headers(session, cek_k=cek_k, form_token=get_form_token(session))
     r = _requests_session(session).get(
-        f"{BASE_URL}{path}",
+        f"{resolve_base_url(session)}{path}",
         params=params or None,
         headers=headers,
         timeout=30,
@@ -120,13 +120,13 @@ def _playwright_store_dispatch(
         extra["form-token"] = session["form_token"]
 
     js: Any = None
-    with playwright_browser(session, base_url=BASE_URL, headless=True, extra_http_headers=extra) as (
+    with playwright_browser(session, base_url=resolve_base_url(session), headless=True, extra_http_headers=extra) as (
         _p,
         _browser,
         context,
     ):
         page = context.new_page()
-        page.goto(f"{BASE_URL}/home/", wait_until="domcontentloaded", timeout=90_000)
+        page.goto(f"{resolve_base_url(session)}/home/", wait_until="domcontentloaded", timeout=90_000)
         try:
             page.wait_for_load_state("networkidle", timeout=20_000)
         except Exception:
@@ -191,7 +191,7 @@ def _get_json(session: dict, path: str, *, params: dict | None = None) -> dict[s
     from xoso66_deposit import apply_response_tokens
 
     r = _requests_session(session).get(
-        f"{BASE_URL}{path}",
+        f"{resolve_base_url(session)}{path}",
         headers=_auth_headers(session),
         params=params or {},
         timeout=30,
@@ -386,13 +386,13 @@ def bind_bank_card_playwright(session: dict, plain: dict) -> dict[str, Any]:
     if session.get("form_token"):
         extra["form-token"] = session["form_token"]
 
-    with playwright_browser(session, base_url=BASE_URL, headless=True, extra_http_headers=extra) as (
+    with playwright_browser(session, base_url=resolve_base_url(session), headless=True, extra_http_headers=extra) as (
         _p,
         _browser,
         context,
     ):
         page = context.new_page()
-        page.goto(f"{BASE_URL}/home/", wait_until="domcontentloaded", timeout=90_000)
+        page.goto(f"{resolve_base_url(session)}/home/", wait_until="domcontentloaded", timeout=90_000)
         try:
             page.wait_for_load_state("networkidle", timeout=20_000)
         except Exception:

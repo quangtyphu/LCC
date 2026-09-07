@@ -5,6 +5,7 @@ Chứa các hàm tái sử dụng: proxy, auth, request wrapper
 import sys
 import io
 import time
+import threading
 
 # Fix encoding cho Windows console
 if sys.platform == 'win32':
@@ -18,38 +19,154 @@ NODE_SERVER_URL = "http://127.0.0.1:3000"
 
 # User đã bị đánh dấu proxy chết trong tiến trình → không lặp 5 lần retry cho mọi API.
 # Lưu proxy_str lúc fail: nếu DB đổi sang proxy khác → tự mở lại và thử proxy mới.
+# Half-open: sau CIRCUIT_REPROBE_SECONDS probe SOCKS5; sống lại → tự mở circuit.
 # Vẫn có thể mở tay: clear_proxy_circuit / restart / HTTP 2xx / WS reconnect.
-_PROXY_CIRCUIT_OPEN: dict[str, str] = {}
+#
+# value: {"proxy": str, "opened_at": float, "last_probe_at": float}
+# (cũng chấp nhận str cũ = chỉ proxy key, coi opened_at = now lúc đọc lần đầu)
+_PROXY_CIRCUIT_OPEN: dict[str, dict | str] = {}
+_PROXY_CIRCUIT_LOCK = threading.Lock()
+
+# Sau khi circuit mở, chờ N giây rồi probe lại (và mỗi N giây nếu vẫn chết).
+CIRCUIT_REPROBE_SECONDS = 60
+_PROXY_PROBE_HOST = "wtx.tele68.com"
+_PROXY_PROBE_PORT = 443
+_PROXY_PROBE_TIMEOUT = 5.0
 
 
 def clear_proxy_circuit(username: str | None = None) -> None:
     """Xóa circuit proxy (một user hoặc toàn bộ). Gọi sau khi đã sửa proxy hoặc gỡ trạng thái Proxy Lỗi."""
-    if username is None:
-        _PROXY_CIRCUIT_OPEN.clear()
-    else:
-        _PROXY_CIRCUIT_OPEN.pop(username, None)
+    with _PROXY_CIRCUIT_LOCK:
+        if username is None:
+            _PROXY_CIRCUIT_OPEN.clear()
+        else:
+            _PROXY_CIRCUIT_OPEN.pop(username, None)
 
 
 def _normalize_proxy_key(proxy_str: str | None) -> str:
     return (proxy_str or "").strip()
 
 
+def _circuit_meta(entry: dict | str | None) -> dict:
+    """Chuẩn hoá entry circuit (hỗ trợ format str cũ)."""
+    now = time.time()
+    if isinstance(entry, dict):
+        return {
+            "proxy": _normalize_proxy_key(entry.get("proxy")),
+            "opened_at": float(entry.get("opened_at") or now),
+            "last_probe_at": float(entry.get("last_probe_at") or 0),
+        }
+    return {
+        "proxy": _normalize_proxy_key(entry if isinstance(entry, str) else ""),
+        "opened_at": now,
+        "last_probe_at": 0.0,
+    }
+
+
+def _open_proxy_circuit(username: str, proxy_str: str | None) -> None:
+    with _PROXY_CIRCUIT_LOCK:
+        _PROXY_CIRCUIT_OPEN[username] = {
+            "proxy": _normalize_proxy_key(proxy_str),
+            "opened_at": time.time(),
+            "last_probe_at": 0.0,
+        }
+
+
+def _probe_socks5_alive(proxy_str: str, timeout: float = _PROXY_PROBE_TIMEOUT) -> bool:
+    """True nếu SOCKS5 connect được tới host game (cùng cách force-check / WS)."""
+    s = _normalize_proxy_key(proxy_str)
+    if not s:
+        return False
+    try:
+        import socks
+
+        parts = s.split(":")
+        if len(parts) < 4:
+            return False
+        host, port_s, userp = parts[0], parts[1], parts[2]
+        passp = ":".join(parts[3:])
+        sock = socks.socksocket()
+        try:
+            sock.set_proxy(socks.SOCKS5, host, int(port_s), True, userp, passp)
+            sock.settimeout(timeout)
+            sock.connect((_PROXY_PROBE_HOST, _PROXY_PROBE_PORT))
+            return True
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+    except Exception:
+        return False
+
+
 def _circuit_should_block(username: str, current_proxy: str | None) -> bool:
     """
-    True = vẫn fail-fast. False = đã mở circuit (proxy đổi hoặc chưa từng ghim).
+    True = vẫn fail-fast.
+    False = chưa ghim / proxy đổi / cooldown hết và probe SOCKS5 sống lại.
     """
-    if username not in _PROXY_CIRCUIT_OPEN:
-        return False
-    failed_proxy = _PROXY_CIRCUIT_OPEN.get(username, "")
-    current = _normalize_proxy_key(current_proxy)
-    if current and current != failed_proxy:
-        _PROXY_CIRCUIT_OPEN.pop(username, None)
-        host = current.split(":")[0] if ":" in current else current
+    with _PROXY_CIRCUIT_LOCK:
+        if username not in _PROXY_CIRCUIT_OPEN:
+            return False
+        meta = _circuit_meta(_PROXY_CIRCUIT_OPEN.get(username))
+        failed_proxy = meta["proxy"]
+        current = _normalize_proxy_key(current_proxy)
+
+        if current and current != failed_proxy:
+            _PROXY_CIRCUIT_OPEN.pop(username, None)
+            host = current.split(":")[0] if ":" in current else current
+            print(
+                f"🔄 [{username}] Proxy đã đổi trên DB → mở circuit, thử proxy mới ({host})",
+                flush=True,
+            )
+            return False
+
+        now = time.time()
+        anchor = meta["last_probe_at"] or meta["opened_at"]
+        wait_left = CIRCUIT_REPROBE_SECONDS - (now - anchor)
+        if wait_left > 0:
+            return True
+
+        # Half-open: probe SOCKS5 (giữ lock ngắn — probe có thể tới ~5s; nhả lock khi probe)
+        probe_proxy = current or failed_proxy
+        meta["last_probe_at"] = now
+        _PROXY_CIRCUIT_OPEN[username] = meta
+
+    if not probe_proxy:
+        return True
+
+    alive = _probe_socks5_alive(probe_proxy)
+    if alive:
+        with _PROXY_CIRCUIT_LOCK:
+            # Chỉ mở nếu vẫn cùng proxy (tránh race với đổi proxy / mở lại circuit)
+            cur = _PROXY_CIRCUIT_OPEN.get(username)
+            if cur is not None and _circuit_meta(cur)["proxy"] == _normalize_proxy_key(probe_proxy):
+                _PROXY_CIRCUIT_OPEN.pop(username, None)
+        host = probe_proxy.split(":")[0] if ":" in probe_proxy else probe_proxy
         print(
-            f"🔄 [{username}] Proxy đã đổi trên DB → mở circuit, thử proxy mới ({host})",
+            f"🔄 [{username}] Proxy sống lại (probe {_PROXY_PROBE_HOST}) → mở circuit ({host})",
             flush=True,
         )
+        # Proxy Lỗi → Đang Chơi để watcher WS nhận lại (chỉ Đang Chơi mới vào active list)
+        try:
+            info = curl_requests.get(f"{NODE_SERVER_URL}/api/users/{username}", timeout=5)
+            if info.status_code == 200:
+                st = ((info.json() or {}).get("status") or "").strip()
+                if st == "Proxy Lỗi":
+                    curl_requests.put(
+                        f"{NODE_SERVER_URL}/api/users/{username}",
+                        json={"status": "Đang Chơi"},
+                        timeout=5,
+                    )
+                    print(f"✅ [{username}] Proxy sống → status Proxy Lỗi → Đang Chơi", flush=True)
+        except Exception as e:
+            print(f"⚠️ [{username}] Không cập nhật status sau probe sống: {e}", flush=True)
         return False
+
+    print(
+        f"⛔ [{username}] Circuit vẫn mở — proxy probe fail, chờ {CIRCUIT_REPROBE_SECONDS}s rồi thử lại",
+        flush=True,
+    )
     return True
 
 
@@ -288,7 +405,7 @@ def game_request_with_retry_ex(
                 print(f"❌ [{username}] Lỗi proxy (attempt {attempt}/5): {e}", flush=True)
                 if attempt == 5:
                     proxy_exhausted = True
-                    _PROXY_CIRCUIT_OPEN[username] = _normalize_proxy_key(proxy_str)
+                    _open_proxy_circuit(username, proxy_str)
                     try:
                         curl_requests.put(f"{NODE_SERVER_URL}/api/users/{username}", json={"status": "Proxy Lỗi"}, timeout=5)
                     except Exception:
@@ -344,7 +461,7 @@ def game_request_with_retry_ex(
             return None, "auth"
 
     if resp is not None and 200 <= resp.status_code < 300:
-        _PROXY_CIRCUIT_OPEN.pop(username, None)
+        clear_proxy_circuit(username)
 
     return resp, None
 

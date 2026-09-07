@@ -369,6 +369,38 @@ def _open_withdraw_submission_row(
     ).fetchone()
 
 
+def get_withdraw_submission_poll_count(
+    account_id: str,
+    serial_no: str | None = None,
+) -> int:
+    """Số lần poll đã check (kể cả submission đã resolve)."""
+    aid = str(account_id or "").strip()
+    if not aid:
+        return 0
+    sn = str(serial_no or "").strip()
+    init_payment_history_tables()
+    with db_conn() as conn:
+        if sn:
+            row = conn.execute(
+                """
+                SELECT poll_count FROM withdraw_submissions
+                WHERE account_id = ? AND serial_no = ?
+                ORDER BY submitted_at_ms DESC LIMIT 1
+                """,
+                (aid, sn),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT poll_count FROM withdraw_submissions
+                WHERE account_id = ?
+                ORDER BY submitted_at_ms DESC LIMIT 1
+                """,
+                (aid,),
+            ).fetchone()
+    return int(row["poll_count"] or 0) if row else 0
+
+
 def peek_withdraw_poll_count(
     account_id: str,
     serial_no: str | None = None,

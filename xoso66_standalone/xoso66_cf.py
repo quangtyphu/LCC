@@ -21,9 +21,9 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
-BASE_URL = os.environ.get("XOSO66_BASE_URL", "https://v6sgqpyi.whskxk1.com").rstrip("/")
-SITE_HOST = urlparse(BASE_URL).netloc
-
+from xoso66_game_domain import default_base_url, resolve_base_url, site_host as domain_site_host
+BASE_URL = default_base_url()  # legacy
+SITE_HOST = urlparse(BASE_URL).netloc  # legacy; prefer domain_site_host(session)
 CF_COOKIES = ("cf_clearance", "__cf_bm")
 CF_HEADERS = ("cf-auth-token", "cf-con-s", "cf-pass", "c-a-i")
 CF_VERIFY_FRAGMENT = "/__verify/check"
@@ -194,7 +194,7 @@ def refresh_cf_curl_cffi(session: dict) -> dict[str, Any]:
     }
     try:
         r = cffi_requests.get(
-            f"{BASE_URL}/home/",
+            f"{resolve_base_url(session)}/home/",
             impersonate=os.environ.get("XOSO66_CF_IMPERSONATE", "chrome120"),
             headers=hdrs,
             cookies=session.get("cookies") or {},
@@ -246,7 +246,7 @@ def refresh_cf_playwright(session: dict, *, headless: bool | None = None) -> dic
 
     try:
         session["user_agent"] = ua
-        with playwright_browser(session, base_url=BASE_URL, headless=headless) as (
+        with playwright_browser(session, base_url=resolve_base_url(session), headless=headless) as (
             _p,
             _browser,
             context,
@@ -254,7 +254,7 @@ def refresh_cf_playwright(session: dict, *, headless: bool | None = None) -> dic
             page = context.new_page()
 
             def on_request(request) -> None:
-                if SITE_HOST not in request.url or "/server/" not in request.url:
+                if domain_site_host(session) not in request.url or "/server/" not in request.url:
                     return
                 h = request.headers
                 for key in CF_HEADERS:
@@ -266,7 +266,7 @@ def refresh_cf_playwright(session: dict, *, headless: bool | None = None) -> dic
                     session["form_token"] = ft
 
             page.on("request", on_request)
-            page.goto(f"{BASE_URL}/home/", wait_until="domcontentloaded", timeout=90_000)
+            page.goto(f"{resolve_base_url(session)}/home/", wait_until="domcontentloaded", timeout=90_000)
             try:
                 page.wait_for_load_state("networkidle", timeout=20_000)
             except Exception:
@@ -363,7 +363,7 @@ def attach_cf_request_sniffer(page: Any, session: dict) -> None:
     """Bắt cf-auth-token + form-token từ XHR /server/* trên cùng tab đăng ký."""
 
     def on_request(request) -> None:
-        if SITE_HOST not in request.url or "/server/" not in request.url:
+        if domain_site_host(session) not in request.url or "/server/" not in request.url:
             return
         h = request.headers
         hdrs = dict(session.get("headers") or {})
@@ -455,7 +455,7 @@ def bootstrap_register_page(
     )
     from xoso66_proxy import site_host as _site_host
 
-    host = _site_host(BASE_URL)
+    host = domain_site_host(session)
     meta: dict[str, Any] = {}
     cookies = session.get("cookies") or {}
     if not native_launch or not cookies.get("cf_clearance"):
@@ -465,11 +465,11 @@ def bootstrap_register_page(
     vue_wait: dict[str, Any] = {"ok": False}
     for attempt in range(3):
         cur = str(page.url or "")
-        on_site = SITE_HOST in cur and "about:blank" not in cur
+        on_site = domain_site_host(session) in cur and "about:blank" not in cur
         if native_launch and attempt == 0 and on_site:
             meta["skip_goto"] = True
         else:
-            page.goto(f"{BASE_URL}/home/", wait_until="domcontentloaded", timeout=90_000)
+            page.goto(f"{resolve_base_url(session)}/home/", wait_until="domcontentloaded", timeout=90_000)
         try:
             page.wait_for_load_state("networkidle", timeout=25_000)
         except Exception:
@@ -494,7 +494,7 @@ def bootstrap_register_page(
                     pass
                 solved = solve_cf_anticloudflare(
                     session,
-                    website_url=page.url or f"{BASE_URL}/home/",
+                    website_url=page.url or f"{resolve_base_url(session)}/home/",
                     html=page_html,
                 )
                 meta[f"cf_capsolver_{attempt}"] = {
@@ -549,8 +549,8 @@ def _inject_session_cookies(context: Any, session: dict, host: str) -> None:
     cookies = session.get("cookies") or {}
     if not cookies:
         return
-    parts = str(host or SITE_HOST).split(".")
-    domains = [str(host or SITE_HOST)]
+    parts = str(host or domain_site_host(session)).split(".")
+    domains = [str(host or domain_site_host(session))]
     if len(parts) >= 2:
         domains.append("." + ".".join(parts[-2:]))
     pw_cookies: list[dict[str, str]] = []
@@ -596,11 +596,11 @@ def sniff_cf_request_headers(session: dict, *, headless: bool | None = None) -> 
 
     from xoso66_playwright_ctx import playwright_browser
 
-    host = SITE_HOST
+    host = domain_site_host(session)
     try:
         with playwright_browser(
             session,
-            base_url=BASE_URL,
+            base_url=resolve_base_url(session),
             headless=headless,
             channel="chrome",
             ignore_automation=True,
@@ -609,7 +609,7 @@ def sniff_cf_request_headers(session: dict, *, headless: bool | None = None) -> 
             page = context.new_page()
             attach_cf_request_sniffer(page, session)
             print("[REGISTER] Sniff cf-auth-token (Chrome tạm + cookie CMS)…", flush=True)
-            page.goto(f"{BASE_URL}/home/", wait_until="domcontentloaded", timeout=90_000)
+            page.goto(f"{resolve_base_url(session)}/home/", wait_until="domcontentloaded", timeout=90_000)
             try:
                 page.wait_for_load_state("networkidle", timeout=25_000)
             except Exception:

@@ -25,11 +25,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from xoso66_game_domain import resolve_base_url
 from xoso66_accounts_db import (
     STATUS_DANG_CHOI,
     get_account,
     list_accounts,
-    list_accounts_by_status,
+    list_accounts_by_status
 )
 
 
@@ -201,6 +202,59 @@ def _summarize_details(details: list[dict[str, Any]], *, elapsed_ms: int) -> Che
     return st, ok, fail, skipped
 
 
+
+def _startup_maybe_rotate(account_id: str, session: dict, reason: str) -> dict:
+    """Chỉ khi proxy OK nhưng không kết nối được game (maybe_rotate_domain tự probe)."""
+    try:
+        from xoso66_game_domain import maybe_rotate_domain
+
+        return maybe_rotate_domain(account_id, session, reason, relogin=True)
+    except Exception as e:
+        return {"ok": False, "rotated": False, "message": str(e)}
+
+
+def _looks_like_game_unreachable(err: str | BaseException) -> bool:
+    """True nếu lỗi giống không kết nối được host game (không phải token/CF auth)."""
+    s = str(err or "").lower()
+    if not s:
+        return False
+    # Loại trừ lỗi auth/token/CF rate — không phải "không kết nối được domain".
+    deny = (
+        "password",
+        "sai mật",
+        "unauthorized",
+        "401",
+        "token",
+        "login",
+        "rate limit",
+        "1015",
+        "captcha",
+        "form_token",
+    )
+    if any(x in s for x in deny):
+        return False
+    allow = (
+        "timed out",
+        "timeout",
+        "connecttimeout",
+        "connection refused",
+        "connection reset",
+        "connection aborted",
+        "name or service not known",
+        "nodename nor servname",
+        "failed to resolve",
+        "getaddrinfo",
+        "network is unreachable",
+        "no route to host",
+        "ssl",
+        "handshake",
+        "remote end closed",
+        "max retries exceeded",
+        "temporarily unavailable",
+    )
+    return any(x in s for x in allow)
+
+
 def _check_one_balance(account_id: str, sessions: dict[str, dict], cfg: dict) -> dict[str, Any]:
     """
     Startup: 1× getBalance trước (nhanh). Chỉ ensure_session (login/CF) khi fail.
@@ -256,7 +310,7 @@ def _check_one_balance(account_id: str, sessions: dict[str, dict], cfg: dict) ->
 
     def _get_bal(acc: dict) -> dict[str, Any]:
         from xoso66_deposit import apply_response_tokens, build_common_headers, get_form_token
-        from xoso66_session import GET_BALANCE_PATH, BASE_URL, _merge_response_cookies, _requests_session
+        from xoso66_session import GET_BALANCE_PATH, _merge_response_cookies, _requests_session
 
         ensure_proxy(acc)
         form_token = str(acc.get("form_token") or "").strip()
@@ -271,7 +325,7 @@ def _check_one_balance(account_id: str, sessions: dict[str, dict], cfg: dict) ->
         )
         params = {"refresh": "1"} if use_refresh else {}
         r = _requests_session(acc).get(
-            f"{BASE_URL}{GET_BALANCE_PATH}",
+            f"{resolve_base_url(acc)}{GET_BALANCE_PATH}",
             headers=headers,
             params=params,
             timeout=bal_timeout,
@@ -330,6 +384,13 @@ def _check_one_balance(account_id: str, sessions: dict[str, dict], cfg: dict) ->
             proxy_str=resolve_proxy(row),
             source="startup balance",
         )
+        err = str(e)
+        if _looks_like_game_unreachable(err):
+            try:
+                sess = sessions.get(account_id) or {}
+                _startup_maybe_rotate(account_id, sess, f"balance_exc:{err}")
+            except Exception:
+                pass
         return {
             "account_id": account_id,
             "username": username,
@@ -490,14 +551,23 @@ def _ping_one_minigame_token(
                 "action": "ping_ok",
                 "refreshed": False,
             }
+        reason = ping.get("msg") or ping.get("reason") or "ping fail"
         return {
             "account_id": account_id,
             "username": username,
             "ok": False,
             "needs_refresh": True,
-            "reason": ping.get("msg") or ping.get("reason") or "ping fail",
+            "reason": reason,
         }
     except Exception as e:
+        # Chỉ thử đổi domain khi lỗi giống mất kết nối game (không phải token hết hạn).
+        err = str(e)
+        if _looks_like_game_unreachable(err):
+            try:
+                sess = sessions.get(account_id) or {}
+                _startup_maybe_rotate(account_id, sess, f"token_exc:{err}")
+            except Exception:
+                pass
         return {
             "account_id": account_id,
             "username": username,
@@ -523,7 +593,7 @@ def _refresh_one_minigame_token(
         ping_user_token,
         refresh_minigame_cf,
         refresh_user_token_playwright,
-        refresh_user_token_via_gameurl,
+        refresh_user_token_via_gameurl
     )
     from xoso66_proxy import resolve_proxy
     from xoso66_session import persist_session
@@ -591,6 +661,8 @@ def _refresh_one_minigame_token(
                 sub_game_code=gp["sub"],
             )
             action = "playwright" if rep.get("ok") else "gameurl_fail"
+        elif not rep.get("ok"):
+            action = "gameurl_fail"
 
         # gameurl có thể lấy được user-token nhưng chưa có cf_clearance mini-game →
         # ping fail; vẫn phải lưu DB (acc16 hay gặp).
@@ -648,6 +720,13 @@ def _refresh_one_minigame_token(
             "reason": hint,
         }
     except Exception as e:
+        err = str(e)
+        if _looks_like_game_unreachable(err):
+            try:
+                sess = sessions.get(account_id) or {}
+                _startup_maybe_rotate(account_id, sess, f"token_exc:{err}")
+            except Exception:
+                pass
         return {
             "account_id": account_id,
             "username": username,
@@ -668,8 +747,15 @@ def _print_combined_line(d: dict[str, Any]) -> None:
     if d.get("balance_ok"):
         bal = f"balance: {_fmt_balance_vnd(d.get('balance'))}"
     else:
-        bal = "balance FAIL"
-    tok = d.get("token_action") or ("ping_ok" if d.get("token_ok") else "token FAIL")
+        bal_reason = str(d.get("balance_reason") or d.get("reason") or "").strip()
+        bal = f"balance FAIL ({bal_reason})" if bal_reason else "balance FAIL"
+    if d.get("token_ok"):
+        act = d.get("token_action") or "ping_ok"
+        tok = f"token OK ({act})"
+    else:
+        act = d.get("token_action") or "token FAIL"
+        tok_reason = str(d.get("token_reason") or "").strip()
+        tok = f"token FAIL ({act}" + (f": {tok_reason}" if tok_reason else "") + ")"
     print(f"      {user}: {bal} | {tok}", flush=True)
 
 
@@ -764,7 +850,9 @@ def _startup_pipeline_one_account(
             "skipped": True,
             "reason": bal.get("reason"),
             "balance_ok": False,
+            "balance_reason": bal.get("reason"),
             "token_ok": False,
+            "token_reason": "",
         }
     if bal.get("ok") and isinstance(bal.get("session"), dict):
         _persist_balance_only(account_id, bal["session"])
@@ -777,12 +865,9 @@ def _startup_pipeline_one_account(
     needs_refresh = bool(ping.get("needs_refresh")) or not balance_ok
     refreshed = False
     token_action = ping.get("action")
-    reason = ""
-
-    if not token_ok:
-        reason = str(ping.get("reason") or "")
-    elif not balance_ok:
-        reason = str(bal.get("reason") or "")
+    balance_reason = "" if balance_ok else str(bal.get("reason") or "")
+    token_reason = "" if token_ok else str(ping.get("reason") or "")
+    reason = token_reason or balance_reason
 
     if needs_refresh and mode != "ping_only":
         ref = _token_refresh_with_retry(account_id, cfg, sessions)
@@ -790,7 +875,8 @@ def _startup_pipeline_one_account(
         refreshed = bool(ref.get("refreshed"))
         token_action = ref.get("action") or token_action
         if not token_ok:
-            reason = str(ref.get("reason") or reason)
+            token_reason = str(ref.get("reason") or token_reason)
+            reason = token_reason or balance_reason
 
     return {
         "account_id": account_id,
@@ -798,8 +884,10 @@ def _startup_pipeline_one_account(
         "ok": balance_ok and token_ok,
         "balance_ok": balance_ok,
         "balance": bal.get("balance"),
+        "balance_reason": balance_reason,
         "token_ok": token_ok,
         "token_action": token_action,
+        "token_reason": token_reason,
         "needs_refresh": needs_refresh,
         "refreshed": refreshed,
         "reason": reason,

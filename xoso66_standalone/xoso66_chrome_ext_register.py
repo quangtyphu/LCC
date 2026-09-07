@@ -17,7 +17,7 @@ from base64 import b64encode
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
-from xoso66_session import BASE_URL
+from xoso66_game_domain import default_base_url
 
 _EXT_DIR = Path(__file__).resolve().parent / "xoso66_register_ext"
 _RESULT: dict[str, Any] = {}
@@ -148,7 +148,7 @@ def register_via_chrome_extension(
     payload["_callback"] = callback
     b64 = b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
     # Hash giữ payload khi site redirect /home/?… → /home (Vue history mode).
-    url = f"{BASE_URL}/home/#xoso66_reg={b64}"
+    url = f"{default_base_url()}/home/#xoso66_reg={b64}"
 
     meta: dict[str, Any] = {"method": "chrome_extension", "cdp": False, "callback_port": port}
     locked = profile_is_locked(profile_dir)

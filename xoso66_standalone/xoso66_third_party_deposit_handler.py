@@ -35,10 +35,59 @@ configure_stdio_utf8()
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 _DIR = Path(__file__).resolve().parent
+_LC79_REPO = _DIR.parent
 if str(_DIR) not in sys.path:
     sys.path.insert(0, str(_DIR))
+if str(_LC79_REPO) not in sys.path:
+    sys.path.insert(0, str(_LC79_REPO))
 
 from deposit_callback_routing import resolve_callback_game
+
+
+def _assert_msbapi_login_before_send(username: str = "", account_id: str = "") -> dict[str, Any] | None:
+    """Trước khi lấy lệnh nạp: XMSB* phải login được (HMAC). Trả dict lỗi hoặc None."""
+    from banking_msbapi_login_check import (
+        assert_device_login_ok,
+        banking_base_from_third_party_url,
+        require_partner_hmac,
+        resolve_xoso66_device,
+    )
+
+    refresh_urls()
+    partner_id, api_key, api_secret = _partner_auth_cfg()
+    miss = require_partner_hmac(partner_id, api_key, api_secret)
+    if miss:
+        return {"ok": False, "error": miss}
+
+    device = resolve_xoso66_device(account_id=account_id, username=username)
+    if not device:
+        print(
+            f"[XOSO66] {username or account_id}: chưa có device — bỏ qua login-check",
+            flush=True,
+        )
+        return None
+    gate = assert_device_login_ok(
+        device,
+        banking_base_url=banking_base_from_third_party_url(THIRD_PARTY_API_URL),
+        partner_id=partner_id,
+        api_key=api_key,
+        api_secret=api_secret,
+        label=f"NẠP {username or account_id}",
+    )
+    if gate.get("ok"):
+        return None
+    from banking_msbapi_login_check import lock_xoso66_account, should_lock_after_login_check
+
+    if should_lock_after_login_check(gate):
+        lock_xoso66_account(
+            account_id=account_id,
+            username=username,
+            reason=f"MSBAPI {device} login fail",
+        )
+    return {
+        "ok": False,
+        "error": gate.get("error") or f"Device {device} không login được",
+    }
 
 
 def _load_urls() -> tuple[str, str, int]:
@@ -408,7 +457,9 @@ def _release_deposit_tracking(account_id: str, order_id: int | None = None) -> N
 
 
 def send_to_third_party(username: str, amount: int, order_data: dict) -> dict[str, Any]:
+    """Gửi lệnh nạp sang Banking. Login-check chỉ chạy ở create-deposit, không check lại ở đây."""
     refresh_urls()
+    account_id = str(order_data.get("account_id") or order_data.get("accountId") or "").strip()
     order_id = order_data.get("order_id")
     qr_base64 = order_data.get("qr_base64", "")
     ti = order_data.get("transfer_info") if isinstance(order_data.get("transfer_info"), dict) else {}
@@ -453,25 +504,18 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict[st
     partner_id, api_key, api_secret = _partner_auth_cfg()
     payload["partnerId"] = partner_id
     raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    if api_key and api_secret:
-        headers = _hmac_partner_headers(
-            THIRD_PARTY_API_URL,
-            raw,
-            partner_id=partner_id,
-            api_key=api_key,
-            api_secret=api_secret,
-        )
-    else:
-        headers = {"Content-Type": "application/json"}
-        print(
-            f"[XOSO66→BANKING] thiếu partner_api_key/secret — gửi không HMAC "
-            f"(partner={partner_id})",
-            flush=True,
-        )
-    print(
-        f"[XOSO66→BANKING] order #{order_id} | partner={partner_id} | "
-        f"url={THIRD_PARTY_API_URL} | callback={CALLBACK_URL}",
-        flush=True,
+    from banking_msbapi_login_check import require_partner_hmac
+
+    miss = require_partner_hmac(partner_id, api_key, api_secret)
+    if miss:
+        print(f"[XOSO66→BANKING] {miss}", flush=True)
+        return {"ok": False, "error": miss}
+    headers = _hmac_partner_headers(
+        THIRD_PARTY_API_URL,
+        raw,
+        partner_id=partner_id,
+        api_key=api_key,
+        api_secret=api_secret,
     )
     try:
         resp = requests.post(
@@ -585,6 +629,7 @@ def send_existing_order_to_third_party(username: str, payload: dict) -> dict[str
 
     order_data = {
         "order_id": oid,
+        "account_id": str(row.get("account_id") or payload.get("account_id") or "").strip(),
         "amount": amount or int(row.get("amount") or 0),
         "qr_base64": qr_base64,
         "transfer_info": ti,
@@ -723,19 +768,13 @@ def _run_poll_after_third_party(order_id: int) -> None:
 
         if rep.get("success"):
             via = str(rep.get("via") or "")
-            if via in ("order_already_thanh_cong", "already_in_db"):
-                print(
-                    f"[DEPOSIT-POLL] ✅ #{order_id} [{user}] Hoàn tất "
-                    f"(đã xác nhận — {via})",
-                    flush=True,
-                )
-            else:
+            if via not in ("order_already_thanh_cong", "already_in_db"):
                 item = rep.get("item") if isinstance(rep.get("item"), dict) else {}
                 serial = str(rep.get("serial_no") or item.get("serial_no") or "")
                 if not deposit_order_confirmed(order_id):
                     from xoso66_deposit_orders_db import finalize_deposit_success
 
-                    dur = finalize_deposit_success(
+                    finalize_deposit_success(
                         order_id,
                         serial_no=serial,
                         site_status=1,
@@ -744,34 +783,12 @@ def _run_poll_after_third_party(order_id: int) -> None:
                         ),
                         game_item=item,
                     )
-                    if dur > 0:
-                        from xoso66_confirm_duration import format_duration_label
-
-                        print(
-                            f"[DEPOSIT-POLL]   thời gian nạp: {format_duration_label(dur)}",
-                            flush=True,
-                        )
-                print(
-                    f"[DEPOSIT-POLL] ✅ #{order_id} [{user}] Hoàn tất "
-                    f"(mới lưu DB serial={serial})",
-                    flush=True,
-                )
             try:
                 from xoso66_session import refresh_account_balance_to_db
 
-                bal_rep = refresh_account_balance_to_db(aid, session)
-                if bal_rep.get("ok") and bal_rep.get("balance") is not None:
-                    print(
-                        f"[DEPOSIT-POLL]   balance DB={float(bal_rep['balance']):,.0f}",
-                        flush=True,
-                    )
-                elif not bal_rep.get("ok"):
-                    print(
-                        f"[DEPOSIT-POLL]   balance: {bal_rep.get('error')}",
-                        flush=True,
-                    )
-            except Exception as e:
-                print(f"[DEPOSIT-POLL]   balance: {e}", flush=True)
+                refresh_account_balance_to_db(aid, session)
+            except Exception:
+                pass
             try:
                 from xoso66_auto_deposit import remove_from_deposit_cache
 
@@ -782,11 +799,8 @@ def _run_poll_after_third_party(order_id: int) -> None:
                 from xoso66_ws_pool import open_ws_after_deposit_confirmed
 
                 open_ws_after_deposit_confirmed([aid], cfg)
-            except Exception as e:
-                print(
-                    f"[DEPOSIT-POLL]   mở WS sau nạp: {e}",
-                    flush=True,
-                )
+            except Exception:
+                pass
         else:
             from xoso66_deposit_tracking import deposit_order_failed
 
@@ -971,9 +985,26 @@ def _create_deposit_impl() -> Any:
         else:
             amount = 100_000
 
-    try:
-        from xoso66_auto_deposit import release_deposit_reserve, try_reserve_deposit
+    # Chỉ check login MSBAPI tại đây — trước khi lấy lệnh nạp / gửi banking.
+    # Không check lại trong send_to_third_party.
+    blocked = _assert_msbapi_login_before_send(username=user, account_id=aid)
+    if blocked:
+        print(
+            f"⛔ [XOSO66] [{user}] Bỏ lấy lệnh nạp — {blocked.get('error')}",
+            flush=True,
+        )
+        return jsonify(blocked), 409
 
+    try:
+        from xoso66_auto_deposit import (
+            deposit_order_block_reason,
+            release_deposit_reserve,
+            try_reserve_deposit,
+        )
+
+        reason = deposit_order_block_reason(aid)
+        if reason:
+            return jsonify({"error": reason, "ok": False}), 409
         if not try_reserve_deposit(aid):
             return jsonify({"error": "Đang có lệnh nạp chưa xong"}), 409
     except Exception:

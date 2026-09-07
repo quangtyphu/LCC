@@ -79,6 +79,7 @@ os.environ['PYTHONUNBUFFERED'] = '1'
 if sys.platform == 'win32':
     os.system('chcp 65001 > nul')
 
+import html
 import os, re, base64, requests
 from game_api_helper import game_request_with_retry
 
@@ -297,24 +298,59 @@ def _is_masked_account(value: str | None) -> bool:
     return bool(re.fullmatch(r"\*+", s))
 
 
+def _normalize_stk(value: str | None) -> str:
+    """Chuẩn hóa STK: bỏ ký tự lạ, uppercase."""
+    return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+
+
+def _is_valid_account_number(account_number: str | None) -> bool:
+    """STK hợp lệ: 6–20 ký tự chữ/số (hỗ trợ TK ảo BIDV V1T…)."""
+    s = _normalize_stk(account_number)
+    return 6 <= len(s) <= 20 and bool(re.fullmatch(r"[A-Z0-9]+", s))
+
+
+def _parse_napas_merchant_account(merchant_sub_01: str) -> str:
+    """STK từ VietQR tag 38→01: 0006{BIN6}01{len2}{account}."""
+    val = str(merchant_sub_01 or "")
+    if len(val) < 12 or not val.startswith("0006"):
+        return ""
+    rest = val[10:]
+    i = 0
+    account = ""
+    while i + 4 <= len(rest):
+        tag = rest[i : i + 2]
+        try:
+            ln = int(rest[i + 2 : i + 4])
+        except ValueError:
+            break
+        i += 4
+        sub_val = rest[i : i + ln]
+        i += ln
+        if tag == "01" and sub_val:
+            account = re.sub(r"[^A-Za-z0-9]", "", sub_val)
+    if not account:
+        return ""
+    account = account.upper()
+    if 6 <= len(account) <= 20 and re.fullmatch(r"[A-Z0-9]+", account):
+        return account
+    return ""
+
+
 def _parse_account_from_emv(emv: str) -> str | None:
-    """Số TK từ payload VietQR EMV (NAPAS AID A000000727 → tag 01)."""
+    """Số TK từ payload VietQR EMV (tag 38 → sub 01)."""
     emv = str(emv or "").strip()
     if not emv.startswith("000201"):
         return None
-    m = re.search(r"A00000072701(\d{2})(\d+)", emv)
-    if not m:
+    top = _parse_emv_tlvs(emv)
+    merchant = top.get("38")
+    if not merchant:
         return None
-    ln = int(m.group(1))
-    payload = m.group(2)[:ln]
-    m2 = re.search(r"01(\d{2})(\d+)", payload)
-    if m2:
-        aln = int(m2.group(1))
-        acct = m2.group(2)[:aln]
-        if acct.isdigit() and 6 <= len(acct) <= 20:
-            return acct
-    runs = re.findall(r"\d{8,16}", payload)
-    return runs[-1] if runs else None
+    sub = _parse_emv_tlvs(merchant)
+    acct_info = sub.get("01")
+    if not acct_info:
+        return None
+    acct = _parse_napas_merchant_account(acct_info)
+    return acct or None
 
 
 def _silence_opencv_logs() -> None:
@@ -450,15 +486,15 @@ def _parse_account_from_vietqr_link(qr_link: str) -> str | None:
     if not link:
         return None
     m = re.search(
-        r"vietqr\.io/image/([^/?#]+)-([0-9]{6,20})-(?:qr_only|compact|print)",
+        r"vietqr\.io/image/([^/?#]+)-([A-Za-z0-9]{6,20})-(?:qr_only|compact|compact2|print)",
         link,
         re.IGNORECASE,
     )
     if m:
-        return m.group(2)
-    m = re.search(r"/image/[^/?#]*-([0-9]{6,20})-", link)
+        return m.group(2).upper()
+    m = re.search(r"/image/[^/?#]*-([A-Za-z0-9]{6,20})-", link)
     if m:
-        return m.group(1)
+        return m.group(1).upper()
     return None
 
 
@@ -476,7 +512,10 @@ def _get_emv_from_payload(payload: dict) -> str | None:
     emv = None
     b64 = str(payload.get("qr") or payload.get("qr_base64") or "").strip()
     if b64:
-        emv = _decode_qr_emv_from_base64(b64)
+        if b64.startswith("000201"):
+            emv = b64
+        else:
+            emv = _decode_qr_emv_from_base64(b64)
     if not emv:
         qr_link = str(payload.get("qr_link") or "").strip()
         if qr_link:
@@ -514,30 +553,60 @@ def _enrich_payload_from_qr(payload: dict, api_data: dict | None = None) -> None
 
 def _resolve_account_number(payload: dict) -> str:
     """
-    Lấy STK nhận: ưu tiên receiver từ API game.
-    Nếu cổng che (*********) thì decode từ QR VietQR.
-    Ghi đè lại payload['receiver'] khi recover được để tránh decode lặp.
+    Lấy STK nhận: decode QR khi có; ưu tiên QR nếu khác receiver text từ API game.
     """
     _enrich_payload_from_qr(payload)
+    emv = _get_emv_from_payload(payload)
+    qr_acct = _parse_account_from_emv(emv) if emv else None
+    if not qr_acct:
+        qr_acct = _parse_account_from_vietqr_link(str(payload.get("qr_link") or ""))
+    if qr_acct:
+        qr_acct = _normalize_stk(qr_acct)
+
     receiver = str(payload.get("receiver") or "").strip()
     if not _is_masked_account(receiver):
+        recv_norm = _normalize_stk(receiver)
+        if qr_acct and recv_norm and qr_acct != recv_norm:
+            print(
+                f"🔓 STK API ({recv_norm}) ≠ QR ({qr_acct}) — ưu tiên QR",
+                flush=True,
+            )
+            payload["receiver"] = qr_acct
+            return qr_acct
         return receiver
-    emv = _get_emv_from_payload(payload)
-    acct = _parse_account_from_emv(emv) if emv else None
-    if acct:
-        print(f"🔓 STK bị che trên API — lấy từ QR: {acct}", flush=True)
-        payload["receiver"] = acct
-        return acct
+
+    if qr_acct:
+        print(f"🔓 STK bị che trên API — lấy từ QR: {qr_acct}", flush=True)
+        payload["receiver"] = qr_acct
+        return qr_acct
     return receiver
+
+
+def decode_account_holder(name: str | None) -> str:
+    """API game đôi khi trả HTML entity (L&acirc;m…); decode về tiếng Việt thật."""
+    s = str(name or "").strip()
+    if not s:
+        return ""
+    # Decode lặp tới khi ổn định (phòng double-encode).
+    for _ in range(3):
+        decoded = html.unescape(s)
+        if decoded == s:
+            break
+        s = decoded.strip()
+    return s
 
 
 def extract_deposit_fields(payload: dict, api_data: dict | None, amount: int) -> dict:
     """Chuẩn hóa 5 trường bắt buộc trước khi lưu DB / gửi bên thứ 3."""
     _enrich_payload_from_qr(payload, api_data)
+    holder = decode_account_holder(payload.get("name"))
+    if holder and holder != str(payload.get("name") or "").strip():
+        print(f"🔓 Tên chủ TK decode HTML: {payload.get('name')!r} → {holder!r}", flush=True)
+        payload["name"] = holder
     return {
         "bank": str(payload.get("type") or "").strip(),
         "account_number": _resolve_account_number(payload),
-        "account_holder": str(payload.get("name") or "").strip(),
+        "account_holder": holder,
         "amount": int(amount or 0),
         "transfer_content": _get_transfer_content(payload, api_data),
     }
@@ -562,7 +631,7 @@ def validate_deposit_fields(fields: dict) -> tuple[bool, str]:
         missing.append("NDCK")
     if _is_masked_account(account_number):
         missing.append("STK (bị che hoặc trống)")
-    elif not (account_number.isdigit() and 6 <= len(account_number) <= 20):
+    elif not _is_valid_account_number(account_number):
         missing.append("STK (không hợp lệ)")
 
     if missing:

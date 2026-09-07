@@ -3,7 +3,7 @@
   "_assign_strategy": "1 = cược ngày cao (còn cap) → slot lớn nhất; 2 = acc cược ngày thấp→cao, mỗi acc 1 mức còn lại (to→nhỏ); 3 = 1 cặp/phiên — 2 acc chênh số dư nhỏ nhất, cùng mức Tài/Xỉu",
   "_assign_match_mode": "0 = khớp được lệnh nào thì cược; 1 = phải khớp hết mức Tài/Xỉu mới cược (hủy phiên nếu dư). Strategy 3 bỏ qua — chỉ cần cặp cân.",
   "_consolidate": "strategy 3: consolidate_min_withdraw_vnd (300k), consolidate_no_deposit (true = không nạp), consolidate_pair_max_gap_vnd (chênh floor 10k liền kề ≤ XXX; 0 = floor bằng nhau), consolidate_withdraw_delay_sec (420=7p), consolidate_min_ws_balance_vnd (sàn mở WS, mặc định 50k)",
-  "_daily_bet_cap": "895000 ≈ điểm danh 888k; 2695000 ≈ Cửa 1 Nhiệm vụ MINI GAME (target 2688000). Cap chỉ dừng cược; claim theo daily thật. Nâng cap → hẹn claim lại nếu đã đủ cap; Đủ ngày còn room vào WS qua fill (ws_fill_priority).",
+  "_daily_bet_cap": "895000 ≈ điểm danh 888k; 2695000 ≈ Cửa 1 Nhiệm vụ MINI GAME (target 2688000). Cap chỉ dừng cược; claim theo daily thật. Hết acc còn room cap: daily_bet_cap_raise_enabled=true → nâng daily_bet_cap_vnd = raise_vnd (không đổi assign_strategy); false → assign_strategy=2 (không nâng cap). Đủ ngày còn room vào WS qua fill.",
   "_daily_bet_cap_reset": "00:05 giờ VN mỗi ngày ghi auto_bet.daily_bet_cap_vnd = value_vnd (mặc định 895000). Tắt: enabled=false.",
   "auto_deposit": {
     "amount_vnd": 1000000,
@@ -29,6 +29,8 @@
     "side_total_vnd": 100000,
     "bet_step_vnd": 10000,
     "daily_bet_cap_vnd": 892000,
+    "daily_bet_cap_raise_enabled": true,
+    "daily_bet_cap_raise_vnd": 2695000,
     "assign_strategy": 3,
     "assign_match_mode": 0,
     "consolidate_min_withdraw_vnd": 300000,
@@ -58,5 +60,21 @@
     "hour": 0,
     "minute": 5,
     "value_vnd": 895000
+  },
+  "game_domains": {
+    "default_base_url": "https://hnwp57e0.whskxk5.com",
+    "candidates": [
+      "https://g3lbe63d.whskxk1.com",
+      "https://whvcrgfb.whskxk2.com",
+      "https://qyhg72o0.whskxk3.com",
+      "https://sr8i5ehf.whskxk4.com",
+      "https://oz8chipd.whskxk5.com",
+      "https://go8iuckl.whskxk5.com",
+      "https://hnwp57e0.whskxk5.com"
+    ],
+    "auto_rotate_enabled": true,
+    "rotate_cooldown_sec": 600,
+    "max_rotates_per_hour": 3,
+    "probe_timeout_sec": 5
   }
 }

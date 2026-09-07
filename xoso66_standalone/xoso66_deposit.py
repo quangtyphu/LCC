@@ -60,7 +60,8 @@ except ImportError:
     _PY_CRYPTO = False
 
 # ── Cấu hình site (sửa nếu domain đổi) ─────────────────────────────────────
-BASE_URL = os.environ.get("XOSO66_BASE_URL", "https://v6sgqpyi.whskxk1.com").rstrip("/")
+from xoso66_game_domain import default_base_url, resolve_base_url
+BASE_URL = default_base_url()  # legacy; prefer resolve_base_url(session)
 DEPOSIT_ORDER_PATH = "/server/payment/depositorder"
 PAYMENT_ORDER_LIST_PATH = "/server/payment/paymentorderlist"
 QRPAY_BASE = os.environ.get("XOSO66_QRPAY_BASE", "https://pay.qrpay.quest").rstrip("/")
@@ -104,8 +105,8 @@ def build_common_headers(session: dict, *, form_token: str, content_type: str) -
         "accept": "application/json, text/plain, */*",
         "accept-language": "vi,en-US;q=0.9,en;q=0.8",
         "content-type": content_type,
-        "origin": BASE_URL,
-        "referer": f"{BASE_URL}/home/",
+        "origin": resolve_base_url(session),
+        "referer": f"{resolve_base_url(session)}/home/",
         "user-agent": session.get("user_agent") or DEFAULT_UA,
         "x-device": "pc",
         "x-lang": "vi",
@@ -430,7 +431,7 @@ def fetch_cek_p(session: dict) -> str:
     """Header cek-p (RSA public key) — tu response API, luu trong session."""
     if session.get("cek_p"):
         return str(session["cek_p"])
-    url = f"{BASE_URL}/server/index/encryptKey"
+    url = f"{resolve_base_url(session)}/server/index/encryptKey"
     r = _game_http(session).get(
         url,
         headers={
@@ -507,7 +508,7 @@ def get_form_token(session: dict) -> str:
     # Thử lấy từ trang charge (một số site nhúng trong HTML)
     try:
         r = _game_http(session).get(
-            f"{BASE_URL}/home/",
+            f"{resolve_base_url(session)}/home/",
             headers={
                 "user-agent": session.get("user_agent") or DEFAULT_UA,
                 "cookie": _cookie_header(session),
@@ -538,7 +539,7 @@ def get_deposit_info(account_id: str | None = None, session: dict | None = None)
         session = sessions[account_id]
     form_token = get_form_token(session)
     headers = build_common_headers(session, form_token=form_token, content_type="application/json")
-    url = f"{BASE_URL}{DEPOSIT_INFO_PATH}"
+    url = f"{resolve_base_url(session)}{DEPOSIT_INFO_PATH}"
     r = _game_http(session).get(url, headers=headers, timeout=30)
     apply_response_tokens(session, r.headers)
     try:
@@ -628,7 +629,7 @@ def list_payment_orders(
         form_token=form_token,
         content_type="application/x-www-form-urlencoded/json",
     )
-    url = f"{BASE_URL}{PAYMENT_ORDER_LIST_PATH}"
+    url = f"{resolve_base_url(session)}{PAYMENT_ORDER_LIST_PATH}"
     r = _game_http(session).post(
         url,
         data=json.dumps(body, separators=(",", ":")),
@@ -659,7 +660,7 @@ def post_deposit_order(
     cek_k: str,
     form_token: str,
 ) -> tuple[int, str, dict]:
-    url = f"{BASE_URL}{DEPOSIT_ORDER_PATH}"
+    url = f"{resolve_base_url(session)}{DEPOSIT_ORDER_PATH}"
     headers = build_request_headers(session, cek_k=cek_k, form_token=form_token)
     r = _game_http(session).post(url, data=encrypted_body, headers=headers, timeout=45)
     text = r.text
@@ -674,7 +675,9 @@ def deposit_order_playwright(session: dict, plain: dict) -> dict[str, Any]:
     except ImportError:
         raise RuntimeError("pip install playwright && playwright install chromium")
 
-    from xoso66_session import BASE_URL as _base, merge_playwright_cookies
+    from xoso66_session import merge_playwright_cookies
+    from xoso66_game_domain import resolve_base_url as _rbu
+    _base = _rbu(session)
 
     extra = {"accept": "application/json", "x-lang": "vi", "x-device": "pc"}
     for k in ("c-a-i", "cf-auth-token", "cf-con-s", "cf-pass"):
@@ -759,7 +762,7 @@ def save_qr_image(
             hdrs["referer"] = src
         try:
             host = urlparse(str(url)).netloc.lower()
-            if session and host and host not in urlparse(BASE_URL).netloc.lower():
+            if session and host and host not in urlparse(resolve_base_url(session)).netloc.lower():
                 r = requests.get(str(url), headers=hdrs, timeout=25)
             else:
                 r = _game_http(session or {}).get(str(url), headers=hdrs, timeout=25)
@@ -887,24 +890,64 @@ def _fetch_topay_http(
     return r.text
 
 
+def _parse_emv_tlvs(data: str) -> dict[str, str]:
+    tags: dict[str, str] = {}
+    i = 0
+    data = str(data or "")
+    while i + 4 <= len(data):
+        tag = data[i : i + 2]
+        try:
+            ln = int(data[i + 2 : i + 4])
+        except ValueError:
+            break
+        i += 4
+        val = data[i : i + ln]
+        i += ln
+        tags[tag] = val
+    return tags
+
+
+def _parse_napas_merchant_account(merchant_sub_01: str) -> str:
+    val = str(merchant_sub_01 or "")
+    if len(val) < 12 or not val.startswith("0006"):
+        return ""
+    rest = val[10:]
+    i = 0
+    account = ""
+    while i + 4 <= len(rest):
+        tag = rest[i : i + 2]
+        try:
+            ln = int(rest[i + 2 : i + 4])
+        except ValueError:
+            break
+        i += 4
+        sub_val = rest[i : i + ln]
+        i += ln
+        if tag == "01" and sub_val:
+            account = re.sub(r"[^A-Za-z0-9]", "", sub_val)
+    if not account:
+        return ""
+    account = account.upper()
+    if 6 <= len(account) <= 20 and re.fullmatch(r"[A-Z0-9]+", account):
+        return account
+    return ""
+
+
 def _parse_account_from_emv(emv: str) -> str | None:
-    """Số TK từ payload VietQR EMV (tag 01 trong NAPAS 38) — fallback khi HTML chưa render."""
+    """Số TK từ payload VietQR EMV (tag 38 → sub 01) — fallback khi HTML chưa render."""
     emv = str(emv or "").strip()
     if not emv.startswith("000201"):
         return None
-    m = re.search(r"A00000072701(\d{2})(\d+)", emv)
-    if not m:
+    top = _parse_emv_tlvs(emv)
+    merchant = top.get("38")
+    if not merchant:
         return None
-    ln = int(m.group(1))
-    payload = m.group(2)[:ln]
-    m2 = re.search(r"01(\d{2})(\d+)", payload)
-    if m2:
-        aln = int(m2.group(1))
-        acct = m2.group(2)[:aln]
-        if acct.isdigit() and 6 <= len(acct) <= 20:
-            return acct
-    runs = re.findall(r"\d{8,16}", payload)
-    return runs[-1] if runs else None
+    sub = _parse_emv_tlvs(merchant)
+    acct_info = sub.get("01")
+    if not acct_info:
+        return None
+    acct = _parse_napas_merchant_account(acct_info)
+    return acct or None
 
 
 def _parse_topay_paymain_fields(html: str, *, amount: int | None = None) -> dict[str, Any]:

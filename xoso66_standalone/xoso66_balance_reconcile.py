@@ -160,6 +160,27 @@ def _reconcile_one(account_id: str, *, cfg: dict | None) -> dict[str, Any]:
 def run_balance_reconcile_once(*, cfg: dict | None = None) -> dict[str, Any]:
     """Một vòng check toàn bộ acc target."""
     c = cfg or load_config()
+    # Đang cược / chờ KQ → bỏ qua (tránh 146×getBalance tranh proxy với placeOrder/WS).
+    try:
+        from xoso66_auto_bet import pending_bet_account_ids
+
+        pending = pending_bet_account_ids()
+        if pending:
+            print(
+                f"[BALANCE-RECONCILE] Bỏ qua — đang có {len(pending)} nick ∈ C "
+                f"(chờ KQ / đang đặt)",
+                flush=True,
+            )
+            return {
+                "ok": True,
+                "skipped": True,
+                "total": 0,
+                "ok_count": 0,
+                "fail_count": 0,
+                "drop_count": 0,
+            }
+    except Exception:
+        pass
     rows = list_target_accounts()
     n = len(rows)
     workers = _parallel(c)
@@ -222,6 +243,14 @@ def worker_balance_reconcile_loop(*, quiet: bool = False) -> None:
             flush=True,
         )
     while not stopping():
+        # Chờ pool WS ổn định trước vòng quét đầu — tránh tranh proxy lúc mở 16 WS.
+        first_delay = 180
+        for _ in range(first_delay):
+            if stopping():
+                break
+            time.sleep(1)
+        if stopping():
+            break
         try:
             run_balance_reconcile_once()
         except Exception as e:

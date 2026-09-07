@@ -298,7 +298,7 @@ def _browser_isolate_launch_chrome(
     start_url: str = "",
 ) -> Any:
     """chrome.exe native + CDP — giống mở Chrome tay qua browser_isolate."""
-    from xoso66_session import BASE_URL
+    from xoso66_game_domain import default_base_url
 
     root = _DIR.parent / "browser_isolate"
     if not root.is_dir():
@@ -307,7 +307,7 @@ def _browser_isolate_launch_chrome(
         sys.path.insert(0, str(root))
     from launcher import _launch_chrome_native  # type: ignore
 
-    url = (start_url or os.environ.get("XOSO66_REGISTER_START_URL") or f"{BASE_URL}/home/").strip()
+    url = (start_url or os.environ.get("XOSO66_REGISTER_START_URL") or f"{default_base_url()}/home/").strip()
     return _launch_chrome_native(
         profile_path=profile_path,
         proxy=proxy,

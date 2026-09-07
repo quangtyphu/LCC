@@ -27,7 +27,8 @@ import requests
 
 from xoso66_sessions_io import load_sessions, merge_account, save_sessions, use_db
 
-BASE_URL = os.environ.get("XOSO66_BASE_URL", "https://v6sgqpyi.whskxk1.com").rstrip("/")
+from xoso66_game_domain import default_base_url, resolve_base_url
+BASE_URL = default_base_url()  # legacy; prefer resolve_base_url(session)
 LOGIN_PATH = "/server/user/login"
 GET_BALANCE_PATH = "/server/user/getBalance"
 ENCRYPT_KEY_PATH = "/server/index/encryptKey"
@@ -308,7 +309,7 @@ def bootstrap_prelogin(session: dict, http: requests.Session | None = None) -> N
         "cookie": _cookie_header(session),
     }
     try:
-        r = http.get(f"{BASE_URL}{ENCRYPT_KEY_PATH}", headers=headers, timeout=25)
+        r = http.get(f"{resolve_base_url(session)}{ENCRYPT_KEY_PATH}", headers=headers, timeout=25)
         apply_response_tokens(session, r.headers)
         if r.headers.get("cek-p") or r.headers.get("Cek-P"):
             session["cek_p"] = r.headers.get("cek-p") or r.headers.get("Cek-P")
@@ -347,7 +348,7 @@ def post_encrypted(
     encrypted_body, cek_k, aes_key = encrypt_deposit_body(session, plain)
     headers = build_request_headers(session, cek_k=cek_k, form_token=form_token)
     http = http or _requests_session(session)
-    r = http.post(f"{BASE_URL}{path}", data=encrypted_body, headers=headers, timeout=45)
+    r = http.post(f"{resolve_base_url(session)}{path}", data=encrypted_body, headers=headers, timeout=45)
     text = r.text
     if text.startswith('"') and text.endswith('"'):
         text = text[1:-1]
@@ -507,7 +508,7 @@ def get_user_balance(session: dict, *, refresh: bool = True) -> dict[str, Any]:
     )
     params = {"refresh": "1"} if refresh else {}
     r = _requests_session(session).get(
-        f"{BASE_URL}{GET_BALANCE_PATH}",
+        f"{resolve_base_url(session)}{GET_BALANCE_PATH}",
         headers=headers,
         params=params,
         timeout=25,
@@ -613,11 +614,12 @@ def session_is_valid(session: dict) -> bool:
     return bool(get_user_balance(session).get("ok"))
 
 
-def prep_site_session_before_ws(account_id: str) -> bool:
+def prep_site_session_before_ws(
+    account_id: str, *, force_balance_refresh: bool = True
+) -> bool:
     """
-    Trước mở WS: đảm bảo session + getBalance.
-    Tôn trọng TTL SESSION_MAX_AGE_SEC — chỉ login khi hết hạn hoặc getBalance fail.
-    Tin số dư API; nếu < ngưỡng WS → False.
+    Trước mở WS: đảm bảo session (+ getBalance khi force_balance_refresh).
+    force_balance_refresh=False (bù/soft restart): tin số dư DB nếu đã >= ngưỡng.
     """
     aid = str(account_id or "").strip()
     if not aid:
@@ -630,15 +632,22 @@ def prep_site_session_before_ws(account_id: str) -> bool:
             username_for_log,
         )
         from xoso66_config_util import load_config
-        from xoso66_ws_pool import min_balance_for_ws
+        from xoso66_ws_pool import account_balance_vnd, min_balance_for_ws
 
         row = get_account(aid) or {}
         status = str(row.get("status") or "").strip()
         min_bal = float(min_balance_for_ws(load_config()))
+        db_bal = float(account_balance_vnd(row))
 
         session = ensure_session(aid, force_login=False)
+        if not force_balance_refresh and db_bal >= min_bal:
+            return True
+
         rep = refresh_account_balance_to_db(aid, session, refresh=True)
         if not rep.get("ok"):
+            # Soft path: DB còn đủ thì vẫn cho mở (tránh kẹt cả pool vì 1 API chậm).
+            if not force_balance_refresh and db_bal >= min_bal:
+                return True
             return False
         bal = _as_money(rep.get("balance"))
         if bal is not None and bal < min_bal:
@@ -650,6 +659,14 @@ def prep_site_session_before_ws(account_id: str) -> bool:
             )
             if status != STATUS_HET_TIEN:
                 set_account_status(aid, STATUS_HET_TIEN, reason="thiếu tiền trước mở WS")
+            try:
+                from xoso66_ws_pool import schedule_fund_deposit_for_ws_shortage
+
+                schedule_fund_deposit_for_ws_shortage(
+                    load_config(), [aid], label="ws-prep-low-balance"
+                )
+            except Exception:
+                pass
             return False
         return True
     except Exception:
@@ -676,7 +693,7 @@ def sync_session_from_chrome(
     Đồng bộ cf_clearance + cf-* từ Chrome CMS profile vào session DB.
 
     Luồng:
-      1) Đọc cookie từ chrome_profiles_data (hoặc chờ CF trong Chrome đang mở)
+      1) Đọc cookie từ chrome_profiles_data (Documents/, cạnh CMS) hoặc chờ CF trong Chrome đang mở
       2) Sniff cf-auth-token qua Chrome tạm + cookie đã sync
       3) Login (nếu force_login) → lưu session + balance
     """

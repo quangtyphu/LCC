@@ -223,7 +223,7 @@ def solve_cf_anticloudflare(
     html: str = "",
 ) -> dict[str, Any]:
     """Capsolver AntiCloudflareTask — vượt /__verify/check."""
-    from xoso66_cf import BASE_URL
+    from xoso66_game_domain import default_base_url
     from xoso66_proxy import ensure_proxy
 
     cap = load_captcha_config()
@@ -235,7 +235,7 @@ def solve_cf_anticloudflare(
 
     proxy_raw = str(session.get("proxy") or "").strip()
     proxy = capsolver_proxy_url(proxy_raw) if proxy_raw else ""
-    url = str(website_url or f"{BASE_URL}/home/").strip()
+    url = str(website_url or f"{default_base_url()}/home/").strip()
     task: dict[str, Any] = {
         "type": "AntiCloudflareTask",
         "websiteURL": url,

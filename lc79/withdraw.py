@@ -3,11 +3,19 @@ Withdraw API - Rút tiền từ game về ngân hàng
 """
 import sys
 import io
+from pathlib import Path
 
 # Fix encoding cho Windows console
 if sys.platform == 'win32':
     import os
     os.system('chcp 65001 > nul')
+
+_LC79_DIR = Path(__file__).resolve().parent
+_LC79_REPO = _LC79_DIR.parent
+if str(_LC79_DIR) not in sys.path:
+    sys.path.insert(0, str(_LC79_DIR))
+if str(_LC79_REPO) not in sys.path:
+    sys.path.insert(0, str(_LC79_REPO))
 
 import requests
 import time
@@ -22,6 +30,66 @@ import os
 
 WITHDRAW_STATE_FILE = os.path.join(os.path.dirname(__file__), "queue_state.json")
 WITHDRAW_LOCK_SECONDS = 15 * 60
+
+
+def _assert_msbapi_login_before_withdraw(username: str) -> dict | None:
+    """XMSB* phải login được — chỉ gọi 1 lần ngay trước khi rút (HMAC bắt buộc)."""
+    try:
+        from banking_msbapi_login_check import (
+            assert_device_login_ok,
+            banking_base_from_third_party_url,
+            require_partner_hmac,
+            resolve_lc79_device,
+        )
+        from constants import load_config
+    except Exception as e:
+        print(f"⚠️ [withdraw] login-check import lỗi: {e}", flush=True)
+        return {"ok": False, "error": f"login-check import lỗi: {e}"}
+
+    cfg = load_config() if callable(load_config) else {}
+    dep = cfg.get("LC79_DEPOSIT") if isinstance(cfg.get("LC79_DEPOSIT"), dict) else {}
+    third = str(
+        dep.get("third_party_url") or "http://127.0.0.1:8888/api/orders/withdraw"
+    )
+    partner_id = str(
+        os.environ.get("LC79_PARTNER_ID") or dep.get("partnerId") or "AZP"
+    ).strip()
+    api_key = str(
+        os.environ.get("LC79_PARTNER_API_KEY")
+        or dep.get("partner_api_key")
+        or dep.get("apiKey")
+        or ""
+    ).strip()
+    api_secret = str(
+        os.environ.get("LC79_PARTNER_API_SECRET")
+        or dep.get("partner_api_secret")
+        or dep.get("apiSecret")
+        or ""
+    ).strip()
+    miss = require_partner_hmac(partner_id, api_key, api_secret)
+    if miss:
+        return {"ok": False, "error": miss}
+
+    device = resolve_lc79_device(username, cms_api_base=API_BASE)
+    if not device:
+        print(f"⚠️ [withdraw] {username}: chưa có device — bỏ qua login-check", flush=True)
+        return None
+
+    gate = assert_device_login_ok(
+        device,
+        banking_base_url=banking_base_from_third_party_url(third),
+        partner_id=partner_id,
+        api_key=api_key,
+        api_secret=api_secret,
+        label=f"RÚT {username}",
+    )
+    if gate.get("ok"):
+        return None
+    from banking_msbapi_login_check import lock_lc79_account, should_lock_after_login_check
+
+    if should_lock_after_login_check(gate):
+        lock_lc79_account(username, reason=f"MSBAPI {device} login fail")
+    return {"ok": False, "error": gate.get("error") or f"Device {device} không login được"}
 
 
 def _load_withdraw_state() -> dict:
@@ -330,6 +398,11 @@ def withdraw(
         {"ok": True, "message": "...", "balance": 123456} hoặc {"ok": False, "error": "..."}
     """
     try:
+        # Chỉ check login 1 lần ngay trước khi thực hiện lệnh rút.
+        blocked = _assert_msbapi_login_before_withdraw(username)
+        if blocked:
+            return blocked
+
         # Check lock rút tiền (từ lỗi code -2)
         remaining = _get_withdraw_lock_remaining()
         if remaining > 0:
@@ -495,6 +568,24 @@ def withdraw(
                 _enqueue_withdraw_queue(username, amount)
             if code_int == -10:
                 if is_withdraw_profile_locked(data, str(message or "")):
+                    try:
+                        from status_utils import update_status
+
+                        if update_status(username, "Khoá"):
+                            print(
+                                f"🔒 [{username}] [-10] profile khóa rút → status Khoá",
+                                flush=True,
+                            )
+                        else:
+                            print(
+                                f"⚠️ [{username}] [-10] profile khóa rút nhưng không cập nhật được status Khoá",
+                                flush=True,
+                            )
+                    except Exception as e:
+                        print(
+                            f"⚠️ [{username}] Lỗi set status Khoá sau [-10] profile khóa: {e}",
+                            flush=True,
+                        )
                     notify_withdraw_profile_locked(
                         username,
                         data,

@@ -1,11 +1,15 @@
 {
   "manifest_version": 3,
   "name": "XOSO66 Register Bridge",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Auto register via Vue store — no CDP",
   "permissions": [],
   "host_permissions": [
     "https://*.whskxk1.com/*",
+    "https://*.whskxk2.com/*",
+    "https://*.whskxk3.com/*",
+    "https://*.whskxk4.com/*",
+    "https://*.whskxk5.com/*",
     "http://127.0.0.1/*"
   ],
   "background": {
@@ -13,7 +17,13 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://*.whskxk1.com/*"],
+      "matches": [
+        "https://*.whskxk1.com/*",
+        "https://*.whskxk2.com/*",
+        "https://*.whskxk3.com/*",
+        "https://*.whskxk4.com/*",
+        "https://*.whskxk5.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

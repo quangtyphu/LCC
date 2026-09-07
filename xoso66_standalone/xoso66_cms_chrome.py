@@ -19,7 +19,8 @@ _GAME_DATA_DB = Path(
     or _CMS_ROOT / "game_data.db"
 )
 _PROFILES_DIR = Path(
-    os.environ.get("CMS_CHROME_PROFILES_DIR") or _CMS_ROOT / "chrome_profiles_data"
+    os.environ.get("CMS_CHROME_PROFILES_DIR")
+    or _CMS_ROOT.parent / "chrome_profiles_data"
 )
 
 

@@ -490,7 +490,29 @@ def if_user_reached_bet_target(username: str, target_total_bet: int) -> bool:
 
 def is_user_waiting_to_withdraw(username: str) -> bool:
     pending = pending_withdrawals.get(username) or {}
-    return pending.get("status") == "ready"
+    # ready = chờ rút; inflight = đang gọi API rút (cũng không cho bet thêm)
+    return pending.get("status") in ("ready", "inflight")
+
+
+def _set_pending_inflight(username: str) -> bool:
+    """Chuyển ready -> inflight dưới caller đã giữ user_lock. False nếu không claim được."""
+    pending = pending_withdrawals.get(username)
+    if not isinstance(pending, dict):
+        return False
+    if (pending.get("status") or "ready") != "ready":
+        return False
+    pending["status"] = "inflight"
+    pending_withdrawals[username] = pending
+    return True
+
+
+def _reset_pending_to_ready(username: str) -> None:
+    """Trả inflight về ready (vd. exception / cooldown) để worker có thể retry."""
+    pending = pending_withdrawals.get(username)
+    if not isinstance(pending, dict):
+        return
+    pending["status"] = "ready"
+    pending_withdrawals[username] = pending
 
 
 def _can_attempt_withdraw_now() -> bool:
@@ -605,6 +627,7 @@ def _defer_pending_retry(username: str, delay_seconds: int, reason: str = "wait_
     if not isinstance(pending, dict):
         return
     wait_seconds = max(1, int(delay_seconds))
+    pending["status"] = "ready"
     pending["next_retry_at"] = time.time() + wait_seconds
     pending["reason"] = reason
     pending_withdrawals[username] = pending
@@ -665,6 +688,14 @@ def _process_pending_withdrawals():
         if isinstance(next_retry_at, (int, float)) and next_retry_at > now_ts:
             continue
 
+        # handle_won_session (hoặc vòng worker trước) đang gọi API — không hủy, chỉ skip
+        status = pending.get("status") or "ready"
+        if status == "inflight":
+            continue
+        if status != "ready":
+            _cancel_pending_withdrawal(username, f"invalid pending status: {status}")
+            continue
+
         target_total_bet = required_bets.get(username)
         if isinstance(target_total_bet, int) and target_total_bet > 0:
             current_total = get_total_bet_for_user(username)
@@ -677,12 +708,7 @@ def _process_pending_withdrawals():
                 continue
             _clear_required_bet(username)
 
-        status = pending.get("status") or "ready"
-        if status != "ready":
-            _cancel_pending_withdrawal(username, f"invalid pending status: {status}")
-            continue
-
-        # Dùng user_lock để tránh race với handle_won_session_withdrawal (rút 2 lần)
+        # Dùng user_lock + status inflight để tránh race rút 2 lần với handle_won_session
         if username not in processing_users:
             processing_users[username] = threading.Lock()
         user_lock = processing_users[username]
@@ -692,33 +718,39 @@ def _process_pending_withdrawals():
 
         amount: Optional[int] = None
         try:
-            # Re-check: user có thể đã bị clear bởi handle_won_session
+            # Re-check: user có thể đã bị clear / claim bởi handle_won_session
             if username not in pending_withdrawals:
                 continue
             pend = pending_withdrawals[username]
+            if (pend.get("status") or "ready") != "ready":
+                continue
             balance = _get_latest_balance(username)
             if balance is None:
                 balance = pend.get("last_balance", 0)
             amount = pend.get("amount") or find_nearest_withdraw_amount(balance)
+            if not amount:
+                continue
+            if not _set_pending_inflight(username):
+                continue
         finally:
-            # Không giữ user_lock trong lúc gọi API / sleep [-11] — tránh kẹt Late Night flush
-            # đang chờ cùng lock (in "chọn ..." nhưng không thấy "Gửi lệnh rút").
+            # Không giữ user_lock trong lúc gọi API — tránh kẹt Late Night flush
             user_lock.release()
 
         if not amount:
             continue
 
-        user_lock.acquire(blocking=True)
-        try:
-            if username not in pending_withdrawals:
-                continue
-        finally:
-            user_lock.release()
-
         print(f"⏳ [AutoWithdraw][{username}] Pending -> Try rút {amount:,}đ")
-        result = _withdraw_for_pending(username, amount)
+        try:
+            result = _withdraw_for_pending(username, amount)
+        except Exception as e:
+            with user_lock:
+                _reset_pending_to_ready(username)
+            print(f"⚠️ [AutoWithdraw][{username}] Pending withdraw exception: {e}", flush=True)
+            continue
 
         if result.get("cooldown"):
+            with user_lock:
+                _reset_pending_to_ready(username)
             return
 
         response_data = result.get("response", {}) if isinstance(result, dict) else {}
@@ -915,6 +947,14 @@ def handle_won_session_withdrawal(
 
         pending = pending_withdrawals[username]
         status = pending.get("status") or "ready"
+        if status == "inflight":
+            # Pending worker (hoặc thread khác) đang rút — không gọi API lần 2
+            return {
+                "ok": True,
+                "withdrew": False,
+                "pending": True,
+                "message": "Đang có lệnh rút đang chạy (inflight)",
+            }
         if status != "ready":
             _cancel_pending_withdrawal(username, f"invalid pending status: {status}")
             return {
@@ -931,6 +971,15 @@ def handle_won_session_withdrawal(
                 "error": f"Balance {balance:,} quá cao hoặc quá thấp",
             }
 
+        # Claim trước khi nhả lock — pending worker sẽ skip status inflight
+        if not _set_pending_inflight(username):
+            return {
+                "ok": True,
+                "withdrew": False,
+                "pending": True,
+                "message": "Không claim được pending (đã có thread khác rút)",
+            }
+
         if late_night_flush:
             print(
                 f"💰 [AutoWithdraw][LateNight][{username}] Gửi lệnh rút {amount:,}đ (số dư {balance:,})",
@@ -944,6 +993,8 @@ def handle_won_session_withdrawal(
             username, amount, bypass_global_cooldown=late_night_flush
         )
     except Exception as e:
+        with user_lock:
+            _reset_pending_to_ready(username)
         return {
             "ok": False,
             "withdrew": False,

@@ -9,6 +9,8 @@ import re
 _BANK_ALIASES: dict[str, tuple[str, str]] = {
     "vpb": ("vp_bank", "VPBank"),
     "vpbank": ("vp_bank", "VPBank"),
+    "pgb": ("pg_bank", "PGbank"),
+    "pgbank": ("pg_bank", "PGbank"),
     "msb": ("msb", "MSB"),
     "vib": ("vib", "VIB"),
     "acb": ("acb", "ACB"),

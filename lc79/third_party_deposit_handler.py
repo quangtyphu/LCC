@@ -28,6 +28,7 @@ from shared.console_log import install_timed_print
 
 install_timed_print()
 
+import json
 import requests
 import time
 import threading
@@ -58,7 +59,7 @@ def _load_urls() -> tuple[str, str, int]:
 	third = str(
 		dep.get("third_party_url")
 		or os.environ.get("LC79_THIRD_PARTY_DEPOSIT_URL")
-		or "http://127.0.0.1:8888/api/deposit"
+		or "http://127.0.0.1:8888/api/orders/withdraw"
 	).strip()
 	return third, callback, port
 
@@ -330,13 +331,17 @@ def send_existing_order_to_third_party(username: str, payload: dict) -> dict:
 		qr_image_path,
 		qr_link,
 	)
+	from deposit_api import decode_account_holder
+
 	order_data = {
 		"order_id": order_id,
 		"amount": amount,
 		"qr_base64": qr_base64,
 		"transfer_content": payload.get("transfer_content") or payload.get("transferContent") or "",
 		"account_number": payload.get("account_number") or payload.get("accountNumber") or payload.get("receiver") or "",
-		"account_holder": payload.get("account_holder") or payload.get("accountHolder") or payload.get("name") or "",
+		"account_holder": decode_account_holder(
+			payload.get("account_holder") or payload.get("accountHolder") or payload.get("name") or ""
+		),
 		"qr_link": qr_link,
 		"qr_image_path": qr_image_path,
 		"bank": payload.get("bank") or payload.get("type") or "",
@@ -385,10 +390,88 @@ def send_existing_order_to_third_party(username: str, payload: dict) -> dict:
 	}
 
 
+def _partner_auth_cfg() -> tuple[str, str, str]:
+	from constants import load_config
+
+	cfg = load_config()
+	dep = cfg.get("LC79_DEPOSIT") if isinstance(cfg.get("LC79_DEPOSIT"), dict) else {}
+	partner_id = str(
+		os.environ.get("LC79_PARTNER_ID")
+		or dep.get("partnerId")
+		or dep.get("partner_id")
+		or "AZP"
+	).strip()
+	api_key = str(
+		os.environ.get("LC79_PARTNER_API_KEY")
+		or dep.get("partner_api_key")
+		or dep.get("apiKey")
+		or ""
+	).strip()
+	api_secret = str(
+		os.environ.get("LC79_PARTNER_API_SECRET")
+		or dep.get("partner_api_secret")
+		or dep.get("apiSecret")
+		or ""
+	).strip()
+	return partner_id, api_key, api_secret
+
+
+def _hmac_partner_headers(
+	url: str, body: bytes, *, partner_id: str, api_key: str, api_secret: str
+) -> dict:
+	from banking_msbapi_login_check import hmac_partner_headers
+
+	return hmac_partner_headers(
+		"POST",
+		url,
+		body,
+		partner_id=partner_id,
+		api_key=api_key,
+		api_secret=api_secret,
+	)
+
+
+def _assert_msbapi_login_before_send(username: str) -> dict | None:
+	"""Trước khi lấy lệnh nạp: XMSB* phải login được (HMAC). Trả dict lỗi hoặc None."""
+	from banking_msbapi_login_check import (
+		assert_device_login_ok,
+		banking_base_from_third_party_url,
+		require_partner_hmac,
+		resolve_lc79_device,
+	)
+
+	refresh_urls()
+	partner_id, api_key, api_secret = _partner_auth_cfg()
+	miss = require_partner_hmac(partner_id, api_key, api_secret)
+	if miss:
+		return {"ok": False, "error": miss}
+
+	device = resolve_lc79_device(username, cms_api_base=NODE_SERVER_URL)
+	if not device:
+		print(f"⚠️ [LC79] {username}: chưa có device — bỏ qua login-check", flush=True)
+		return None
+	gate = assert_device_login_ok(
+		device,
+		banking_base_url=banking_base_from_third_party_url(THIRD_PARTY_API_URL),
+		partner_id=partner_id,
+		api_key=api_key,
+		api_secret=api_secret,
+		label=f"NẠP {username}",
+	)
+	if gate.get("ok"):
+		return None
+	from banking_msbapi_login_check import lock_lc79_account, should_lock_after_login_check
+
+	if should_lock_after_login_check(gate):
+		lock_lc79_account(username, reason=f"MSBAPI {device} login fail")
+	return {"ok": False, "error": gate.get("error") or f"Device {device} không login được"}
+
+
 def send_to_third_party(username: str, amount: int, order_data: dict) -> dict:
 	"""
 	Gửi thông tin nạp tiền cho bên thứ 3 (theo format của họ).
 	Chỉ gửi khi đủ 5 trường: ngân hàng, STK, chủ TK, số tiền, NDCK.
+	Login-check MSBAPI chỉ chạy ở create_deposit (trước khi lấy lệnh nạp), không check lại ở đây.
 	"""
 	refresh_urls()
 	order_id = order_data.get("order_id")
@@ -400,6 +483,7 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict:
 		qr_base64 = _normalize_qr_base64("", qr_image_path, qr_link)
 
 	from deposit_api import (
+		decode_account_holder,
 		resolve_account_number_for_send,
 		validate_deposit_fields,
 	)
@@ -411,11 +495,13 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict:
 		qr_link=qr_link,
 	)
 	order_data["account_number"] = acc_no
+	holder = decode_account_holder(order_data.get("account_holder"))
+	order_data["account_holder"] = holder
 
 	fields = {
 		"bank": str(order_data.get("bank") or "").strip(),
 		"account_number": acc_no,
-		"account_holder": str(order_data.get("account_holder") or "").strip(),
+		"account_holder": holder,
 		"amount": _parse_amount(amount or order_data.get("amount")),
 		"transfer_content": str(order_data.get("transfer_content") or "").strip(),
 	}
@@ -447,21 +533,34 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict:
 		payload["msg"] = tc
 	payload["callbackUrl"] = CALLBACK_URL
 	payload["callback_url"] = CALLBACK_URL
-	try:
-		from constants import load_config
+	partner_id, api_key, api_secret = _partner_auth_cfg()
+	from banking_msbapi_login_check import require_partner_hmac
 
-		dep = load_config().get("LC79_DEPOSIT") or {}
-		partner_id = str(dep.get("partnerId") or "AZP").strip() or "AZP"
-	except Exception:
-		partner_id = "AZP"
+	miss = require_partner_hmac(partner_id, api_key, api_secret)
+	if miss:
+		print(f"❌ [LC79] {miss}", flush=True)
+		return {"ok": False, "error": miss}
 	payload["partnerId"] = partner_id
+	raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+	headers = _hmac_partner_headers(
+		THIRD_PARTY_API_URL,
+		raw,
+		partner_id=partner_id,
+		api_key=api_key,
+		api_secret=api_secret,
+	)
 	print(
-		f"🔗 [LC79] Gửi Banking order #{order_id} | partner={partner_id} | callback={CALLBACK_URL}",
+		f"🔗 [LC79] Gửi Banking order #{order_id} | partner={partner_id} | "
+		f"url={THIRD_PARTY_API_URL} | callback={CALLBACK_URL}",
 		flush=True,
 	)
 	try:
-		resp = requests.post(THIRD_PARTY_API_URL, json=payload, timeout=15)
-		data = resp.json()
+		resp = requests.post(
+			THIRD_PARTY_API_URL, data=raw, headers=headers, timeout=30
+		)
+		data = resp.json() if resp.content else {}
+		if not isinstance(data, dict):
+			data = {}
 
 		if resp.ok and data.get("ok"):
 			try:
@@ -704,6 +803,16 @@ def create_deposit():
 			return jsonify(blocked), 409
 	except Exception as e:
 		print(f"⚠️ Không kiểm tra được cache: {e}", flush=True)
+
+	# Chỉ check login MSBAPI tại đây — trước khi lấy lệnh nạp / gửi banking.
+	# Không check ở withdraw (probe rút) hay send_to_third_party.
+	blocked = _assert_msbapi_login_before_send(username)
+	if blocked:
+		print(
+			f"⛔ [LC79] [{username}] Bỏ lấy lệnh nạp — {blocked.get('error')}",
+			flush=True,
+		)
+		return jsonify(blocked), 409
 
 	# 1) Tạo lệnh nạp thật (lấy QR, lưu DB)
 	result = create_deposit_order_with_real_qr(username, amount)

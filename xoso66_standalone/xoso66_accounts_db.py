@@ -30,6 +30,7 @@ CMS_COLUMNS = (
     "bank_name",
     "account_number",
     "proxy",
+    "base_url",
     "default_card_id",
     "device",
     "total_deposit",
@@ -87,6 +88,7 @@ CREATE TABLE accounts (
     bank_name TEXT NOT NULL DEFAULT '',
     account_number TEXT NOT NULL DEFAULT '',
     proxy TEXT NOT NULL DEFAULT '',
+    base_url TEXT NOT NULL DEFAULT '',
     default_card_id INTEGER,
     device TEXT NOT NULL DEFAULT '',
     total_deposit REAL NOT NULL DEFAULT 0,
@@ -162,6 +164,9 @@ def _rebuild_accounts_table(conn: sqlite3.Connection) -> None:
         "bank_name",
         "account_number",
         "proxy",
+    ]
+    sel.append("COALESCE(base_url, '')" if "base_url" in cols else "''")
+    sel += [
         "default_card_id",
         "device",
         "total_deposit",
@@ -186,7 +191,7 @@ def _rebuild_accounts_table(conn: sqlite3.Connection) -> None:
         f"""
         INSERT INTO accounts (
             id, username, password, phone, account_holder, fund_password,
-            bank_code, bank_name, account_number, proxy, default_card_id,
+            bank_code, bank_name, account_number, proxy, base_url, default_card_id,
             device, total_deposit, total_withdraw, balance, status, vip_level,
             daily_bet_total, daily_bet_day, session_json, provision_log,
             created_at, updated_at
@@ -224,6 +229,7 @@ def _migrate_accounts_schema(conn: sqlite3.Connection) -> None:
     need_rebuild = bool(obsolete & cols)
     need_daily = "daily_bet_total" not in cols or "daily_bet_day" not in cols
     need_vip_progress = "vip_progress" not in cols
+    need_base_url = "base_url" not in cols
 
     if need_rebuild:
         _rebuild_accounts_table(conn)
@@ -242,6 +248,11 @@ def _migrate_accounts_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE accounts ADD COLUMN vip_progress "
             "INTEGER NOT NULL DEFAULT 0"
+        )
+    if need_base_url and "base_url" not in _account_table_columns(conn):
+        conn.execute(
+            "ALTER TABLE accounts ADD COLUMN base_url "
+            "TEXT NOT NULL DEFAULT ''"
         )
 
     cols = _account_table_columns(conn)
@@ -264,6 +275,7 @@ def init_db() -> None:
                 bank_name TEXT NOT NULL DEFAULT '',
                 account_number TEXT NOT NULL DEFAULT '',
                 proxy TEXT NOT NULL DEFAULT '',
+                base_url TEXT NOT NULL DEFAULT '',
                 default_card_id INTEGER,
                 device TEXT NOT NULL DEFAULT '',
                 total_deposit REAL NOT NULL DEFAULT 0,
@@ -330,6 +342,7 @@ def account_to_session_dict(row: dict[str, Any]) -> dict[str, Any]:
     sess["password"] = row.get("password") or sess.get("password")
     sess["phone"] = row.get("phone") or sess.get("phone")
     sess["proxy"] = row.get("proxy") or sess.get("proxy")
+    sess["base_url"] = str(row.get("base_url") or sess.get("base_url") or "").strip()
     if row.get("fund_password"):
         sess["fund_password"] = row["fund_password"]
     if row.get("account_holder"):
@@ -396,8 +409,10 @@ STATUS_HET_TIEN = "Hết Tiền"
 STATUS_DU_NGAY = "Đủ ngày"
 STATUS_LOI = "Lỗi"
 STATUS_LOI_PROXY = "Lỗi proxy"
+STATUS_KHOA = "Khoá"
+STATUS_KHOA_NAP = "Khoá Nạp"
 
-# Chỉ các reason từ WS pool / strategy 3 mới hẹn auto nhận thưởng (không bootstrap lúc mở app).
+# Lý do cap/S3 — map về claim_reason chuẩn khi hẹn queue.
 MISSION_CLAIM_WS_REASONS = frozenset({
     "ngắt WS",
     "đủ cap cược ngày",
@@ -428,11 +443,19 @@ def set_account_status(
         f"[ACCOUNT] {username_for_log(aid, row)}: {old_st or '(trống)'} → {new_st}{tag}",
         flush=True,
     )
-    if new_st == STATUS_DU_NGAY and str(reason or "").strip() in MISSION_CLAIM_WS_REASONS:
+    # Mọi lần → «Đủ ngày» đều hẹn rút + nhận thưởng (~5p).
+    if new_st == STATUS_DU_NGAY:
         try:
             from xoso66_auto_mission_reward import schedule_mission_claim
 
-            schedule_mission_claim(aid, reason=reason)
+            reason_s = str(reason or "").strip()
+            if "đủ cap" in reason_s or "việc2" in reason_s:
+                claim_reason = "đủ cap cược ngày"
+            elif reason_s in MISSION_CLAIM_WS_REASONS:
+                claim_reason = reason_s
+            else:
+                claim_reason = reason_s or "Đủ ngày"
+            schedule_mission_claim(aid, reason=claim_reason)
         except Exception as e:
             print(f"[ACCOUNT] Hẹn auto nhận thưởng: {e}", flush=True)
     return True
@@ -539,6 +562,7 @@ def _defaults(payload: dict[str, Any], *, new_id: str | None = None) -> dict[str
         "bank_name": str(payload.get("bank_name") or ""),
         "account_number": str(payload.get("account_number") or ""),
         "proxy": str(payload.get("proxy") or ""),
+        "base_url": str(payload.get("base_url") or "").strip(),
         "default_card_id": payload.get("default_card_id"),
         "device": str(payload.get("device") or ""),
         "total_deposit": float(payload.get("total_deposit") or 0),
@@ -567,12 +591,12 @@ def create_account(payload: dict[str, Any]) -> dict[str, Any]:
             """
             INSERT INTO accounts (
                 id, username, password, phone, account_holder, fund_password,
-                bank_code, bank_name, account_number, proxy, default_card_id,
+                bank_code, bank_name, account_number, proxy, base_url, default_card_id,
                 device, total_deposit, total_withdraw, balance, status, vip_level,
                 daily_bet_total, daily_bet_day, session_json, provision_log,
                 created_at, updated_at
             ) VALUES (
-                ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
             )
             """,
             (
@@ -586,6 +610,7 @@ def create_account(payload: dict[str, Any]) -> dict[str, Any]:
                 row["bank_name"],
                 row["account_number"],
                 row["proxy"],
+                row["base_url"],
                 row["default_card_id"],
                 row["device"],
                 row["total_deposit"],
@@ -645,6 +670,16 @@ def update_account(account_id: str, patch: dict[str, Any]) -> dict[str, Any]:
                 sj = dict(updates.get("session_json") or cur.get("session_json") or {})
                 sj["linked_banks"] = v
                 updates["session_json"] = sj
+            elif k == "status":
+                # Chặn ghi nhầm domain URL vào status (CMS UI từng bind domain select → status).
+                st = str(v or "").strip()
+                if st.lower().startswith(("http://", "https://")):
+                    print(
+                        f"[ACCOUNT] bỏ qua status giống URL: {st[:80]!r}",
+                        flush=True,
+                    )
+                    continue
+                updates[k] = v
             else:
                 updates[k] = v
 

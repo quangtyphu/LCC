@@ -3,7 +3,7 @@
 Auto cược mini-game (LC79-style):
 
   - Mỗi BẮT ĐẦU PHIÊN: đọc hũ → giữ/đổi game đang chơi → chỉ chia cược đúng game đó
-  - next_info: +2s gán acc; placeOrder theo begin_time+15s; stagger 1s
+  - next_info: +2s gán acc; placeOrder theo begin_time+15s; gửi đồng loạt (không stagger)
     (fire đúng lịch, không chờ HTTP; trễ lịch → neo từ now, vẫn cách 1s)
   - WS kết quả → tính thắng/thua (theo pending issue, kể cả sau khi đổi game)
 """
@@ -56,7 +56,33 @@ ROUND_LENGTH_SEC = 27.0
 OPEN_AFTER_BEGIN_SEC = 10.0
 BET_PLACE_AFTER_OPEN_SEC = 5.0
 BET_FIRST_AFTER_BEGIN_SEC = OPEN_AFTER_BEGIN_SEC + BET_PLACE_AFTER_OPEN_SEC
-ASSIGN_DELAY_AFTER_NEXT_INFO_SEC = 2.0
+ASSIGN_DELAY_AFTER_NEXT_INFO_SEC = 0.0
+
+
+def _assign_delay_sec(acfg: dict) -> float:
+    """Chờ sau next_info trước gán acc — mặc định 0 (claim xong gán ngay)."""
+    if "assign_delay_after_next_info_sec" in acfg:
+        return max(0.0, float(acfg.get("assign_delay_after_next_info_sec") or 0))
+    return max(0.0, float(ASSIGN_DELAY_AFTER_NEXT_INFO_SEC))
+
+
+def _bet_place_after_begin_sec(acfg: dict) -> float:
+    """
+    Giây sau begin_time (next_info) mới gửi placeOrder.
+    Config: auto_bet.bet_place_after_sec (mặc định 15 = mở cửa ~10s + cược +5s).
+    """
+    try:
+        v = float(acfg.get("bet_place_after_sec"))
+        if v > 0:
+            return v
+    except (TypeError, ValueError):
+        pass
+    return float(BET_FIRST_AFTER_BEGIN_SEC)
+
+
+def _bet_place_after_open_sec(acfg: dict) -> float:
+    """Giây sau WS báo mở cửa (is_open=1) — suy từ bet_place_after_sec."""
+    return max(0.0, _bet_place_after_begin_sec(acfg) - OPEN_AFTER_BEGIN_SEC)
 
 
 def _auto_bet_cfg(cfg: dict) -> dict:
@@ -104,22 +130,29 @@ def _wall_to_monotonic(deadline: datetime) -> float:
     return time.monotonic() + (deadline - datetime.now()).total_seconds()
 
 
-def _first_bet_mono_from_next_info(next_info: dict[str, Any]) -> float | None:
-    """begin_time + 12s (mở ~+10s + buffer 2s) — mốc cố định probe 21/21 phiên."""
+def _first_bet_mono_from_next_info(
+    next_info: dict[str, Any], acfg: dict | None = None
+) -> float | None:
+    """begin_time + bet_place_after_sec (config auto_bet.bet_place_after_sec)."""
     begin = _parse_round_begin_wall(next_info)
     if begin is None:
         return None
-    return _wall_to_monotonic(begin + timedelta(seconds=BET_FIRST_AFTER_BEGIN_SEC))
+    delay = _bet_place_after_begin_sec(acfg or {})
+    return _wall_to_monotonic(begin + timedelta(seconds=delay))
 
 
 def _resolve_first_bet_mono(
-    game_id: int, issue: str, next_info: dict[str, Any]
+    game_id: int,
+    issue: str,
+    next_info: dict[str, Any],
+    acfg: dict | None = None,
 ) -> float | None:
-    """begin+12s; tinh chỉnh sớm hơn nếu WS có wait_countdown_second."""
-    mono = _first_bet_mono_from_next_info(next_info)
+    """begin+bet_place_after_sec; tinh chỉnh sớm hơn nếu WS đã báo mở cửa."""
+    acfg = acfg or {}
+    mono = _first_bet_mono_from_next_info(next_info, acfg)
     ws_open = get_round_open_mono(int(game_id), str(issue).strip())
     if ws_open is not None:
-        ws_first = ws_open + BET_PLACE_AFTER_OPEN_SEC
+        ws_first = ws_open + _bet_place_after_open_sec(acfg)
         mono = min(mono, ws_first) if mono is not None else ws_first
     return mono
 
@@ -128,14 +161,25 @@ def _bet_stagger_per_user_sec(acfg: dict) -> float:
     """Khoảng cách giữa các lệnh: lệnh i tại t0 + base + i * stagger."""
     if acfg.get("bet_stagger_per_user_sec") is not None:
         return max(0.0, float(acfg.get("bet_stagger_per_user_sec") or 0))
-    lo = float(acfg.get("bet_stagger_min_sec") or 1)
+    lo = float(acfg.get("bet_stagger_min_sec") or 0)
     hi = float(acfg.get("bet_stagger_max_sec") or lo)
     return max(0.0, lo if lo == hi else (lo + hi) / 2)
 
 
-def _bet_place_at_monotonic(place_base_mono: float, acfg: dict, order_index: int) -> float:
+def _bet_place_at_monotonic(
+    place_base_mono: float,
+    acfg: dict,
+    order_index: int,
+    *,
+    stagger_sec: float | None = None,
+) -> float:
     """Mốc gửi lệnh i: place_base + i * stagger (place_base = max(now, first_bet))."""
-    return place_base_mono + order_index * _bet_stagger_per_user_sec(acfg)
+    stagger = (
+        max(0.0, float(stagger_sec))
+        if stagger_sec is not None
+        else _bet_stagger_per_user_sec(acfg)
+    )
+    return place_base_mono + order_index * stagger
 
 
 def _round_start_log_delay_sec(cfg: dict) -> float:
@@ -412,6 +456,68 @@ def _quick_ping_one_for_bet(
         return False, None, str(e)
 
 
+
+def _maybe_rotate_after_game_issue(account_id: str, reason: str) -> None:
+    """Nền: probe domain; chỉ rotate khi proxy OK nhưng domain game không vào được."""
+    import threading
+
+    def _run() -> None:
+        try:
+            from xoso66_game_domain import maybe_rotate_domain
+            from xoso66_sessions_io import load_sessions
+
+            sessions = load_sessions()
+            sess = sessions.get(str(account_id))
+            if not sess:
+                return
+            maybe_rotate_domain(str(account_id), sess, reason, relogin=True)
+        except Exception as e:
+            print(f"[DOMAIN] rotate nền fail {account_id}: {e}", flush=True)
+
+    threading.Thread(
+        target=_run, name=f"domain-rotate-{account_id}", daemon=True
+    ).start()
+
+
+def _looks_like_game_unreachable(err: str | BaseException) -> bool:
+    s = str(err or "").lower()
+    if not s:
+        return False
+    deny = (
+        "password",
+        "sai mật",
+        "unauthorized",
+        "401",
+        "token",
+        "login",
+        "rate limit",
+        "1015",
+        "captcha",
+        "form_token",
+        "ping code=",
+    )
+    if any(x in s for x in deny):
+        return False
+    allow = (
+        "timed out",
+        "timeout",
+        "connecttimeout",
+        "connection refused",
+        "connection reset",
+        "connection aborted",
+        "name or service not known",
+        "failed to resolve",
+        "getaddrinfo",
+        "network is unreachable",
+        "no route to host",
+        "ssl",
+        "handshake",
+        "remote end closed",
+        "max retries exceeded",
+    )
+    return any(x in s for x in allow)
+
+
 def _validate_round_tokens_all_or_nothing(
     slots: list[BetSlot],
     *,
@@ -472,9 +578,12 @@ def _validate_round_tokens_all_or_nothing(
                     with lock:
                         invalid.append((aid, user, msg))
         except FuturesTimeout:
-            pending = [unique[futs[f]] for f in futs if not f.done()]
+            pending_aids = [futs[f] for f in futs if not f.done()]
+            pending = [unique[aid] for aid in pending_aids]
             names = ", ".join(pending[:8])
             extra = f"… +{len(pending) - 8}" if len(pending) > 8 else ""
+            for aid in pending_aids:
+                _maybe_rotate_after_game_issue(aid, "ping_token_timeout")
             return (
                 {},
                 f"ping token quá {timeout_sec:.0f}s ({names}{extra}) — hủy cược cả phiên",
@@ -483,6 +592,9 @@ def _validate_round_tokens_all_or_nothing(
     if invalid:
         for _aid, u, msg in invalid:
             print(f"  !! Token {u or '?'}: {msg}", flush=True)
+            # Chỉ rotate khi lỗi giống không kết nối được game (không phải token hết hạn).
+            if _looks_like_game_unreachable(msg):
+                _maybe_rotate_after_game_issue(_aid, f"ping_unreachable:{msg}")
         return (
             {},
             f"{len(invalid)}/{len(unique)} acc ping fail — hủy cược cả phiên",
@@ -520,6 +632,84 @@ def _is_insufficient_balance_msg(msg: str) -> bool:
     if "số dư không đủ" in s or "so du khong du" in s:
         return True
     return "khong du" in s and "so du" in s
+
+
+_session_recover_lock = threading.Lock()
+_session_recover_at: dict[str, float] = {}
+_SESSION_RECOVER_COOLDOWN_SEC = 90.0
+
+
+def _recover_session_after_place_invalid(
+    account_id: str,
+    username: str,
+    *,
+    game_key: str,
+    msg: str,
+) -> None:
+    """
+    placeOrder «Thông tin phiên không hợp lệ» → login site + refresh mini-game
+    token + ngắt/mở lại WS (không chỉ probe domain).
+    """
+    aid = str(account_id or "").strip()
+    if not aid:
+        return
+    now = time.monotonic()
+    with _session_recover_lock:
+        last = float(_session_recover_at.get(aid) or 0.0)
+        if now - last < _SESSION_RECOVER_COOLDOWN_SEC:
+            left = int(_SESSION_RECOVER_COOLDOWN_SEC - (now - last))
+            print(
+                f"  ↻ {username}: phiên không hợp lệ — chờ login lại ~{left}s",
+                flush=True,
+            )
+            return
+        _session_recover_at[aid] = now
+
+    def _run() -> None:
+        try:
+            from xoso66_minigame_refresh import refresh_minigame_tokens
+            from xoso66_session import ensure_session, persist_session
+
+            hint = str(msg or "Thông tin phiên không hợp lệ").strip()
+            print(
+                f"  ↻ {username}: {hint} — login lại + refresh token + mở lại WS…",
+                flush=True,
+            )
+            session = ensure_session(
+                aid, force_login=True, ignore_session_ttl=True
+            )
+            persist_session(aid, session)
+            rep = refresh_minigame_tokens(
+                session,
+                account_id=aid,
+                game_key=str(game_key or "taixiu_2"),
+                force=True,
+            )
+            ok_tok = bool(rep.get("ok"))
+            print(
+                f"  ↻ {username}: login OK"
+                f"{'' if ok_tok else ' — refresh mini-game token chưa xong'}"
+                f" — reconnect WS",
+                flush=True,
+            )
+            from xoso66_minigame_ws_worker import schedule_ws_connect_after_deposit
+            from xoso66_ws_pool import request_ws_evict_and_resync
+
+            # Ngắt WS cũ (token chết) rồi xếp mở lại với token mới.
+            request_ws_evict_and_resync([aid])
+            time.sleep(3.0)
+            schedule_ws_connect_after_deposit([aid])
+        except Exception as e:
+            print(
+                f"  ↻ {username}: login/reconnect sau phiên lỗi: {e}",
+                flush=True,
+            )
+
+    threading.Thread(
+        target=_run,
+        name=f"xoso66-session-recover-{aid}",
+        daemon=True,
+    ).start()
 
 
 def _refresh_balance_on_insufficient(
@@ -573,10 +763,9 @@ def _refresh_balance_on_insufficient(
 
 
 def _token_check_before_bet_enabled(acfg: dict, *, place_orders: bool = False) -> bool:
-    """Khi place_orders=true luôn bắt buộc ping — không đặt nếu fail."""
-    if place_orders:
-        return True
-    return bool(acfg.get("token_check_before_bet", True))
+    """Ping token trước khi đặt. Mặc định tắt — fail placeOrder thì Telegram báo."""
+    _ = place_orders  # giữ chữ ký cũ; không còn bắt buộc ping khi place_orders
+    return bool(acfg.get("token_check_before_bet", False))
 
 
 def _place_bet_timed(
@@ -625,12 +814,8 @@ def _place_bet_for_slot(
     wall_timeout: float,
     tokens_prevalidated: bool = False,
 ) -> BetResult:
-    """Đặt cược; token đã ping cả phiên trước đó (all-or-nothing)."""
-    from xoso66_minigame_refresh import (
-        ensure_user_token_for_bet,
-        is_minigame_session_error,
-    )
-    from xoso66_session import persist_session
+    """Đặt cược một lần — fail thì caller probe domain, không retry placeOrder."""
+    from xoso66_minigame_refresh import ensure_user_token_for_bet
 
     acfg = _auto_bet_cfg(cfg)
     allow_slow = bool(acfg.get("token_refresh_playwright_on_bet", True))
@@ -660,29 +845,6 @@ def _place_bet_for_slot(
                 msg=msg,
             )
 
-    rep = _place_bet_timed(
-        session,
-        req,
-        account_id=account_id,
-        http_timeout=http_timeout,
-        wall_timeout=wall_timeout,
-        check_token=False,
-    )
-    if rep.ok or not is_minigame_session_error(rep.code, rep.msg):
-        return rep
-
-    ok2, msg2 = ensure_user_token_for_bet(
-        session,
-        account_id,
-        game_key=game_key,
-        allow_slow_refresh=allow_slow,
-        auto_refresh_on_fail=auto_on_fail,
-    )
-    if account_id:
-        persist_session(account_id, session)
-    if not ok2:
-        return rep
-    print(f"  ↻ {username}: refresh token → thử lại placeOrder", flush=True)
     return _place_bet_timed(
         session,
         req,
@@ -745,6 +907,22 @@ class AutoBetController:
 
     def _bet_key(self, game_id: int, issue: str) -> str:
         return f"{int(game_id)}:{str(issue).strip()}"
+
+    def drop_pending_bet_account(self, game_id: int, issue: str, account_id: str) -> None:
+        """placeOrder fail → gỡ khỏi C (chỉ giữ lệnh đặt thành công chờ KQ)."""
+        aid = str(account_id or "").strip()
+        if not aid:
+            return
+        key = self._bet_key(int(game_id), str(issue or "").strip())
+        with self._lock:
+            slots = self._pending_bets.get(key)
+            if not slots:
+                return
+            kept = [s for s in slots if str(s.account_id).strip() != aid]
+            if kept:
+                self._pending_bets[key] = kept
+            else:
+                self._pending_bets.pop(key, None)
 
     def _note_picked_key(self, key: tuple[int, float]) -> None:
         with self._lock:
@@ -945,6 +1123,12 @@ class AutoBetController:
         from xoso66_shutdown import stopping
 
         t0 = time.monotonic()
+        claimed_raw = next_info.get("_claimed_at_mono")
+        try:
+            if claimed_raw is not None:
+                t0 = float(claimed_raw)
+        except (TypeError, ValueError):
+            pass
         cfg = load_config()
         acfg = _auto_bet_cfg(cfg)
         plan_deadline = float(acfg.get("plan_deadline_sec") or 10)
@@ -973,7 +1157,8 @@ class AutoBetController:
         if stopping():
             return
 
-        if not _sleep_until(t0 + ASSIGN_DELAY_AFTER_NEXT_INFO_SEC):
+        assign_delay = _assign_delay_sec(acfg)
+        if assign_delay > 0 and not _sleep_until(t0 + assign_delay):
             return
 
         with self._lock:
@@ -1072,15 +1257,17 @@ class AutoBetController:
             round_console_lock,
         )
 
-        with round_console_lock():
-            log_round_start_line(
-                game_label=game_label,
-                jackpot_vnd=jp_header,
-                issue=str(issue).strip(),
-            )
-            log_and_maybe_simulate_place(slots, cfg)
+        def _emit_bet_plan_log() -> None:
+            with round_console_lock():
+                log_round_start_line(
+                    game_label=game_label,
+                    jackpot_vnd=jp_header,
+                    issue=str(issue).strip(),
+                )
+                log_and_maybe_simulate_place(slots, cfg)
 
         if not place_orders:
+            _emit_bet_plan_log()
             return
 
         if stopping():
@@ -1090,7 +1277,7 @@ class AutoBetController:
         end_wall = _parse_round_end_wall(next_info)
 
         first_bet_mono = _resolve_first_bet_mono(
-            int(game_id), str(issue).strip(), next_info
+            int(game_id), str(issue).strip(), next_info, acfg
         )
         if first_bet_mono is None:
             with self._lock:
@@ -1103,6 +1290,21 @@ class AutoBetController:
             )
             return
 
+        claimed_at = next_info.get("_claimed_at_mono")
+        try:
+            claim_mono = float(claimed_at) if claimed_at is not None else t0
+        except (TypeError, ValueError):
+            claim_mono = t0
+        prep_sec = time.monotonic() - claim_mono
+        if prep_sec > 1.0 and reporter:
+            from xoso66_accounts_db import username_for_log
+
+            print(
+                f"  [{issue}] Chuẩn bị cược {prep_sec:.1f}s sau claim "
+                f"({username_for_log(reporter) if reporter else reporter})",
+                flush=True,
+            )
+
         ok_n = 0
         fail_n = 0
         price_scale = float(acfg.get("order_price_scale") or 1)
@@ -1112,17 +1314,25 @@ class AutoBetController:
         max_per_user = int(acfg.get("max_bet_per_user_vnd") or 0)
 
         # Gửi đúng lịch stagger — không chờ HTTP nick trước xong.
-        # Nếu mốc first_bet đã qua (gán/token chậm) → neo từ now, vẫn cách nhau 1s.
+        # Nếu mốc first_bet đã qua (gán/token chậm) → neo từ now, bỏ stagger
+        # để đặt hết user ngay (tránh trễ thêm N×1s).
         stagger = _bet_stagger_per_user_sec(acfg)
         now_mono = time.monotonic()
         place_base = max(now_mono, float(first_bet_mono))
         late_sec = place_base - float(first_bet_mono)
         if late_sec > 0.25:
+            stagger = 0.0
             print(
                 f"  [{issue}] Lịch cược trễ {late_sec:.1f}s — "
-                f"stagger {stagger:.0f}s từ ngay bây giờ",
+                f"đặt hết ngay (không stagger)",
                 flush=True,
             )
+
+        threading.Thread(
+            target=_emit_bet_plan_log,
+            name=f"xoso66-bet-log-{issue}",
+            daemon=True,
+        ).start()
 
         result_lock = threading.Lock()
         pending_futs: list[Any] = []
@@ -1131,15 +1341,22 @@ class AutoBetController:
             fut: Any, slot: BetSlot, price: int, session: dict[str, Any]
         ) -> None:
             nonlocal ok_n, fail_n
+            if cancel is not None and cancel.is_set():
+                return
             try:
                 rep = fut.result()
             except Exception as e:
                 with result_lock:
                     fail_n += 1
+                self.drop_pending_bet_account(int(game_id), str(issue), slot.account_id)
                 print(
                     f"  !! {slot.username} {_side_abbr(slot.side)} "
                     f"{slot.amount_vnd:,} FAIL — {e}",
                     flush=True,
+                )
+                # Không ping trước bet → fail thì probe domain / rotate nếu chết.
+                _maybe_rotate_after_game_issue(
+                    slot.account_id, f"place_exception:{e}"
                 )
                 return
             if rep.ok:
@@ -1164,6 +1381,8 @@ class AutoBetController:
                 return
             with result_lock:
                 fail_n += 1
+            # Fail → không còn chờ KQ.
+            self.drop_pending_bet_account(int(game_id), str(issue), slot.account_id)
             print(
                 f"  !! {slot.username} {_side_abbr(slot.side)} "
                 f"{slot.amount_vnd:,} FAIL — {rep.msg}",
@@ -1176,6 +1395,35 @@ class AutoBetController:
                     slot.username,
                     bet_amount_vnd=price,
                 )
+            else:
+                from xoso66_minigame_refresh import is_minigame_session_error
+
+                msg_l = str(rep.msg or "").lower()
+                # Timeout tường / treo HTTP — không login+mở WS (code=0 từng bị nhầm hết phiên).
+                if (
+                    "placeorder quá" in msg_l
+                    or "proxy/http treo" in msg_l
+                    or "timed out" in msg_l
+                ):
+                    print(
+                        f"  ↻ {slot.username}: timeout placeOrder — "
+                        f"bỏ qua recover session (tránh đụng WS giữa phiên)",
+                        flush=True,
+                    )
+                elif is_minigame_session_error(rep.code, rep.msg):
+                    # Hết session/token — login + refresh + mở lại WS (không chỉ probe domain).
+                    _recover_session_after_place_invalid(
+                        slot.account_id,
+                        slot.username,
+                        game_key=gkey,
+                        msg=str(rep.msg or ""),
+                    )
+                else:
+                    # Probe domain qua proxy; chỉ rotate nếu domain không vào được.
+                    _maybe_rotate_after_game_issue(
+                        slot.account_id,
+                        f"place_fail:{rep.msg or rep.code or 'unknown'}",
+                    )
 
         with ThreadPoolExecutor(max_workers=max(1, len(order_slots))) as ex:
             for i, slot in enumerate(order_slots):
@@ -1194,7 +1442,10 @@ class AutoBetController:
                     )
                     break
                 if not _sleep_until(
-                    _bet_place_at_monotonic(place_base, acfg, i), cancel
+                    _bet_place_at_monotonic(
+                        place_base, acfg, i, stagger_sec=stagger
+                    ),
+                    cancel,
                 ):
                     if i == 0:
                         print(
@@ -1238,6 +1489,8 @@ class AutoBetController:
                 pending_futs.append(fut)
 
             for fut in pending_futs:
+                if cancel is not None and cancel.is_set():
+                    break
                 try:
                     fut.result()
                 except Exception:
@@ -1374,7 +1627,10 @@ class AutoBetController:
             from xoso66_ws_pool import prune_ws_after_settlement
 
             prune_ws_after_settlement(
-                cfg, [s.account_id for s in slots]
+                cfg,
+                [s.account_id for s in slots],
+                slots=slots,
+                open_data=open_data,
             )
         except Exception as e:
             print(f"[WS-POOL] Sau KQ — không prune WS: {e}", flush=True)
@@ -1384,7 +1640,7 @@ class AutoBetController:
 
 
 def pending_bet_account_ids() -> set[str]:
-    """Acc còn lệnh phiên chưa có KQ — không ngắt WS đầu phiên kế."""
+    """List C: acc còn lệnh phiên chưa có KQ — không ép status / không ngắt WS."""
     with _controller._lock:
         out: set[str] = set()
         for slots in _controller._pending_bets.values():
@@ -1460,10 +1716,12 @@ def auto_bet_loop() -> None:
         plan_a = float(acfg.get("bet_plan_after_sec") or 8)
         po = bool(acfg.get("place_orders", False))
         print(
-            f"[AUTO-BET] Bật — game hũ ≥ {min_jp:,.0f} | gán acc +{ASSIGN_DELAY_AFTER_NEXT_INFO_SEC:.0f}s sau next_info ≤{plan_d:.0f}s | "
+            f"[AUTO-BET] Bật — game hũ ≥ {min_jp:,.0f} | gán acc "
+            f"+{_assign_delay_sec(acfg):.0f}s sau claim ≤{plan_d:.0f}s | "
             f"in kế hoạch sau {plan_a:.0f}s"
             + (
-                f" | HTTP cược begin+{BET_FIRST_AFTER_BEGIN_SEC:.0f}s"
+                f" | HTTP cược begin+{_bet_place_after_begin_sec(acfg):.0f}s "
+                f"(bet_place_after_sec)"
                 if po
                 else " | chỉ log (place_orders=false)"
             ),

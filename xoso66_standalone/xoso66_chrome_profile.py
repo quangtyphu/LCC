@@ -19,9 +19,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from xoso66_session import BASE_URL
+from xoso66_game_domain import default_base_url
 
-_SITE_HOST = urlparse(BASE_URL).netloc
+_SITE_HOST = urlparse(default_base_url()).netloc
 
 
 def _cookie_host_likes(host: str = _SITE_HOST) -> tuple[str, ...]:
@@ -329,7 +329,7 @@ def launch_cms_chrome(
     from launcher import _launch_chrome_native  # type: ignore
 
     profile_dir.mkdir(parents=True, exist_ok=True)
-    open_urls = urls or [f"{BASE_URL}/home/"]
+    open_urls = urls or [f"{default_base_url()}/home/"]
     return _launch_chrome_native(
         profile_path=profile_dir,
         proxy=proxy,

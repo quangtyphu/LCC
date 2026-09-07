@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from xoso66_paths import apply_default_env
+from xoso66_game_domain import resolve_base_url
 
 apply_default_env()
 
@@ -43,7 +44,6 @@ from xoso66_deposit import (  # noqa: E402
     get_form_token,
 )
 from xoso66_session import (  # noqa: E402
-    BASE_URL,
     _merge_response_cookies,
     _requests_session,
     ensure_session,
@@ -112,7 +112,7 @@ def fetch_lottery_winloss_report(
         form_token=form_token,
         content_type="application/x-www-form-urlencoded/json",
     )
-    url = f"{BASE_URL}{HISTORY_WINLOSS_PATH}"
+    url = f"{resolve_base_url(session)}{HISTORY_WINLOSS_PATH}"
     params = {"start_date": int(start_ms), "end_date": int(end_ms)}
     r = _requests_session(session).get(url, headers=headers, params=params, timeout=35)
     apply_response_tokens(session, r.headers)

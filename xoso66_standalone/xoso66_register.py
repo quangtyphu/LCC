@@ -32,13 +32,13 @@ from typing import Any
 
 import requests
 
+from xoso66_game_domain import resolve_base_url, site_host
 from xoso66_session import (
-    BASE_URL,
     bootstrap_prelogin,
     post_encrypted,
     refresh_cloudflare,
     _merge_response_cookies,
-    _requests_session,
+    _requests_session
 )
 from xoso66_sessions_io import load_sessions, merge_account, save_sessions
 
@@ -151,7 +151,7 @@ def get_captcha(session: dict) -> dict[str, Any]:
 
     http = _requests_session(session)
     r = http.get(
-        f"{BASE_URL}{GET_CAPTCHA_PATH}",
+        f"{resolve_base_url(session)}{GET_CAPTCHA_PATH}",
         headers=_plain_headers(session, content_type="application/json"),
         timeout=25,
     )
@@ -177,7 +177,7 @@ def send_sms_code(session: dict, phone: str, *, source: str = "register") -> dic
 
     http = _requests_session(session)
     r = http.post(
-        f"{BASE_URL}{SMS_CODE_PATH}",
+        f"{resolve_base_url(session)}{SMS_CODE_PATH}",
         json={"source": source, "phone": phone},
         headers=_plain_headers(session),
         timeout=25,
@@ -306,12 +306,12 @@ def _register_via_vue_browser(
         load_captcha_config,
         parse_register_error,
         solve_image_captcha_auto,
-        solve_register_captcha_from_page,
+        solve_register_captcha_from_page
     )
     from xoso66_playwright_ctx import (
         playwright_browser,
         playwright_cms_profile_browser,
-        playwright_register_browser,
+        playwright_register_browser
     )
 
     headless = os.environ.get("XOSO66_CF_HEADLESS", "0") != "0"
@@ -337,9 +337,8 @@ def _register_via_vue_browser(
         nonlocal pw_result, tokens, captcha_meta
         page = context.pages[0] if context.pages else context.new_page()
         if mode == "ephemeral":
-            from xoso66_cf import SITE_HOST
 
-            _inject_session_cookies(context, session, SITE_HOST)
+            _inject_session_cookies(context, session)
         print(f"[REGISTER] Vue dispatch ({label})…", flush=True)
         has_cf = bool((session.get("cookies") or {}).get("cf_clearance"))
         boot = bootstrap_register_page(
@@ -423,7 +422,7 @@ def _register_via_vue_browser(
         else:
             with playwright_browser(
                 session,
-                base_url=BASE_URL,
+                base_url=resolve_base_url(session),
                 headless=headless,
                 channel="chrome",
                 ignore_automation=True,
@@ -498,7 +497,7 @@ def _prefetch_register_captcha(session: dict, plain: dict) -> dict[str, Any]:
     from xoso66_captcha_solver import (
         captcha_base64_from_payload,
         captcha_enabled,
-        solve_image_captcha_auto,
+        solve_image_captcha_auto
     )
 
     meta: dict[str, Any] = {}
@@ -566,7 +565,7 @@ def register_account_via_cms_chrome(
     from xoso66_chrome_profile import (
         cms_chrome_warm_session,
         profile_is_locked,
-        wait_profile_unlocked,
+        wait_profile_unlocked
     )
     from xoso66_playwright_ctx import _register_profile_dir
     from xoso66_proxy import require_explicit_proxy
@@ -795,7 +794,7 @@ def register_account_playwright(
         load_captcha_config,
         parse_register_error,
         solve_image_captcha_auto,
-        solve_register_captcha_from_page,
+        solve_register_captcha_from_page
     )
     from xoso66_proxy import require_explicit_proxy
 
@@ -1034,7 +1033,7 @@ def register_account_http_with_captcha(
         captcha_enabled,
         is_wrong_captcha_response,
         load_captcha_config,
-        solve_image_captcha_auto,
+        solve_image_captcha_auto
     )
     from xoso66_proxy import require_explicit_proxy
 
@@ -1143,7 +1142,7 @@ def main() -> int:
     parser.add_argument(
         "--cms-device",
         default=os.environ.get("XOSO66_CMS_DEVICE", ""),
-        help="Thiết bị CMS (vd. XMSB17) — dùng chrome_profiles_data + proxy từ game_data.db",
+        help="Thiết bị CMS (vd. XMSB17) — dùng chrome_profiles_data (Documents/) + proxy từ game_data.db",
     )
     parser.add_argument(
         "--proxy",

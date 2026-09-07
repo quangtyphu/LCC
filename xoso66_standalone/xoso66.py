@@ -62,6 +62,8 @@ _ACTIVE_STATUSES = frozenset(
 )
 
 _bg_threads: list[threading.Thread] = []
+_ws_worker_thread: threading.Thread | None = None
+_ws_worker_lock = threading.Lock()
 
 
 def _cfg_workers() -> dict:
@@ -197,27 +199,17 @@ def worker_auto_bet() -> threading.Thread | None:
     return start_auto_bet_thread()
 
 
-def worker_minigame_ws() -> threading.Thread | None:
-    """N acc balance cao + Đang Chơi → WS: hũ + BẮT ĐẦU PHIÊN + KẾT QUẢ."""
-    cfg = load_config()
-    if not cfg.get("game_worker_enabled"):
-        return None
+def _ws_worker_target() -> None:
+    """Luồng WS 24/7 — pool + listen; crash được xử lý trong run_ws_worker_blocking."""
     from xoso66_accounts_db import usernames_for_log
-    from xoso66_config_util import main_progress, startup_quiet
-    from xoso66_minigame_ws_worker import start_ws_worker_thread
+    from xoso66_config_util import main_progress
+    from xoso66_minigame_ws_worker import run_ws_worker_blocking
+    from xoso66_shutdown import sleep_interruptible, stopping
     from xoso66_ws_pool import prepare_ws_pool
 
-    if not startup_quiet(cfg):
-        print(
-            "[GAME] WS worker: mọi acc «Đang Chơi» (có proxy) — "
-            "jackpot + BẮT ĐẦU PHIÊN + kết quả; thêm nick thiếu ở phiên mới",
-            flush=True,
-        )
-    else:
-        main_progress("[GAME] Chuẩn bị WS «Đang Chơi» trên luồng nền…")
-
-    def _prepare_and_run() -> None:
+    while not stopping():
         try:
+            cfg = load_config()
             account_ids = prepare_ws_pool(cfg)
             preview = ", ".join(usernames_for_log(account_ids[:5]))
             suffix = "…" if len(account_ids) > 5 else ""
@@ -225,20 +217,74 @@ def worker_minigame_ws() -> threading.Thread | None:
                 f"[GAME] WS worker: đang kết nối {len(account_ids)} nick "
                 f"({preview}{suffix})"
             )
-            from xoso66_minigame_ws_worker import run_ws_worker_blocking
-
             run_ws_worker_blocking(
                 account_ids,
                 ws_count=len(account_ids),
                 refresh_before_connect=True,
             )
+            break
         except KeyboardInterrupt:
-            pass
+            break
         except Exception as e:
-            print(f"[GAME] WS worker lỗi: {e}", flush=True)
+            if stopping():
+                break
+            print(f"[GAME] WS worker lỗi (prepare): {e}", flush=True)
+            if not sleep_interruptible(10):
+                break
 
-    t = threading.Thread(target=_prepare_and_run, name="xoso66-ws-prepare", daemon=False)
+
+def _spawn_ws_worker_thread() -> threading.Thread:
+    global _ws_worker_thread
+    t = threading.Thread(
+        target=_ws_worker_target,
+        name="xoso66-ws-prepare",
+        daemon=False,
+    )
     t.start()
+    with _ws_worker_lock:
+        _ws_worker_thread = t
+    return t
+
+
+def _watchdog_ws_worker(cfg: dict) -> None:
+    """Main loop: phát hiện luồng WS chết → mở lại (lớp phòng thủ cuối)."""
+    global _ws_worker_thread
+    if not cfg.get("game_worker_enabled") or stopping():
+        return
+    with _ws_worker_lock:
+        t = _ws_worker_thread
+        if t is not None and t.is_alive():
+            return
+        if t is not None:
+            print(
+                "[GAME] WS worker thread chết — watchdog mở lại",
+                flush=True,
+            )
+        t = _spawn_ws_worker_thread()
+        _track_thread(t)
+
+
+def worker_minigame_ws() -> threading.Thread | None:
+    """N acc balance cao + Đang Chơi → WS: hũ + BẮT ĐẦU PHIÊN + KẾT QUẢ."""
+    cfg = load_config()
+    if not cfg.get("game_worker_enabled"):
+        return None
+    from xoso66_config_util import main_progress, startup_quiet
+
+    if not startup_quiet(cfg):
+        print(
+            "[GAME] WS worker: mọi acc «Đang Chơi» (có proxy) — "
+            "jackpot + BẮT ĐẦU PHIÊN + kết quả; thêm nick thiếu ở phiên mới",
+            flush=True,
+        )
+        print(
+            "[GAME] WS tự phục hồi khi crash — watchdog main kiểm tra định kỳ",
+            flush=True,
+        )
+    else:
+        main_progress("[GAME] Chuẩn bị WS «Đang Chơi» trên luồng nền…")
+
+    t = _spawn_ws_worker_thread()
     return t
 
 
@@ -507,12 +553,25 @@ def main() -> int:
             flush=True,
         )
 
+    ws_watchdog_at = 0.0
+    gw = cfg.get("game_worker") if isinstance(cfg.get("game_worker"), dict) else {}
+    try:
+        ws_watchdog_interval = max(
+            10.0, float(gw.get("ws_watchdog_interval_sec") or 30)
+        )
+    except (TypeError, ValueError):
+        ws_watchdog_interval = 30.0
+
     try:
         while True:
             if stopping():
                 break
             if not api_thread.is_alive() and not any(t.is_alive() for t in _bg_threads):
                 break
+            now = time.time()
+            if cfg.get("game_worker_enabled") and now >= ws_watchdog_at:
+                ws_watchdog_at = now + ws_watchdog_interval
+                _watchdog_ws_worker(cfg)
             time.sleep(0.5)
     except KeyboardInterrupt:
         pass

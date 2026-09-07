@@ -207,6 +207,52 @@ def _deposit_blocked_by_cache_or_db(account_id: str) -> bool:
     return False
 
 
+def _lock_deposit_if_consecutive_failures(account_id: str) -> str | None:
+    """
+    Trước khi lấy lệnh nạp: nếu đã có ≥2 lệnh thất bại liên tục
+    (thất bại = không «Thành Công») → set CMS «Khoá Nạp» và chặn lấy lệnh.
+    Trả lý do chặn, hoặc None nếu được phép.
+    """
+    aid = str(account_id or "").strip()
+    if not aid:
+        return "account_id trống"
+    from xoso66_accounts_db import (
+        STATUS_KHOA_NAP,
+        get_account,
+        set_account_status,
+        username_for_log,
+    )
+    from xoso66_deposit_orders_db import (
+        CONSECUTIVE_DEPOSIT_FAIL_LOCK,
+        consecutive_deposit_failures,
+    )
+
+    row = get_account(aid)
+    if row and str(row.get("status") or "").strip() == STATUS_KHOA_NAP:
+        return "CMS Khoá Nạp — không lấy lệnh nạp"
+    n = consecutive_deposit_failures(aid)
+    if n < CONSECUTIVE_DEPOSIT_FAIL_LOCK:
+        return None
+    user = username_for_log(aid, row)
+    if set_account_status(
+        aid,
+        STATUS_KHOA_NAP,
+        reason=f"{n} lệnh nạp thất bại liên tục (≠ Thành Công)",
+    ):
+        print(
+            f"[NẠP] {user} — {n} lệnh thất bại liên tục → Khoá Nạp "
+            f"(không lấy lệnh nạp)",
+            flush=True,
+        )
+    else:
+        # Đã là Khoá Nạp (race) hoặc không đổi được — vẫn chặn.
+        print(
+            f"[NẠP] {user} — chặn lấy lệnh nạp ({n} thất bại liên tục)",
+            flush=True,
+        )
+    return f"{n} lệnh nạp thất bại liên tục → Khoá Nạp"
+
+
 def can_create_deposit_order(account_id: str) -> bool:
     try:
         from xoso66_bet_assign import consolidate_blocks_deposit
@@ -215,6 +261,8 @@ def can_create_deposit_order(account_id: str) -> bool:
             return False
     except Exception:
         pass
+    if _lock_deposit_if_consecutive_failures(account_id):
+        return False
     if is_deposit_reserved(account_id):
         return False
     return not _deposit_blocked_by_cache_or_db(account_id)
@@ -222,6 +270,8 @@ def can_create_deposit_order(account_id: str) -> bool:
 
 def deposit_order_block_reason(account_id: str) -> str | None:
     """Lý do không tạo đơn mới (None = được phép)."""
+    from xoso66_deposit_orders_db import has_pending_deposit
+
     aid = str(account_id).strip()
     if not aid:
         return "account_id trống"
@@ -232,6 +282,9 @@ def deposit_order_block_reason(account_id: str) -> str | None:
             return "strategy 3 — không nạp tiền"
     except Exception:
         pass
+    fail_lock = _lock_deposit_if_consecutive_failures(aid)
+    if fail_lock:
+        return fail_lock
     if is_deposit_reserved(aid):
         return "đang reserve tạo đơn"
     ad = _auto_deposit_cfg()
@@ -243,8 +296,6 @@ def deposit_order_block_reason(account_id: str) -> str | None:
             remove_from_deposit_cache(aid)
         else:
             return "cache nạp còn TTL"
-    from xoso66_deposit_orders_db import has_pending_deposit
-
     if has_pending_deposit(aid, max_age_sec=ttl):
         return "DB còn lệnh nạp chưa kết thúc"
     return None
@@ -257,6 +308,8 @@ def try_reserve_deposit(account_id: str) -> bool:
     """
     aid = str(account_id).strip()
     if not aid:
+        return False
+    if _lock_deposit_if_consecutive_failures(aid):
         return False
     with _deposit_reserved_lock:
         if aid in _deposit_reserved:

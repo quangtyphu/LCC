@@ -6,7 +6,8 @@ Config TOP_BET_DAILY_MODE:
   CHECK_INTERVAL_SECONDS: mỗi N giây tick scheduler + kiểm tra DB (thoát V2)
   START: giờ kích hoạt hàng ngày (Asia/Ho_Chi_Minh), 1 lần/ngày sau START
   API_INTERVAL_SECONDS: mỗi N giây gọi game API lấy mốc top 500 (khi đang monitor)
-  USER_COUNT: số user V2 tối đa (thiếu user thì lấy tối đa có được)
+  USER_COUNT: không dùng cố định — số user V2 theo mốc top500:
+    top500 > 7tr → 1 | 6tr ≤ top500 ≤ 7tr → 6 | top500 < 6tr → 8
   THRESHOLD_OFFSET_VND: loại user có total_day − top500 > ngưỡng này khi chọn (vd 1_000_000)
   EXIT_GAP_MIN_VND: thoát V2 khi mọi user V2 có total_day − top500 > ngưỡng này (vd 200_000)
   API_USERNAME: user gọi game API (trống → WS đang chạy hoặc user đầu V2/PRIORITY)
@@ -36,6 +37,7 @@ from top_bet_daily_checker import (
     compute_top_bet_daily_gap_pick,
     fetch_playing_or_out_usernames,
     format_top_bet_gap_pick_report,
+    resolve_user_count_from_top500,
     v2_users_all_above_exit_gap,
 )
 
@@ -362,8 +364,6 @@ def top_bet_daily_mode_daily_pick_tick(*, force: bool = False) -> None:
         if not force and not _should_run_daily_pick(cfg, now):
             return
 
-        block = _mode_block(cfg)
-        user_count = max(1, _to_int(block.get("USER_COUNT", 8), 8))
         username = _resolve_api_username(cfg)
         if not username:
             print(
@@ -373,7 +373,9 @@ def top_bet_daily_mode_daily_pick_tick(*, force: bool = False) -> None:
             _set_session_active(False, last_pick_date=_today_str(now))
             return
 
-        pick = compute_top_bet_daily_gap_pick(username, user_count=user_count)
+        # USER_COUNT tự theo mốc top500 (>7tr→1, 6–7tr→6, <6tr→8)
+        pick = compute_top_bet_daily_gap_pick(username, user_count=None)
+        user_count = resolve_user_count_from_top500(pick.money_500)
         selected = [
             str(row["username"]).strip()
             for row in pick.selected
@@ -393,13 +395,19 @@ def top_bet_daily_mode_daily_pick_tick(*, force: bool = False) -> None:
             )
             if pick.rule:
                 print(f"[TOP-BET-DAY]    {pick.rule}", flush=True)
+            if pick.money_500:
+                print(
+                    f"[TOP-BET-DAY]    top500={pick.money_500:,} → USER_COUNT={user_count}",
+                    flush=True,
+                )
             _set_session_active(False, last_pick_date=today)
             return
 
         if _apply_v2_and_strategy(cfg, selected, user_count):
             _set_session_active(True, last_pick_date=today)
             print(
-                f"[TOP-BET-DAY] ✅ Bắt đầu phiên V2 ({len(selected)}/{user_count}) + "
+                f"[TOP-BET-DAY] ✅ Bắt đầu phiên V2 ({len(selected)}/{user_count}) "
+                f"(top500={pick.money_500:,} → USER_COUNT={user_count}) + "
                 f"ASSIGN_STRATEGY={_ACTIVE_STRATEGY} + "
                 f"MAX outside={_MAX_ACTIVE_IN_WINDOW} (runtime): "
                 f"{', '.join(selected)}",

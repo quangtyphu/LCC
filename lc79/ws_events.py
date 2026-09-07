@@ -159,12 +159,32 @@ async def handle_event(user, msg):
     # ------------------- Các event khác -------------------
     if event in allowed_events:
 
-        # new-session: chỉ cho phép 1 acc đầu tiên xử lý
+        # new-session: chỉ 1 lần / phiên; bỏ phiên cũ đến muộn (WS lag)
         if event == "new-session":
             session_id = data.get("id")
-            if constants.session_seen == session_id:
+            if session_id is None:
                 return
-            constants.session_seen = session_id
+            try:
+                sid = int(session_id)
+            except (TypeError, ValueError):
+                sid = session_id
+
+            seen = constants.session_seen
+            if seen is not None:
+                try:
+                    if int(sid) <= int(seen):
+                        if int(sid) < int(seen):
+                            print(
+                                f"⏭️ [{user}] Bỏ new-session cũ {sid} (đã ở phiên {seen})",
+                                flush=True,
+                            )
+                        return
+                except (TypeError, ValueError):
+                    if sid == seen:
+                        return
+
+            constants.session_seen = sid
+            session_id = sid
             session_started_at = time.time()
             print(f"🆕 [{user}] xử lý phiên {session_id}", flush=True)
 

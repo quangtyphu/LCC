@@ -227,6 +227,7 @@ class AccountCreate(BaseModel):
     bank_name: str = ""
     account_number: str = ""
     proxy: str = ""
+    base_url: str = ""
     default_card_id: int | None = None
     device: str = ""
     total_deposit: float = 0
@@ -249,6 +250,7 @@ class AccountUpdate(BaseModel):
     bank_name: str | None = None
     account_number: str | None = None
     proxy: str | None = None
+    base_url: str | None = None
     default_card_id: int | None = None
     device: str | None = None
     total_deposit: float | None = None
@@ -398,13 +400,85 @@ def health() -> dict[str, str]:
 @app.get("/api/ui-config")
 def api_ui_config() -> dict[str, Any]:
     """Cấu hình cho giao diện web (cùng origin — không cần CMS proxy)."""
+    from xoso66_game_domain import candidate_urls, default_base_url
+
     key = _load_api_key()
     return {
         "needs_api_key": bool(key),
         "api_key": key,
         "default_fund_password": DEFAULT_FUND_PASSWORD,
         "default_login_password": DEFAULT_LOGIN_PASSWORD,
+        "game_domains": {
+            "default_base_url": default_base_url(),
+            "candidates": candidate_urls(),
+        },
     }
+
+
+@app.get("/api/game-domains", dependencies=[Depends(require_api_key)])
+def api_game_domains() -> dict[str, Any]:
+    """Danh sách domain site + default (cho UI chọn / gắn per-account)."""
+    from xoso66_game_domain import candidate_urls, default_base_url
+
+    default = default_base_url()
+    cands = candidate_urls()
+    return {
+        "default_base_url": default,
+        "candidates": cands,
+        "auto_rotate_enabled": True,
+    }
+
+
+class SetDomainBody(BaseModel):
+    base_url: str = ""
+    relogin: bool = True
+
+
+@app.post(
+    "/api/accounts/{account_id}/set-domain",
+    dependencies=[Depends(require_api_key)],
+)
+def api_set_account_domain(account_id: str, body: SetDomainBody) -> dict[str, Any]:
+    """Gắn domain cụ thể (hoặc '' = mặc định) + clear session + login + lấy token minigame."""
+    from xoso66_accounts_db import account_to_session_dict, get_account
+    from xoso66_game_domain import set_account_domain
+
+    aid = str(account_id or "").strip()
+    row = get_account(aid)
+    if not row:
+        raise HTTPException(404, "Không tìm thấy account")
+    session = account_to_session_dict(row)
+    try:
+        result = set_account_domain(
+            aid,
+            session,
+            body.base_url,
+            relogin=bool(body.relogin),
+        )
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+    return result
+
+
+@app.post(
+    "/api/accounts/{account_id}/rotate-domain",
+    dependencies=[Depends(require_api_key)],
+)
+def api_rotate_account_domain(account_id: str) -> dict[str, Any]:
+    """Ép đổi domain gắn (probe candidates qua proxy) + clear session + re-login."""
+    from xoso66_accounts_db import account_to_session_dict, get_account
+    from xoso66_game_domain import maybe_rotate_domain
+
+    aid = str(account_id or "").strip()
+    row = get_account(aid)
+    if not row:
+        raise HTTPException(404, "Không tìm thấy account")
+    session = account_to_session_dict(row)
+    try:
+        result = maybe_rotate_domain(aid, session, "manual_api", force=True, relogin=True)
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+    return result
 
 
 _NO_CACHE_HEADERS = {
@@ -1188,7 +1262,12 @@ class AutoDepositBody(BaseModel):
 @app.post("/api/auto-deposit", dependencies=[Depends(require_api_key)])
 def api_auto_deposit(body: AutoDepositBody) -> dict[str, Any]:
     """Xếp lệnh auto nạp (100k mặc định) — handler + bên thứ 3."""
-    from xoso66_auto_deposit import can_create_deposit_order, default_amount, enqueue_deposit
+    from xoso66_auto_deposit import (
+        can_create_deposit_order,
+        default_amount,
+        deposit_order_block_reason,
+        enqueue_deposit,
+    )
 
     print(
         f"[API] /api/auto-deposit account_id={body.account_id} amount={body.amount} reason={body.reason!r}",
@@ -1196,8 +1275,9 @@ def api_auto_deposit(body: AutoDepositBody) -> dict[str, Any]:
     )
     if not get_account(body.account_id):
         raise HTTPException(404, "Không tìm thấy account")
-    if not can_create_deposit_order(body.account_id):
-        raise HTTPException(409, "Đang có lệnh nạp chưa xong hoặc cache")
+    block = deposit_order_block_reason(body.account_id)
+    if block or not can_create_deposit_order(body.account_id):
+        raise HTTPException(409, block or "Đang có lệnh nạp chưa xong hoặc cache")
     amt = int(body.amount) if body.amount > 0 else default_amount()
     enqueue_deposit(body.account_id, body.reason or f"CMS {amt:,}đ")
     return {

@@ -31,9 +31,12 @@ from xoso66_minigame_http import (
     GET_TOKEN_PATH,
     MINIGAME_BASE,
     get_minigame,
+    is_minigame_url,
     lobby_referer,
     merge_minigame_cookies,
     minigame_request,
+    resolve_minigame_base,
+    set_minigame_base_from_url,
     ws_url_from_token,
 )
 from xoso66_deposit import DEFAULT_UA
@@ -41,7 +44,7 @@ from xoso66_deposit import DEFAULT_UA
 USER_TOKEN_MAX_AGE_SEC = int(os.environ.get("XOSO66_MINIGAME_USER_TOKEN_MAX_AGE", "21600"))  # 6h
 WS_TOKEN_MAX_AGE_SEC = int(os.environ.get("XOSO66_MINIGAME_WS_TOKEN_MAX_AGE", "600"))  # 10 phút
 
-AUTH_FAIL_CODES = frozenset({0, 401, 403, 1001, 1002, 1004, 1020, 1021})
+AUTH_FAIL_CODES = frozenset({401, 403, 1001, 1002, 1004, 1020, 1021})
 AUTH_FAIL_MSG = re.compile(
     r"token|phiên|phien|login|đăng nhập|dang nhap|hết hạn|het han|unauthorized",
     re.I,
@@ -78,16 +81,61 @@ def pop_urgent_token_refresh_ids() -> dict[str, str]:
     return out
 
 
+_SESSION_INVALID_MSG_NEEDLES = (
+    "thông tin phiên không hợp lệ",
+    "thong tin phien khong hop le",
+    "phiên không hợp lệ",
+    "phien khong hop le",
+    "hết phiên",
+    "het phien",
+    "phiên đã hết",
+    "phien da het",
+    "chưa đăng nhập",
+    "chua dang nhap",
+    "vui lòng đăng nhập",
+    "vui long dang nhap",
+    "session invalid",
+    "invalid session",
+    "not logged in",
+    "please login",
+)
+
+
+def is_session_invalid_api_msg(msg: str) -> bool:
+    """True nếu API báo hết / sai phiên site (cần login lại)."""
+    m = str(msg or "").strip().lower()
+    if not m:
+        return False
+    return any(x in m for x in _SESSION_INVALID_MSG_NEEDLES)
+
+
 def is_minigame_session_error(code: Any = None, msg: str = "") -> bool:
-    """placeOrder / batchRequest — phiên mini-game hết hạn (vd. code 1004)."""
+    """placeOrder / batchRequest — phiên mini-game hết hạn (vd. code 1004).
+
+    Không coi code=0 / timeout proxy là hết phiên (tránh login+mở WS hàng loạt).
+    """
+    m = str(msg or "")
+    low = m.strip().lower()
+    if "placeorder quá" in low or "proxy/http treo" in low or "timed out" in low:
+        return False
+    if is_session_invalid_api_msg(m):
+        return True
+    if AUTH_FAIL_MSG.search(m):
+        return True
     try:
-        if int(code) in AUTH_FAIL_CODES and int(code) != 1:
-            return True
+        c = int(code)
     except (TypeError, ValueError):
-        pass
-    return bool(AUTH_FAIL_MSG.search(str(msg or "")))
+        return False
+    # code 0 = mặc định / timeout / lỗi chung — chỉ tin khi msg đã khớp ở trên.
+    if c == 0 or c == 1:
+        return False
+    return c in AUTH_FAIL_CODES
 
 MINIGAME_HOST = urlparse(MINIGAME_BASE).netloc
+
+
+def _minigame_url_matches(url: str) -> bool:
+    return is_minigame_url(url)
 USER_TOKEN_RE = re.compile(r"^[a-f0-9]{32}\.\d{10,}$", re.I)
 
 
@@ -110,7 +158,7 @@ def attach_minigame_token_sniffer(context, on_token) -> None:
         hooked.add(pid)
 
         def on_request(request) -> None:
-            if MINIGAME_HOST not in request.url:
+            if not _minigame_url_matches(request.url):
                 return
             ut = _valid_user_token(request.headers.get("user-token"))
             if ut:
@@ -483,6 +531,8 @@ def prep_tokens_before_ws(
     """
     Trước mở WS: ping user-token một lần; fail → refresh (gameurl → đầy đủ).
     Sau đó lấy ws_token nếu thiếu/hết hạn hoặc force_ws. Lưu DB.
+
+    force_ws=False + token còn hạn: bỏ ping HTTP — chỉ mở WS (bù/soft restart).
     """
     from xoso66_session import persist_session
 
@@ -490,6 +540,23 @@ def prep_tokens_before_ws(
     g = game_by_key(game_key)
     gid = int(g["game_id"])
     gname = str(g.get("gamename") or "lobby")
+
+    mg = get_minigame(session)
+    if (
+        not force_ws
+        and mg.get("ws_token")
+        and _ws_token_age_ok(mg)
+        and (mg.get("user_token") or session.get("user_token"))
+    ):
+        return {
+            "ok": True,
+            "ping_ok": None,
+            "user_token_ok": True,
+            "has_ws_token": True,
+            "ws_token": {"ok": True, "skipped": "ws_token cache"},
+            "msg": "cache",
+            "error": None,
+        }
 
     ok_user, msg = ensure_user_token_for_bet(
         session,
@@ -601,7 +668,7 @@ def refresh_minigame_cf(
     mg.setdefault("merchant", MERCHANT)
     mg["last_game_id"] = game_id
 
-    url = lobby_referer(game_id=game_id, gamename=gamename)
+    url = lobby_referer(game_id=game_id, gamename=gamename, session=session)
     ua = session.get("user_agent") or DEFAULT_UA
     steps: list[dict[str, Any]] = []
     req_timeout = int(timeout if timeout is not None else os.environ.get("XOSO66_CF_TIMEOUT", "60"))
@@ -672,7 +739,11 @@ def refresh_minigame_cf(
     headless = os.environ.get("XOSO66_CF_HEADLESS", "1") != "0"
 
     try:
-        with playwright_browser(session, base_url=MINIGAME_BASE, headless=headless) as (
+        with playwright_browser(
+            session,
+            base_url=resolve_minigame_base(session),
+            headless=headless,
+        ) as (
             _p,
             _browser,
             context,
@@ -681,7 +752,7 @@ def refresh_minigame_cf(
 
             def on_request(request) -> None:
                 nonlocal captured_token
-                if MINIGAME_HOST not in request.url:
+                if not _minigame_url_matches(request.url):
                     return
                 ut = request.headers.get("user-token")
                 if ut:
@@ -756,7 +827,7 @@ def _try_launch_from_main_http(session: dict, *, game_id: int) -> dict[str, Any]
         if status != 200 or not isinstance(data, dict) or data.get("code") != 1:
             continue
         url = _extract_url_from_data(data.get("data"))
-        if url and MINIGAME_HOST in url:
+        if url and _minigame_url_matches(url):
             return {"ok": True, "path": path, "url": url}
     return {"ok": False, "error": "không tìm thấy launch URL trên site chính"}
 
@@ -823,7 +894,8 @@ def refresh_user_token_via_gameurl(
 
     from xoso66_deposit import build_common_headers, get_form_token
     from xoso66_proxy import apply_requests_proxy, ensure_proxy
-    from xoso66_session import BASE_URL, _requests_session
+    from xoso66_session import _requests_session
+    from xoso66_game_domain import resolve_base_url
 
     mg = get_minigame(session)
     mg["last_game_id"] = game_id
@@ -844,7 +916,7 @@ def refresh_user_token_via_gameurl(
     )
     params = {"nav_id": nav_id, "sub_game_code": sub_game_code, "islobby": islobby}
     r = _requests_session(session).get(
-        f"{BASE_URL}/server/thirdgame/gameurl",
+        f"{resolve_base_url(session)}/server/thirdgame/gameurl",
         headers=headers,
         params=params,
         timeout=45,
@@ -863,8 +935,10 @@ def refresh_user_token_via_gameurl(
         }
 
     launch_url = _extract_url_from_data(js.get("data"))
-    if not launch_url or MINIGAME_HOST not in launch_url:
+    if not launch_url or not _minigame_url_matches(launch_url):
         return {"ok": False, "method": "gameurl", "error": "không có url mini-game trong data"}
+
+    set_minigame_base_from_url(session, launch_url)
 
     http = requests.Session()
     apply_requests_proxy(http, session["proxy"])
@@ -949,14 +1023,19 @@ def refresh_user_token_via_form_token(
     if not form_token:
         return {"ok": False, "error": "thiếu form_token site chính"}
 
+    api_base = resolve_minigame_base(session)
     sso_url = (
-        f"{MINIGAME_BASE}/?merchant={MERCHANT}&game_id={game_id}"
+        f"{api_base}/?merchant={MERCHANT}&game_id={game_id}"
         f"&x-device=pc&token={form_token}"
     )
     headless = os.environ.get("XOSO66_CF_HEADLESS", "1") != "0"
 
     try:
-        with playwright_browser(session, base_url=MINIGAME_BASE, headless=headless) as (
+        with playwright_browser(
+            session,
+            base_url=resolve_minigame_base(session),
+            headless=headless,
+        ) as (
             _p,
             _browser,
             context,
@@ -987,6 +1066,32 @@ def refresh_user_token_via_form_token(
             mg["cookies"] = cookies
     except Exception as e:
         return {"ok": False, "method": "form_token_sso", "error": str(e)}
+
+    if mg.get("user_token"):
+        status, batch_js = minigame_request(
+            session,
+            "POST",
+            "/server/game/batchRequest",
+            game_id=game_id,
+            gamename=gamename,
+            json_body=[
+                {"method": "index/init", "params": {}},
+                {"method": "game/subgameList", "params": {}},
+            ],
+        )
+        batch_ok, batch_code, batch_msg = _batch_request_ping_ok(status, batch_js)
+        if not batch_ok:
+            mg.pop("user_token", None)
+            mg.pop("user_token_at", None)
+            return {
+                "ok": False,
+                "method": "form_token_sso",
+                "error": "batchRequest sau SSO thất bại",
+                "batch_code": batch_code,
+                "batch_msg": batch_msg or (
+                    batch_js.get("msg") if isinstance(batch_js, dict) else str(batch_js)[:120]
+                ),
+            }
 
     return {
         "ok": bool(mg.get("user_token")),
@@ -1038,7 +1143,8 @@ def refresh_user_token_interactive(
     Script nghe XHR trên mọi tab/popup và lưu user-token.
     """
     from xoso66_playwright_ctx import playwright_browser
-    from xoso66_session import BASE_URL, merge_playwright_cookies
+    from xoso66_session import merge_playwright_cookies
+    from xoso66_game_domain import resolve_base_url
 
     mg = get_minigame(session)
     captured: str | None = None
@@ -1052,14 +1158,14 @@ def refresh_user_token_interactive(
         capture_from = url
 
     try:
-        with playwright_browser(session, base_url=BASE_URL, headless=False) as (
+        with playwright_browser(session, base_url=resolve_base_url(session), headless=False) as (
             _p,
             _browser,
             context,
         ):
             attach_minigame_token_sniffer(context, on_token)
             page = context.new_page()
-            page.goto(f"{BASE_URL}/home/", wait_until="domcontentloaded", timeout=120_000)
+            page.goto(f"{resolve_base_url(session)}/home/", wait_until="domcontentloaded", timeout=120_000)
             print(
                 f"[interactive] Trong {wait_sec}s: click icon mini-game "
                 f"(tab mới mini-game.vip) — script bắt user-token từ XHR tab đó.",
@@ -1125,10 +1231,13 @@ def refresh_user_token_playwright(
 
     urls_to_open: list[str] = []
     if launch.get("ok") and launch.get("url"):
-        urls_to_open.append(str(launch["url"]))
-    urls_to_open.append(lobby_referer(game_id=game_id, gamename=gamename))
+        launch_url = str(launch["url"])
+        set_minigame_base_from_url(session, launch_url)
+        urls_to_open.append(launch_url)
+    urls_to_open.append(lobby_referer(game_id=game_id, gamename=gamename, session=session))
 
-    from xoso66_session import BASE_URL as MAIN_BASE
+    from xoso66_game_domain import resolve_base_url
+    MAIN_BASE = resolve_base_url(session)
 
     try:
         with playwright_browser(session, base_url=MAIN_BASE, headless=headless) as (
@@ -1146,7 +1255,7 @@ def refresh_user_token_playwright(
             page = context.new_page()
 
             def on_request(request) -> None:
-                if MINIGAME_HOST in request.url:
+                if _minigame_url_matches(request.url):
                     _apply_user_token_from_url(request.url, mg)
 
             page.on("request", on_request)

@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from xoso66_game_domain import resolve_base_url, site_host
+
 BATCH_PARALLEL_DEFAULT = 5
 _print_lock = threading.Lock()
 
@@ -462,13 +464,12 @@ def claim_red_packet(
     """
     from xoso66_deposit import apply_response_tokens
     from xoso66_playwright_ctx import _playwright_thread_setup, playwright_proxy
-    from xoso66_proxy import ensure_proxy, proxy_log_label, site_host
+    from xoso66_proxy import ensure_proxy, proxy_log_label
     from xoso66_session import (
-        BASE_URL,
         ensure_session,
         get_user_balance,
         merge_playwright_cookies,
-        persist_session,
+        persist_session
     )
 
     t = timings or RedPacketTimings()
@@ -514,7 +515,7 @@ def claim_red_packet(
             + "\n"
         )
 
-    host = site_host(BASE_URL)
+    host = site_host(session)
     px = playwright_proxy(proxy_str)
 
     _say(f"\n=== {account_id} ({user}) | login, KHONG getredpacketinfo truoc ===")
@@ -572,7 +573,7 @@ def claim_red_packet(
         page.on("response", on_response)
 
         _say(f"[1] /home/ — doi {t.load_wait_sec}s...")
-        page.goto(f"{BASE_URL}/home/", wait_until="domcontentloaded", timeout=120_000)
+        page.goto(f"{resolve_base_url(session)}/home/", wait_until="domcontentloaded", timeout=120_000)
         page.wait_for_timeout(int(t.load_wait_sec * 1000))
 
         _say("[2] Click mua li xi (1 lan)...")

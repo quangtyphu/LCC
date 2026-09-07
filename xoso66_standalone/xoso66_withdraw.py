@@ -25,16 +25,24 @@ import json
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
+_DIR = Path(__file__).resolve().parent
+_LC79_REPO = _DIR.parent
+if str(_DIR) not in sys.path:
+    sys.path.insert(0, str(_DIR))
+if str(_LC79_REPO) not in sys.path:
+    sys.path.insert(0, str(_LC79_REPO))
+
 from xoso66_bank_bind import get_user_bank_list
+from xoso66_game_domain import resolve_base_url
 from xoso66_fund_password import (
     _parse_api_body,
     get_user_info,
     validate_fund_password,
 )
 from xoso66_session import (
-    BASE_URL,
     ensure_session,
     merge_playwright_cookies,
     persist_session,
@@ -113,13 +121,13 @@ def withdrawal_order_playwright(session: dict, plain: dict) -> dict[str, Any]:
         extra["form-token"] = ft
 
     js: Any = None
-    with playwright_browser(session, base_url=BASE_URL, headless=True, extra_http_headers=extra) as (
+    with playwright_browser(session, base_url=resolve_base_url(session), headless=True, extra_http_headers=extra) as (
         _p,
         _browser,
         context,
     ):
         page = context.new_page()
-        page.goto(f"{BASE_URL}/home/", wait_until="domcontentloaded", timeout=90_000)
+        page.goto(f"{resolve_base_url(session)}/home/", wait_until="domcontentloaded", timeout=90_000)
         try:
             page.wait_for_load_state("networkidle", timeout=20_000)
         except Exception:
@@ -191,6 +199,58 @@ def withdraw_for_account(
     use_playwright: bool = False,
     verify: bool = True,
 ) -> dict[str, Any]:
+    # Chỉ check login 1 lần ngay trước khi thực hiện lệnh rút.
+    from banking_msbapi_login_check import (
+        assert_device_login_ok,
+        banking_base_from_third_party_url,
+        require_partner_hmac,
+        resolve_xoso66_device,
+    )
+    from xoso66_config_util import load_config
+
+    ad = load_config().get("auto_deposit")
+    ad = ad if isinstance(ad, dict) else {}
+    third = str(ad.get("third_party_url") or "http://127.0.0.1:8888/api/orders/withdraw")
+    partner_id = str(ad.get("partnerId") or "xoso66")
+    api_key = str(ad.get("partner_api_key") or ad.get("apiKey") or "")
+    api_secret = str(ad.get("partner_api_secret") or ad.get("apiSecret") or "")
+    miss = require_partner_hmac(partner_id, api_key, api_secret)
+    if miss:
+        return {"ok": False, "error": miss, "account_id": account_id}
+
+    device = resolve_xoso66_device(account_id=account_id)
+    if device:
+        gate = assert_device_login_ok(
+            device,
+            banking_base_url=banking_base_from_third_party_url(third),
+            partner_id=partner_id,
+            api_key=api_key,
+            api_secret=api_secret,
+            label=f"RÚT {account_id}",
+        )
+        if not gate.get("ok"):
+            from banking_msbapi_login_check import (
+                lock_xoso66_account,
+                should_lock_after_login_check,
+            )
+
+            if should_lock_after_login_check(gate):
+                lock_xoso66_account(
+                    account_id=account_id,
+                    reason=f"MSBAPI {device} login fail",
+                )
+            return {
+                "ok": False,
+                "error": gate.get("error") or f"Device {device} không login được",
+                "account_id": account_id,
+                "device": device,
+            }
+    else:
+        print(
+            f"[XOSO66-WITHDRAW] {account_id}: chưa có device — bỏ qua login-check",
+            flush=True,
+        )
+
     session = ensure_session(account_id)
     from xoso66_deposit import get_form_token
 

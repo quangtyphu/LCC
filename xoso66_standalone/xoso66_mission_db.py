@@ -292,8 +292,8 @@ def upsert_mission_snapshot(
 
 def force_daily_done_bet_to_account_total(account_id: str) -> int:
     """
-    Server cập nhật done_bet_money (161) chậm: ghi local daily_done_bet_money
-    = accounts.daily_bet_total (tổng cược ngày hôm nay).
+    (Legacy) Ghi local mission/accounts = accounts.daily_bet_total.
+    Không dùng sau hết poll — xem sync_account_daily_from_game_done_bet.
     """
     from xoso66_accounts_db import daily_bet_today_vnd, get_account
 
@@ -317,6 +317,35 @@ def force_daily_done_bet_to_account_total(account_id: str) -> int:
         )
     set_daily_bet_from_mission_api(account_id, total)
     return total
+
+
+def sync_account_daily_from_game_done_bet(account_id: str, done_bet: int) -> int:
+    """
+    Hết poll: game done_bet < cược ngày DB → ghi accounts.daily_bet_total = done_bet game.
+    Đồng bộ luôn account_missions.daily_done_bet_money.
+    """
+    from xoso66_accounts_db import get_account
+
+    n = max(0, int(done_bet or 0))
+    aid = str(account_id).strip()
+    row = get_account(aid) or {}
+    username = str(row.get("username") or aid).strip()
+    init_db()
+    now = _now_iso()
+    today = today_vn_str()
+    if username:
+        with db_conn() as conn:
+            init_mission_table(conn)
+            conn.execute(
+                """
+                UPDATE account_missions
+                SET daily_done_bet_money = ?, daily_synced_day = ?, synced_at = ?
+                WHERE account_id = ? OR username = ? COLLATE NOCASE
+                """,
+                (n, today, now, aid, username),
+            )
+    set_daily_bet_from_mission_api(aid, n)
+    return n
 
 
 def persist_mission_state(

@@ -57,6 +57,9 @@
     .inline-input:focus { background: rgba(41, 128, 185, 0.08); }
     .inline-input.field-device:focus { border-bottom-color: #2980b9; }
     .inline-input.field-editable:focus { border-bottom-color: #2980b9; border-bottom-style: solid; }
+    .inline-input.field-daily-bet {
+      text-align: right; font-variant-numeric: tabular-nums; max-width: 110px;
+    }
     .inline-input.saving { opacity: 0.55; }
     .inline-input.saved { color: #1e8449; border-bottom-color: #27ae60; }
     .inline-input.saved.field-device { border-bottom-color: #27ae60; }
@@ -70,6 +73,8 @@
     select.status-select.playing { background: #2ecc71; color: #fff; font-weight: bold; border-color: #27ae60; }
     select.status-select.status-du-ngay { background: #9b59b6; color: #fff; font-weight: bold; border-color: #8e44ad; }
     select.status-select.done { background: #e74c3c; color: #fff; font-weight: bold; border-color: #c0392b; }
+    select.status-select.status-khoa { background: #95a5a6; color: #fff; font-weight: bold; border-color: #7f8c8d; }
+    select.status-select.status-khoa-nap { background: #e67e22; color: #fff; font-weight: bold; border-color: #d35400; }
     select.status-select.saving { opacity: 0.55; }
     select.status-select.saved { outline: 2px solid #f1c40f; }
     select.status-select.error { border-color: #e74c3c; background: #fdecea !important; color: #c0392b !important; }
@@ -77,9 +82,13 @@
     #tbl tbody tr.row-status-dang-choi { background: #b3ffcc; }
     #tbl tbody tr.row-status-du-ngay { background: #e6ccff; }
     #tbl tbody tr.row-status-het-tien { background: #ffb3b3; }
+    #tbl tbody tr.row-status-khoa { background: #d5d8dc; }
+    #tbl tbody tr.row-status-khoa-nap { background: #fde0c8; }
     #tbl tbody tr.row-status-dang-choi:hover { background: #99f0b8; }
     #tbl tbody tr.row-status-du-ngay:hover { background: #d9b3ff; }
     #tbl tbody tr.row-status-het-tien:hover { background: #ff9999; }
+    #tbl tbody tr.row-status-khoa:hover { background: #c8ccd0; }
+    #tbl tbody tr.row-status-khoa-nap:hover { background: #f5d0a9; }
     #tbl tfoot tr.tbl-totals-row { background: #34495e; color: #fff; font-weight: 700; }
     #tbl tfoot tr.tbl-totals-row td { border-color: #2c3e50; }
     #tbl tfoot .tbl-total-bet { font-size: 15px; color: #f1c40f; }
@@ -180,6 +189,8 @@
     body.page-payments #btnRefreshStatus { background: #2980b9; }
     body.page-payments #btnRefreshStatus:hover { background: #2471a3; }
     th.th-proxy, td.td-proxy { width: 130px; max-width: 180px; padding: 6px 4px; }
+    th.th-domain, td.td-domain { width: 200px; max-width: 280px; padding: 6px 4px; }
+    select.field-domain { width: 100%; max-width: 270px; font-size: 12px; cursor: pointer; }
     th.th-device, td.td-device { width: 64px; max-width: 80px; padding: 6px 4px; }
     th.th-phone, td.td-phone { width: 88px; max-width: 100px; padding: 6px 4px; }
     th.th-bank, td.td-bank { width: 72px; max-width: 90px; padding: 6px 4px; }
@@ -419,6 +430,8 @@
         <option value="">-- Ngân hàng --</option>
         <option value="MSB">MSB</option>
         <option value="VPB">VPBank</option>
+        <option value="PGB">PGbank</option>
+        <option value="VCB">Vietcombank</option>
         <option value="VIB">VIB</option>
       </select>
       <input type="text" id="account_number" placeholder="Số TK NH">
@@ -431,6 +444,8 @@
         <option value="Đang Chơi">Đang Chơi</option>
         <option value="Đủ ngày">Đủ ngày</option>
         <option value="Hết Tiền">Hết Tiền</option>
+        <option value="Khoá Nạp">Khoá Nạp</option>
+        <option value="Khoá">Khoá</option>
       </select>
       <button type="button" class="btn btn-blue" id="btnProvision">Đăng ký trên XOSO66</button>
       <button type="submit" class="btn btn-primary" id="btnSave">Chỉ lưu DB (không đăng ký)</button>
@@ -475,11 +490,12 @@
     <thead>
       <tr>
         <th>STT</th><th>Username</th><th>Phone</th><th>Tên ĐK</th><th>Status</th>
-        <th>Số dư</th><th>Tổng nạp</th><th>Tổng rút</th><th title="Tổng rút + số dư − tổng nạp">Lợi nhuận</th><th>Tổng cược ngày</th>
+        <th>Số dư</th><th>Tổng nạp</th><th>Tổng rút</th><th title="Tổng rút + số dư − tổng nạp">Lợi nhuận</th><th title="Click ô để sửa · Enter/blur lưu">Tổng cược ngày</th>
         <th class="th-mission" title="Điểm danh mỗi ngày — level 161">161</th>
         <th class="th-mini" title="MINI GAME điểm danh 7 ngày">MINI GAME</th>
         <th class="th-device" title="Sửa trực tiếp, Enter/blur để lưu">Thiết Bị</th>
         <th class="th-proxy" title="Sửa trực tiếp">Proxy</th>
+        <th class="th-domain" title="Domain site gắn cho acc (trống = mặc định)">Domain</th>
         <th class="th-bank" title="Sửa trực tiếp (chỉ DB)">Bank</th>
         <th class="th-stk" title="Sửa trực tiếp (chỉ DB)">STK</th>
         <th class="th-vip" title="VIP · thưởng tuần · thưởng tháng (account_vip)">VIP</th>
@@ -495,7 +511,7 @@
         <td id="tblTotalWithdraw" class="tbl-total-wd" title="Tổng rút Hoàn tất">0</td>
         <td id="tblTotalProfit" class="tbl-total-profit" title="Tổng rút + số dư − tổng nạp">0</td>
         <td id="tblTotalDailyBet" class="tbl-total-bet" title="Tổng cược hôm nay (giờ VN)">0</td>
-        <td colspan="10"></td>
+        <td colspan="12"></td>
       </tr>
     </tfoot>
   </table>
@@ -678,6 +694,12 @@
 <script>
 let editId = null;
 let API_KEY = "";
+const FALLBACK_GAME_DOMAINS = {"default_base_url": "https://hnwp57e0.whskxk5.com", "candidates": ["https://g3lbe63d.whskxk1.com", "https://whvcrgfb.whskxk2.com", "https://qyhg72o0.whskxk3.com", "https://sr8i5ehf.whskxk4.com", "https://oz8chipd.whskxk5.com", "https://go8iuckl.whskxk5.com", "https://hnwp57e0.whskxk5.com"]};
+// Khởi tạo sẵn — không phụ thuộc API (CMS Node cũ từng thiếu game_domains).
+let gameDomainsCache = {
+  default_base_url: FALLBACK_GAME_DOMAINS.default_base_url,
+  candidates: FALLBACK_GAME_DOMAINS.candidates.slice(),
+};
 let DEFAULT_FUND_PASSWORD = "270288";
 let DEFAULT_LOGIN_PASSWORD = "Valentine1";
 
@@ -719,22 +741,37 @@ const ACCOUNT_STATUSES = [
   "Đang Chơi",
   "Đủ ngày",
   "Hết Tiền",
+  "Khoá Nạp",
+  "Khoá",
+  "Lỗi",
+  "Lỗi proxy",
   "new",
   "fund_password_ok",
   "bank_linked",
 ];
 
-/** Thứ tự sắp xếp mặc định danh sách (giống yêu cầu menu LC79). */
+/** Thứ tự sắp xếp mặc định: Đang Chơi → Hết Tiền → Đủ ngày → Khoá Nạp → Khoá → còn lại. */
 const STATUS_SORT_PRIORITY = {
   "Đang Chơi": 1,
-  "Đủ ngày": 2,
-  "Đủ Ngày": 2,
-  "Hết Tiền": 3,
+  "Hết Tiền": 2,
+  "Đủ ngày": 3,
+  "Đủ Ngày": 3,
+  "Khoá Nạp": 4,
+  "Khoá": 5,
+  "Khóa": 5,
 };
 
 function statusSortKey(status) {
   const s = String(status || "").trim();
   return STATUS_SORT_PRIORITY[s] ?? 99;
+}
+
+/** 161: Chưa nhận (st≠2) lên trên, Đã nhận (st=2) xuống dưới. */
+function daily161SortKey(row) {
+  const isToday = row.daily_161_is_today !== false;
+  const st = isToday ? row.daily_161_status : null;
+  if (st === 2) return 1; // Đã nhận
+  return 0; // Chưa nhận / Chưa đủ / chưa sync
 }
 
 function sortAccountsForList(rows) {
@@ -744,6 +781,10 @@ function sortAccountsForList(rows) {
     if (pa !== pb) return pa - pb;
     const betDiff = dailyBetToday(b) - dailyBetToday(a);
     if (betDiff !== 0) return betDiff;
+    const d161 = daily161SortKey(a) - daily161SortKey(b);
+    if (d161 !== 0) return d161;
+    const balDiff = (Number(b.balance) || 0) - (Number(a.balance) || 0);
+    if (balDiff !== 0) return balDiff;
     return String(a.username || "").localeCompare(String(b.username || ""), "vi");
   });
 }
@@ -753,6 +794,8 @@ function statusRowClass(status) {
   if (s === "Đang Chơi") return "row-status-dang-choi";
   if (s === "Đủ ngày" || s === "Đủ Ngày") return "row-status-du-ngay";
   if (s === "Hết Tiền") return "row-status-het-tien";
+  if (s === "Khoá Nạp") return "row-status-khoa-nap";
+  if (s === "Khoá" || s === "Khóa") return "row-status-khoa";
   return "";
 }
 
@@ -762,15 +805,19 @@ function statusSelectClasses(status) {
   if (s === "Đang Chơi") cls.push("playing");
   else if (s === "Đủ ngày" || s === "Đủ Ngày") cls.push("status-du-ngay");
   else if (s === "Hết Tiền") cls.push("done");
+  else if (s === "Khoá Nạp") cls.push("status-khoa-nap");
+  else if (s === "Khoá" || s === "Khóa") cls.push("status-khoa");
   return cls.join(" ");
 }
 
 function applyStatusSelectStyle(sel) {
-  sel.classList.remove("playing", "status-du-ngay", "done");
+  sel.classList.remove("playing", "status-du-ngay", "done", "status-khoa", "status-khoa-nap");
   const s = String(sel.value || "").trim();
   if (s === "Đang Chơi") sel.classList.add("playing");
   else if (s === "Đủ ngày" || s === "Đủ Ngày") sel.classList.add("status-du-ngay");
   else if (s === "Hết Tiền") sel.classList.add("done");
+  else if (s === "Khoá Nạp") sel.classList.add("status-khoa-nap");
+  else if (s === "Khoá" || s === "Khóa") sel.classList.add("status-khoa");
 }
 
 function log(msg) {
@@ -786,7 +833,19 @@ function apiHeaders(extra) {
 
 let _apiKeyInit = null;
 
+function applyGameDomainsPayload(d) {
+  if (!d || typeof d !== "object") return;
+  const def = String(d.default_base_url || "").trim();
+  const cands = Array.isArray(d.candidates) ? d.candidates.map((u) => String(u || "").trim()).filter(Boolean) : [];
+  if (def || cands.length) {
+    gameDomainsCache = { default_base_url: def, candidates: cands };
+  }
+}
+
+
 async function initApi() {
+  // Fallback cứng — CMS Node cũ có thể chưa trả game_domains.
+  applyGameDomainsPayload(FALLBACK_GAME_DOMAINS);
   try {
     const r = await fetch(apiPath("/api/ui-config"));
     if (!r.ok) {
@@ -800,11 +859,25 @@ async function initApi() {
     if (c.needs_api_key && !API_KEY) {
       log("Cảnh báo: API yêu cầu key nhưng ui-config không trả api_key");
     }
+    // Load domain list ngay từ ui-config (không phụ thuộc /api/game-domains).
+    applyGameDomainsPayload(c.game_domains);
   } catch (e) {
     log("Không tải ui-config: " + (e.message || e));
   }
+  // Refresh thêm từ /api/game-domains nếu có API key (không đệ quy initApi).
+  if (API_KEY) {
+    try {
+      const rd = await fetch(apiPath("/api/game-domains"), { headers: apiHeaders() });
+      if (rd.ok) applyGameDomainsPayload(await rd.json());
+    } catch (e) {
+      log("Không tải game-domains: " + (e.message || e));
+    }
+  }
+  if (!gameDomainsCache.candidates.length) {
+    applyGameDomainsPayload(FALLBACK_GAME_DOMAINS);
+  }
+  log("Domain dropdown: " + gameDomainsCache.candidates.length + " lựa chọn | mặc định " + (gameDomainsCache.default_base_url || "?"));
 }
-
 async function ensureApiKey() {
   if (API_KEY) return;
   if (!_apiKeyInit) _apiKeyInit = initApi();
@@ -1009,14 +1082,31 @@ function renderMiniWeekCell(row) {
 
 async function patchAccountField(accountId, field, value, el) {
   const prev = el.dataset.savedValue ?? "";
-  if (value === prev) return;
+  let payloadVal = value;
+  if (field === "daily_bet_total") {
+    payloadVal = Number(String(value ?? "").replace(/[,\s]/g, "")) || 0;
+    value = String(payloadVal);
+  }
+  if (String(payloadVal) === String(prev)) return;
+  // Chặn ghi nhầm domain URL vào status (bug cũ: domain select dùng class status-select).
+  if (field === "status") {
+    const v = String(value || "").trim();
+    if (/^https?:\/\//i.test(v) || /^[\w.-]+\.(com|net|org)\b/i.test(v)) {
+      log("✗ Bỏ qua: không ghi status = URL/domain (" + v + ")");
+      if ("value" in el) el.value = prev;
+      return;
+    }
+  }
   el.classList.remove("saved", "error");
   el.classList.add("saving");
   el.disabled = true;
+  const body = field === "daily_bet_total"
+    ? { daily_bet_total: payloadVal, daily_bet_day: todayIso() }
+    : { [field]: payloadVal };
   try {
     const res = await apiFetch("/api/accounts/" + encodeURIComponent(accountId), {
       method: "PUT",
-      body: JSON.stringify({ [field]: value }),
+      body: JSON.stringify(body),
     });
     let data = {};
     try { data = await res.json(); } catch (_) {}
@@ -1026,14 +1116,30 @@ async function patchAccountField(accountId, field, value, el) {
       log("Lỗi cập nhật " + field + ": " + (data.detail || res.status));
       return;
     }
-    el.dataset.savedValue = value;
-    if ("title" in el) el.title = value;
+    el.dataset.savedValue = field === "daily_bet_total" ? String(payloadVal) : value;
+    if ("value" in el && field === "daily_bet_total") el.value = String(payloadVal);
+    if ("title" in el) el.title = field === "daily_bet_total"
+      ? ("Tổng cược ngày · " + (data.daily_bet_day || todayIso()))
+      : value;
     el.classList.add("saved");
     setTimeout(() => el.classList.remove("saved"), 1500);
-    const cmsFields = ["phone", "account_holder", "device", "proxy", "bank_name", "account_number"];
+    const cmsFields = ["phone", "account_holder", "device", "proxy", "base_url", "bank_name", "account_number"];
     if (cmsFields.includes(field)) {
       const user = data.username || accountId;
       log("✓ [" + user + "] " + field + " → " + (value || "(trống)"));
+    }
+    if (field === "daily_bet_total") {
+      const user = data.username || accountId;
+      log("✓ [" + user + "] tổng cược ngày → " + Number(payloadVal).toLocaleString("vi-VN"));
+      const idx = accAllRows.findIndex((r) => String(r.id) === String(accountId));
+      if (idx >= 0) {
+        accAllRows[idx] = {
+          ...accAllRows[idx],
+          daily_bet_total: Number(payloadVal) || 0,
+          daily_bet_day: data.daily_bet_day || todayIso(),
+        };
+      }
+      updateAccListTotals(accFilteredRows());
     }
     if (field === "status") {
       const user = data.username || accountId;
@@ -1073,6 +1179,8 @@ function renderStatusSelect(accountId, current) {
 
 function bindStatusSelects(root) {
   root.querySelectorAll("select.status-select[data-account-id]").forEach((sel) => {
+    // Domain dropdown cũng từng mang class status-select — bỏ qua field-domain.
+    if (sel.classList.contains("field-domain") || sel.dataset.field === "base_url") return;
     const accountId = sel.dataset.accountId;
     if (!accountId) return;
     sel.dataset.savedValue = sel.value;
@@ -1084,11 +1192,107 @@ function bindStatusSelects(root) {
   });
 }
 
-function renderInlineInput(accountId, field, value, extraClass) {
+function renderInlineInput(accountId, field, value, extraClass, opts) {
   const aid = escAttr(accountId);
   const cls = "inline-input field-editable" + (extraClass ? " " + extraClass : "");
-  return `<input type="text" class="${cls}" data-field="${escAttr(field)}" data-account-id="${aid}"`
+  const type = (opts && opts.type) || "text";
+  const typeAttr = type === "number"
+    ? ` type="number" step="1" min="0" inputmode="numeric"`
+    : ` type="text"`;
+  return `<input${typeAttr} class="${cls}" data-field="${escAttr(field)}" data-account-id="${aid}"`
     + ` value="${escAttr(value ?? "")}" title="Sửa · Enter/blur lưu · Esc hủy" spellcheck="false">`;
+}
+
+
+function hostLabel(url) {
+  try {
+    return String(url || "").replace(/^https?:\/\//, "").replace(/\/$/, "") || url;
+  } catch (_) {
+    return url || "";
+  }
+}
+
+function renderDomainSelect(accountId, baseUrl) {
+  const aid = escAttr(accountId);
+  const cur = String(baseUrl || "").trim();
+  const def = gameDomainsCache.default_base_url || "";
+  const cands = Array.isArray(gameDomainsCache.candidates) ? gameDomainsCache.candidates : [];
+  const opts = [
+    `<option value=""${cur ? "" : " selected"}>Mặc định — ${esc(hostLabel(def) || "?")}</option>`,
+  ];
+  const seen = new Set([""]);
+  let n = 0;
+  cands.forEach((u) => {
+    const v = String(u || "").trim();
+    if (!v || seen.has(v)) return;
+    seen.add(v);
+    n += 1;
+    const mark = def && v === def ? " ★" : "";
+    opts.push(
+      `<option value="${escAttr(v)}"${v === cur ? " selected" : ""}>`
+        + `#${n} ${esc(hostLabel(v))}${mark}</option>`
+    );
+  });
+  if (cur && !seen.has(cur)) {
+    opts.push(`<option value="${escAttr(cur)}" selected>Khác — ${esc(hostLabel(cur))}</option>`);
+  }
+  // Không dùng class status-select — bindStatusSelects sẽ ghi nhầm value domain vào cột status.
+  return `<select class="field-domain" data-field="base_url" data-account-id="${aid}"`
+    + ` title="Chọn domain → clear session + login lấy token">${opts.join("")}</select>`;
+}
+
+async function setAccountDomain(accountId, baseUrl, sel) {
+  const prev = sel.dataset.savedValue ?? "";
+  if (baseUrl === prev) return;
+  sel.classList.remove("saved", "error");
+  sel.classList.add("saving");
+  sel.disabled = true;
+  const label = baseUrl ? hostLabel(baseUrl) : ("Mặc định — " + hostLabel(gameDomainsCache.default_base_url));
+  log("↻ [" + accountId + "] Đổi domain → " + label + " (login + token)…");
+  try {
+    const res = await apiFetch("/api/accounts/" + encodeURIComponent(accountId) + "/set-domain", {
+      method: "POST",
+      body: JSON.stringify({ base_url: baseUrl, relogin: true }),
+    });
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) {
+      sel.classList.add("error");
+      sel.value = prev;
+      log("✗ Đổi domain fail: " + (data.detail || res.status));
+      return;
+    }
+    sel.dataset.savedValue = baseUrl;
+    sel.classList.add("saved");
+    setTimeout(() => sel.classList.remove("saved"), 1500);
+    const user = data.username || accountId;
+    const loginBit = data.login_ok === false
+      ? ("login FAIL: " + (data.login_msg || "?"))
+      : (data.login_ok ? "login OK" : "login skip");
+    const tokBit = data.token_ok === false
+      ? ("token FAIL: " + (data.token_msg || "?"))
+      : (data.token_ok ? "token OK" : "");
+    log("✓ [" + user + "] domain " + hostLabel(data.old || "") + " → " + hostLabel(data.new || label)
+      + " | " + loginBit + (tokBit ? " | " + tokBit : ""));
+  } catch (e) {
+    sel.classList.add("error");
+    sel.value = prev;
+    log("✗ Đổi domain: " + (e.message || e));
+  } finally {
+    sel.disabled = false;
+    sel.classList.remove("saving");
+  }
+}
+
+function bindDomainSelects(root) {
+  root.querySelectorAll("select.field-domain[data-field='base_url']").forEach((sel) => {
+    const accountId = sel.dataset.accountId;
+    if (!accountId) return;
+    sel.dataset.savedValue = sel.value;
+    sel.addEventListener("change", () => {
+      setAccountDomain(accountId, sel.value, sel);
+    });
+  });
 }
 
 function bindInlineInputs(root) {
@@ -1110,11 +1314,16 @@ function bindInlineInputs(root) {
       }
     });
   });
+  bindDomainSelects(root);
 }
 
 const BANK_NORM = {
   VPB: { code: "vp_bank", name: "VPBank" },
   VPBANK: { code: "vp_bank", name: "VPBank" },
+  PGB: { code: "pg_bank", name: "PGbank" },
+  PGBANK: { code: "pg_bank", name: "PGbank" },
+  VCB: { code: "viet_com_bank", name: "Vietcombank" },
+  VIETCOMBANK: { code: "viet_com_bank", name: "Vietcombank" },
   MSB: { code: "msb", name: "MSB" },
   VIB: { code: "vib", name: "VIB" },
   ACB: { code: "acb", name: "ACB" },
@@ -1194,15 +1403,19 @@ function fillForm(row) {
   for (const opt of sel.options) {
     const ov = (opt.value || "").toUpperCase();
     const ot = (opt.textContent || "").toUpperCase();
-    if (opt.value && (tryVals.includes(ov) || tryVals.includes(ot) || ov === "VPB" && tryVals.some((v) => v.includes("VP")))) {
+    if (opt.value && (tryVals.includes(ov) || tryVals.includes(ot)
+      || (ov === "VPB" && tryVals.some((v) => v.includes("VP")))
+      || (ov === "PGB" && tryVals.some((v) => v.includes("PG")))
+      || (ov === "VCB" && tryVals.some((v) => v.includes("VIETCOM") || v === "VCB")))) {
       sel.value = opt.value;
       found = true;
       break;
     }
   }
   if (!found && norm.bank_name) {
+    const short = { VPBank: "VPB", PGbank: "PGB", Vietcombank: "VCB" };
     const o = document.createElement("option");
-    o.value = norm.bank_name === "VPBank" ? "VPB" : norm.bank_name;
+    o.value = short[norm.bank_name] || norm.bank_name;
     o.textContent = norm.bank_name;
     sel.appendChild(o);
     sel.value = o.value;
@@ -1414,7 +1627,11 @@ function rtGetSec() {
 function rtShouldSkip() {
   const ae = document.activeElement;
   if (ae && ae.classList) {
-    if (ae.classList.contains("inline-input") || ae.classList.contains("status-select")) return true;
+    if (
+      ae.classList.contains("inline-input")
+      || ae.classList.contains("status-select")
+      || ae.classList.contains("field-domain")
+    ) return true;
   }
   if (document.getElementById("qrModalOverlay")) return true;
   const btn = document.getElementById("btnRefreshStatus");
@@ -1729,11 +1946,12 @@ function renderAccPage() {
       <td class="td-dep">${fmtVnd(row.total_deposit ?? 0)}</td>
       <td class="td-wd">${fmtVnd(row.total_withdraw ?? 0)}</td>
       <td class="${profitTdClass(accountProfit(row))}" title="Rút + số dư − nạp">${fmtProfit(accountProfit(row))}</td>
-      <td title="${escAttr(row.daily_bet_day || "")}">${fmtVnd(dailyBetToday(row))}</td>
+      <td class="td-bet td-inline" title="${escAttr(row.daily_bet_day || "")}">${renderInlineInput(row.id, "daily_bet_total", Math.round(dailyBetToday(row) || 0), "field-daily-bet", { type: "number" })}</td>
       <td class="td-mission">${renderDaily161Cell(row)}</td>
       <td class="td-mini">${renderMiniWeekCell(row)}</td>
       <td class="td-device td-inline">${renderInlineInput(row.id, "device", row.device, "field-device")}</td>
       <td class="td-proxy td-inline">${renderInlineInput(row.id, "proxy", row.proxy, "field-proxy")}</td>
+      <td class="td-domain td-inline">${renderDomainSelect(row.id, row.base_url)}</td>
       <td class="td-bank td-inline">${renderInlineInput(row.id, "bank_name", bankDisp)}</td>
       <td class="td-stk td-inline">${renderInlineInput(row.id, "account_number", row.account_number)}</td>
       <td class="td-vip">${renderVipCell(row)}</td>

@@ -24,13 +24,13 @@ import json
 import sys
 from typing import Any
 
+from xoso66_game_domain import resolve_base_url
 from xoso66_session import (
-    BASE_URL,
     ensure_session,
     merge_playwright_cookies,
     post_encrypted,
     _merge_response_cookies,
-    _requests_session,
+    _requests_session
 )
 from xoso66_sessions_io import load_sessions, save_sessions
 
@@ -95,7 +95,7 @@ def get_user_info(session: dict, *, is_user_center: bool = True) -> dict[str, An
     )
     body = {"isUserCenter": True} if is_user_center else {}
     r = _requests_session(session).post(
-        f"{BASE_URL}{USER_INFO_PATH}",
+        f"{resolve_base_url(session)}{USER_INFO_PATH}",
         json=body,
         headers=headers,
         timeout=25,
@@ -165,13 +165,13 @@ def update_fund_password_playwright(
     if session.get("form_token"):
         extra["form-token"] = session["form_token"]
 
-    with playwright_browser(session, base_url=BASE_URL, headless=True, extra_http_headers=extra) as (
+    with playwright_browser(session, base_url=resolve_base_url(session), headless=True, extra_http_headers=extra) as (
         _p,
         _browser,
         context,
     ):
         page = context.new_page()
-        page.goto(f"{BASE_URL}/home/", wait_until="domcontentloaded", timeout=90_000)
+        page.goto(f"{resolve_base_url(session)}/home/", wait_until="domcontentloaded", timeout=90_000)
         try:
             page.wait_for_load_state("networkidle", timeout=20_000)
         except Exception:

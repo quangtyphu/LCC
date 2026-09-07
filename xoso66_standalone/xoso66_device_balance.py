@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Số dư thiết bị ngân hàng — giống CMS `creditDeviceBalance` (LC79).
+Số dư thiết bị ngân hàng — credit khi rút game Hoàn tất.
 
-- Rút Hoàn tất (`upsert_payment_order`) → cộng số tiền rút vào device.
+- Rút Hoàn tất (`upsert_payment_order`) → cộng số tiền rút vào device trên **Banking**.
 - Device **XMSB*** → POST Banking `:3010/api/msb-accounts/by-device/{device}/credit`
-  (msb_api / PG), không ghi `device_balances`.
-- Device khác → cộng `device_balances` (SQLite CMS hoặc HTTP PUT).
-- App VPBank / CMS form: PUT ghi **toàn bộ** số dư (`update_device_balance`).
+  (channel msbapi; chưa có → tự tạo stub).
+- Device khác → POST Banking `:3010/api/device-balances/{device}/credit`
+  (chưa có → tự tạo chỉ với tên device).
+- Không ghi CMS `game_data.db` / SQLite local khi rút thành công.
+- App VPBank / CMS form: PUT ghi **toàn bộ** số dư (`update_device_balance`) — ưu tiên Banking.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ _banking_env_loaded = False
 
 
 def default_game_data_db_path() -> Path:
-    """.../Documents/CMS/game_data.db — cùng LC79/Banking."""
+    """.../Documents/CMS/game_data.db — legacy / fallback đọc."""
     env = str(os.environ.get("GAME_DATA_DB") or os.environ.get("DEVICE_BALANCE_DB") or "").strip()
     if env:
         return Path(env)
@@ -111,7 +113,7 @@ def _banking_base_url() -> str:
 
 
 def _banking_credit_base_url() -> str:
-    """banking-db Node (MSBAPI credit) — mặc định :3010 như CMS."""
+    """banking-db Node — mặc định :3010 như CMS."""
     _load_banking_env_fallback()
     block = _cfg()
     url = str(
@@ -137,7 +139,7 @@ def _cms_base_url() -> str:
 
 
 def is_xmsb_device_name(device: str) -> bool:
-    """Giống CMS `isXmsbDeviceName` — XMSB* → MSBAPI, không ghi device_balances."""
+    """XMSB* → MSBAPI channel trên Banking."""
     return str(device or "").strip().upper().startswith("XMSB")
 
 
@@ -153,14 +155,71 @@ def _banking_credit_headers() -> dict[str, str]:
     return headers
 
 
+def _parse_credit_response(
+    r: requests.Response,
+    *,
+    device: str,
+    amount: int,
+    url: str,
+    via: str,
+    log_prefix: str,
+    quiet: bool = False,
+) -> dict[str, Any]:
+    try:
+        body = r.json()
+    except Exception:
+        body = {"raw": (r.text or "")[:300]}
+
+    if r.status_code not in (200, 201) or (
+        isinstance(body, dict) and body.get("success") is False
+    ):
+        err = (
+            (body.get("error") if isinstance(body, dict) else None)
+            or f"HTTP {r.status_code}"
+        )
+        print(f"{log_prefix} {device}: ❌ Banking credit failed: {err}", flush=True)
+        return {
+            "ok": False,
+            "error": str(err),
+            "detail": body,
+            "url": url,
+            "device": device,
+            "via": via,
+        }
+
+    bal = None
+    created = False
+    if isinstance(body, dict):
+        bal = body.get("balance")
+        created = bool(body.get("created"))
+    bal_s = f"{int(bal):,}đ" if bal is not None else "—"
+    created_s = " (tạo mới)" if created else ""
+    if not quiet:
+        print(
+            f"{log_prefix} {device}: ✅ Banking credit{created_s} +{amount:,}đ → balance={bal_s}",
+            flush=True,
+        )
+    return {
+        "ok": True,
+        "via": via,
+        "device": device,
+        "added": amount,
+        "balance": int(bal) if bal is not None else None,
+        "created": created,
+        "url": url,
+        "response": body,
+    }
+
+
 def credit_xmsb_via_msbapi(
     device: str,
     amount_vnd: int,
     *,
     log_prefix: str = "[DEVICE-BAL]",
+    quiet: bool = False,
 ) -> dict[str, Any]:
     """
-    POST /api/msb-accounts/by-device/{device}/credit — giống CMS creditDeviceBalance (XMSB*).
+    POST /api/msb-accounts/by-device/{device}/credit — XMSB* (auto-create stub).
     """
     dev = str(device or "").strip()
     if not dev:
@@ -185,45 +244,72 @@ def credit_xmsb_via_msbapi(
         print(f"{log_prefix} {dev}: ❌ MSBAPI credit lỗi: {e}", flush=True)
         return {"ok": False, "error": str(e), "url": url, "device": dev, "via": "msbapi"}
 
-    try:
-        body = r.json()
-    except Exception:
-        body = {"raw": (r.text or "")[:300]}
+    return _parse_credit_response(
+        r,
+        device=dev,
+        amount=amt,
+        url=url,
+        via="msbapi",
+        log_prefix=log_prefix,
+        quiet=quiet,
+    )
 
-    if r.status_code not in (200, 201) or (
-        isinstance(body, dict) and body.get("success") is False
-    ):
-        err = (
-            (body.get("error") if isinstance(body, dict) else None)
-            or f"HTTP {r.status_code}"
+
+def credit_via_banking_device_balances(
+    device: str,
+    amount_vnd: int,
+    *,
+    log_prefix: str = "[DEVICE-BAL]",
+    reason: str = "",
+    quiet: bool = False,
+) -> dict[str, Any]:
+    """
+    POST /api/device-balances/{device}/credit — mọi device (auto-create nếu chưa có).
+    """
+    dev = str(device or "").strip()
+    if not dev:
+        return {"ok": False, "skipped": True, "reason": "thiếu tên thiết bị"}
+    try:
+        amt = int(amount_vnd)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "số tiền không hợp lệ"}
+    if amt <= 0:
+        return {"ok": False, "error": "số tiền phải > 0"}
+
+    base = _banking_credit_base_url()
+    url = f"{base}/api/device-balances/{quote(dev, safe='')}/credit"
+    payload: dict[str, Any] = {
+        "amount": amt,
+        "source": "xoso66_withdraw",
+    }
+    if reason:
+        payload["reason"] = reason
+    try:
+        r = requests.post(
+            url,
+            json=payload,
+            headers=_banking_credit_headers(),
+            timeout=20,
         )
-        print(f"{log_prefix} {dev}: ❌ MSBAPI credit failed: {err}", flush=True)
+    except Exception as e:
+        print(f"{log_prefix} {dev}: ❌ Banking device credit lỗi: {e}", flush=True)
         return {
             "ok": False,
-            "error": str(err),
-            "detail": body,
+            "error": str(e),
             "url": url,
             "device": dev,
-            "via": "msbapi",
+            "via": "banking_device",
         }
 
-    bal = None
-    if isinstance(body, dict):
-        bal = body.get("balance")
-    bal_s = f"{int(bal):,}đ" if bal is not None else "—"
-    print(
-        f"{log_prefix} {dev}: ✅ MSBAPI credit +{amt:,}đ → balance={bal_s}",
-        flush=True,
+    return _parse_credit_response(
+        r,
+        device=dev,
+        amount=amt,
+        url=url,
+        via="banking_device",
+        log_prefix=log_prefix,
+        quiet=quiet,
     )
-    return {
-        "ok": True,
-        "via": "msbapi",
-        "device": dev,
-        "added": amt,
-        "balance": int(bal) if bal is not None else None,
-        "url": url,
-        "response": body,
-    }
 
 
 def device_name_for_account(account_id: str) -> str:
@@ -269,71 +355,6 @@ def _get_device_balance_http(base_url: str, device: str) -> int | None:
     if isinstance(payload, dict):
         return int(payload.get("balance") or 0)
     return None
-
-
-def _add_to_device_balance_sqlite(
-    db_path: Path, device: str, amount: int
-) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path), timeout=15)
-    conn.row_factory = sqlite3.Row
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            UPDATE device_balances
-            SET balance = balance + ?, updatedAt = datetime('now')
-            WHERE device = ?
-            """,
-            (amount, device),
-        )
-        inserted = cur.rowcount == 0
-        if inserted:
-            try:
-                cur.execute(
-                    """
-                    INSERT INTO device_balances (
-                        device, balance, bank, username, accountNumber, accountHolder, updatedAt
-                    ) VALUES (?, ?, '', '', '', '', datetime('now'))
-                    """,
-                    (device, amount),
-                )
-            except sqlite3.IntegrityError:
-                conn.rollback()
-                cur.execute(
-                    """
-                    UPDATE device_balances
-                    SET balance = balance + ?, updatedAt = datetime('now')
-                    WHERE device = ?
-                    """,
-                    (amount, device),
-                )
-                inserted = False
-        conn.commit()
-        cur.execute("SELECT balance FROM device_balances WHERE device = ?", (device,))
-        row = cur.fetchone()
-        if not row:
-            return {"ok": False, "error": "không đọc lại device sau cộng"}
-        new_bal = int(row["balance"] or 0)
-        return {
-            "ok": True,
-            "via": "sqlite",
-            "device": device,
-            "balance": new_bal,
-            "added": amount,
-            "inserted": inserted,
-            "db_path": str(db_path),
-        }
-    finally:
-        conn.close()
-
-
-def _add_to_device_balance_http(base_url: str, device: str, amount: int) -> dict[str, Any]:
-    current = _get_device_balance_http(base_url, device)
-    if current is None:
-        new_bal = amount
-    else:
-        new_bal = current + amount
-    return _update_device_balance_http(base_url, device, new_bal, added=amount)
 
 
 def _update_device_balance_sqlite(db_path: Path, device: str, balance: int) -> dict[str, Any]:
@@ -426,7 +447,7 @@ def update_device_balance(
     *,
     log_prefix: str = "[DEVICE-BAL]",
 ) -> dict[str, Any]:
-    """Ghi đè số dư thiết bị (app VPBank / form CMS)."""
+    """Ghi đè số dư thiết bị (app VPBank / form CMS) — ưu tiên Banking."""
     dev = str(device or "").strip()
     if not dev:
         return {"ok": False, "skipped": True, "reason": "thiếu tên thiết bị"}
@@ -434,6 +455,19 @@ def update_device_balance(
         bal = int(float(balance_vnd or 0))
     except (TypeError, ValueError):
         return {"ok": False, "error": "balance không hợp lệ"}
+
+    for base, label in (
+        (_banking_credit_base_url(), "Banking"),
+        (_banking_base_url(), "Banking-API"),
+        (_cms_base_url(), "CMS"),
+    ):
+        try:
+            rep = _update_device_balance_http(base, dev, bal)
+            if rep.get("ok"):
+                print(f"{log_prefix} {dev}: set balance={bal:,}đ ({label})", flush=True)
+                return rep
+        except Exception as e:
+            print(f"{log_prefix} {label} lỗi: {e}", flush=True)
 
     db_path = default_game_data_db_path()
     if db_path.is_file():
@@ -448,15 +482,6 @@ def update_device_balance(
         except Exception as e:
             print(f"{log_prefix} SQLite lỗi: {e}", flush=True)
 
-    for base, label in ((_banking_base_url(), "Banking"), (_cms_base_url(), "CMS")):
-        try:
-            rep = _update_device_balance_http(base, dev, bal)
-            if rep.get("ok"):
-                print(f"{log_prefix} {dev}: set balance={bal:,}đ ({label})", flush=True)
-                return rep
-        except Exception as e:
-            print(f"{log_prefix} {label} lỗi: {e}", flush=True)
-
     return {"ok": False, "error": "không ghi được device_balances"}
 
 
@@ -466,6 +491,7 @@ def log_device_credit_result(
     log_prefix: str = "[DEVICE-BAL]",
     username: str = "",
     serial_no: str = "",
+    account_id: str = "",
 ) -> None:
     """In log rõ khi cộng / bỏ qua / lỗi (tránh im lặng)."""
     tag = f" {username}" if username else ""
@@ -481,8 +507,23 @@ def log_device_credit_result(
         added = rep.get("withdraw_amount") or rep.get("added") or "?"
         bal = rep.get("balance") or (rep.get("device_sync") or {}).get("balance")
         bal_s = f"{int(bal):,}đ" if bal is not None else "—"
+        wait_suffix = ""
+        aid = str(account_id or rep.get("account_id") or "").strip()
+        sn_poll = str(serial_no or rep.get("serial_no") or "").strip()
+        if aid and sn_poll:
+            from xoso66_payment_history_db import get_withdraw_submission_poll_count
+            from xoso66_withdraw_tracking import (
+                _format_withdraw_poll_waited,
+                withdraw_confirm_poll_interval_sec,
+            )
+
+            att = get_withdraw_submission_poll_count(aid, sn_poll)
+            if att > 0:
+                interval = withdraw_confirm_poll_interval_sec()
+                waited = _format_withdraw_poll_waited(att, interval)
+                wait_suffix = f" ({waited}, mỗi {interval:.0f}s)"
         print(
-            f"{log_prefix}{tag}: ✅ device {dev} +{added}đ → {bal_s}{sn}",
+            f"{log_prefix}{tag}: ✅ device {dev} +{added}đ → {bal_s}{wait_suffix}",
             flush=True,
         )
         return
@@ -495,11 +536,12 @@ def add_to_device_balance(
     amount_vnd: int | float,
     *,
     log_prefix: str = "[DEVICE-BAL]",
+    quiet: bool = False,
 ) -> dict[str, Any]:
     """
-    Cộng tiền rút vào số dư thiết bị — giống CMS `creditDeviceBalance`.
+    Cộng tiền rút vào số dư thiết bị trên Banking.
 
-    XMSB* → MSBAPI credit; còn lại → device_balances (SQLite / HTTP).
+    XMSB* → MSBAPI credit; còn lại → device_balances credit (tự tạo nếu chưa có).
     """
     dev = str(device or "").strip()
     if not dev:
@@ -511,52 +553,12 @@ def add_to_device_balance(
     if amt <= 0:
         return {"ok": False, "error": "số tiền phải > 0"}
 
-    # Giống CMS: XMSB* không ghi Quản lý thiết bị — credit MSBAPI
     if is_xmsb_device_name(dev):
-        return credit_xmsb_via_msbapi(dev, amt, log_prefix=log_prefix)
+        return credit_xmsb_via_msbapi(dev, amt, log_prefix=log_prefix, quiet=quiet)
 
-    db_path = default_game_data_db_path()
-    if db_path.is_file():
-        try:
-            before = _get_device_balance_sqlite(db_path, dev)
-            rep = _add_to_device_balance_sqlite(db_path, dev, amt)
-            if rep.get("ok"):
-                prev_s = f"{before:,}đ" if before is not None else "—"
-                print(
-                    f"{log_prefix} {dev}: +{amt:,}đ rút → {prev_s} → {rep['balance']:,}đ "
-                    f"(SQLite {db_path.name})",
-                    flush=True,
-                )
-            if not rep.get("ok"):
-                print(
-                    f"{log_prefix} {dev}: SQLite không cộng — {rep.get('error', '?')}",
-                    flush=True,
-                )
-            return rep
-        except Exception as e:
-            print(f"{log_prefix} SQLite lỗi: {e}", flush=True)
-
-    for base, label in ((_banking_base_url(), "Banking"), (_cms_base_url(), "CMS")):
-        try:
-            before = _get_device_balance_http(base, dev)
-            rep = _add_to_device_balance_http(base, dev, amt)
-            if rep.get("ok"):
-                prev_s = f"{before:,}đ" if before is not None else "—"
-                print(
-                    f"{log_prefix} {dev}: +{amt:,}đ rút → {prev_s} → {rep['balance']:,}đ ({label})",
-                    flush=True,
-                )
-                return rep
-            print(
-                f"{log_prefix} {dev}: {label} không cộng — {rep.get('error', '?')}",
-                flush=True,
-            )
-        except Exception as e:
-            print(f"{log_prefix} {label} lỗi: {e}", flush=True)
-
-    db_path = default_game_data_db_path()
-    hint = f" (không thấy DB: {db_path})" if not db_path.is_file() else ""
-    return {"ok": False, "error": f"không cộng được device_balances{hint}"}
+    return credit_via_banking_device_balances(
+        dev, amt, log_prefix=log_prefix, quiet=quiet
+    )
 
 
 def credit_device_for_account_withdraw(
@@ -564,13 +566,16 @@ def credit_device_for_account_withdraw(
     withdraw_amount_vnd: int | float,
     *,
     log_prefix: str = "[DEVICE-BAL]",
+    quiet: bool = True,
 ) -> dict[str, Any]:
-    """accounts.device → cộng số tiền rút (XMSB→MSBAPI, còn lại→device_balances)."""
+    """accounts.device → cộng số tiền rút trên Banking."""
     aid = str(account_id or "").strip()
     dev = device_name_for_account(aid)
     if not dev:
         return {"ok": False, "skipped": True, "reason": "acc không có cột device"}
-    rep = add_to_device_balance(dev, withdraw_amount_vnd, log_prefix=log_prefix)
+    rep = add_to_device_balance(
+        dev, withdraw_amount_vnd, log_prefix=log_prefix, quiet=quiet
+    )
     rep["account_id"] = aid
     rep["device"] = dev
     return rep
@@ -583,7 +588,7 @@ def credit_device_on_withdraw_saved(
     log_prefix: str = "[DEVICE-BAL]",
 ) -> dict[str, Any]:
     """
-    Gọi từ upsert_payment_order: lệnh rút Hoàn tất vừa ghi DB → cộng device.
+    Gọi từ upsert_payment_order: lệnh rút Hoàn tất vừa ghi DB → cộng device Banking.
     """
     from xoso66_accounts_db import username_for_log
     from xoso66_payment_history_db import mark_device_balance_credited
@@ -607,12 +612,15 @@ def credit_device_on_withdraw_saved(
         log_device_credit_result(rep, log_prefix=log_prefix, username=user, serial_no=serial)
         return rep
 
-    dev_rep = credit_device_for_account_withdraw(aid, amt_i, log_prefix=log_prefix)
+    dev_rep = credit_device_for_account_withdraw(
+        aid, amt_i, log_prefix=log_prefix, quiet=True
+    )
     rep: dict[str, Any] = {
         "ok": bool(dev_rep.get("ok")),
         "device_sync": dev_rep,
         "withdraw_amount": amt_i,
         "serial_no": serial,
+        "account_id": aid,
     }
     if rep.get("ok") and serial:
         dev = dev_rep.get("device") or device_name_for_account(aid)
@@ -623,7 +631,11 @@ def credit_device_on_withdraw_saved(
             device=str(dev or ""),
         )
     log_device_credit_result(
-        rep, log_prefix=log_prefix, username=user, serial_no=serial
+        rep,
+        log_prefix=log_prefix,
+        username=user,
+        serial_no=serial,
+        account_id=aid,
     )
     return rep
 
