@@ -14,15 +14,19 @@ Gán cược mỗi phiên vẫn theo assign_strategy (xoso66_bet_assign).
 
 Đầu phiên / resync — 3 cổng đơn (tránh tranh việc):
   - apply_account_status_intent: mọi ép Hết Tiền / Đủ ngày / Đang Chơi
-  - request_ws_close: mọi đóng WS + unregister
+  - request_ws_close: xếp đóng WS (unregister khi supervisor stop)
   - request_ws_open: mọi xếp mở WS (sau khi đã Đang Chơi)
-  Orchestrator reconcile_ws_pool: Phiên mới = 5 việc (song song):
-    1) DB < min, ∉ C → Hết Tiền
+  Orchestrator reconcile_ws_pool:
+    Phiên mới (begin+18s) và Resync (60s / evict): 1–2 song song,
+    xong việc 3 (bù nick cùng vòng), rồi 4 → 5. Chỉ log khi có đổi.
+    Nạp xong: Đang Chơi + mở đúng nick đó — không Resync cả pool.
+    1) Đang Chơi + DB < min, ∉ C → Hết Tiền
     2) đủ cap cược ngày → Đủ ngày
     3) bù Đang Chơi (trừ D list nạp)
     4) Đang Chơi ∉ A → Open WS
     5) A ∉ Đang Chơi (∉ C) → Close WS
-  Trần ws_account_count đếm «Đang Chơi» — WS theo sát status.
+  Trần ws_account_count = mục tiêu số «Đang Chơi» (việc3 bù status).
+  Mở WS: mọi Đang Chơi — không cắt theo số slot socket.
 
 Quy chuẩn A / B / C / D:
   A = nick đang giữ WS (connected ∪ pending mở)
@@ -40,6 +44,7 @@ Không WS: status «Lỗi» (WS_BLOCKED_STATUSES).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
@@ -129,6 +134,7 @@ def apply_account_status_intent(
     status: str,
     *,
     reason: str = "",
+    quiet: bool = False,
 ) -> bool:
     """
     Cổng duy nhất đổi status pool (Hết Tiền / Đủ ngày / Đang Chơi).
@@ -140,9 +146,7 @@ def apply_account_status_intent(
         return False
     if aid in list_C_pending_kq_ids():
         return False
-    tag = f" — {reason}" if reason else ""
-    _ = tag
-    return set_account_status(aid, new_st, reason=reason)
+    return set_account_status(aid, new_st, reason=reason, quiet=quiet)
 
 
 def request_ws_close(
@@ -152,17 +156,23 @@ def request_ws_close(
     flow: str = "",
     cfg: dict[str, Any] | None = None,
     quiet: bool = True,
+    keep_pending: bool = False,
+    ignore_pending_bet: bool = False,
 ) -> list[str]:
     """
-    Cổng duy nhất đóng WS: clear pending + unregister ngay.
-    Im lặng mặc định (quiet=True) — tránh spam chồng với việc5 / leave pool.
+    Cổng duy nhất xếp đóng WS.
+
+    Chỉ clear pending (trừ keep_pending — nick đang nạp giữ slot).
+    Không unregister khỏi A ở đây — supervisor
+    ``_stop_account`` mới gỡ connect khi socket thật sự dừng.
+    Unregister sớm + hoãn evict → task sống, không ∈ A, không cược / không mở lại.
     """
     if cfg is None:
         from xoso66_config_util import load_config
 
         cfg = load_config()
     out: list[str] = []
-    bet = _pending_bet_skip_ids()
+    bet = set() if ignore_pending_bet else _pending_bet_skip_ids()
     for aid in account_ids:
         aid = str(aid).strip()
         if not aid or aid in bet:
@@ -171,8 +181,8 @@ def request_ws_close(
             continue
         if not _reconcile_set_action(aid, "close"):
             continue
-        clear_pending_ws_slot(aid)
-        unregister_ws_connected(aid)
+        if not keep_pending:
+            clear_pending_ws_slot(aid)
         out.append(aid)
     _ = reason, flow, quiet
     return out
@@ -187,8 +197,9 @@ def request_ws_open(
     quiet: bool = False,
 ) -> list[str]:
     """
-    Cổng duy nhất xếp mở WS: ensure Đang Chơi + mark pending.
-    Trả list aid được OPEN (worker spawn qua fill_connect / apply_pool).
+    Cổng duy nhất xếp mở WS: mark pending (và optionally ensure Đang Chơi).
+    Không ép Đủ ngày → Đang Chơi. Hết Tiền chỉ promote khi ensure_dang_choi
+    (việc3 thường đã set trước).
     """
     if cfg is None:
         from xoso66_config_util import load_config
@@ -203,13 +214,20 @@ def request_ws_open(
             continue
         if not _reconcile_set_action(aid, "open"):
             continue
-        if ensure_dang_choi:
-            row = get_account(aid) or {}
-            st = str(row.get("status") or "").strip()
-            if st != STATUS_DANG_CHOI and not is_ws_blocked_status(st):
-                apply_account_status_intent(
-                    aid, STATUS_DANG_CHOI, reason=reason or "mở WS"
-                )
+        row = get_account(aid) or {}
+        st = str(row.get("status") or "").strip()
+        if is_ws_blocked_status(st):
+            continue
+        if st == STATUS_DU_NGAY:
+            # Đủ ngày = hết room — không mở WS / không flip status.
+            continue
+        if st != STATUS_DANG_CHOI:
+            if not ensure_dang_choi or st != STATUS_HET_TIEN:
+                continue
+            if not apply_account_status_intent(
+                aid, STATUS_DANG_CHOI, reason=reason or "mở WS"
+            ):
+                continue
         mark_pending_ws_slots([aid])
         out.append(aid)
     if out and not quiet:
@@ -550,7 +568,7 @@ def game_worker_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def ws_account_count(cfg: dict[str, Any]) -> int:
-    """Mục tiêu tối thiểu nick WS đã connect (chỉ connect mới được chơi)."""
+    """Mục tiêu số nick «Đang Chơi» (việc3 bù status) — không còn là trần số socket WS."""
     gw = game_worker_cfg(cfg)
     return max(1, int(gw.get("ws_account_count") or 12))
 
@@ -644,23 +662,53 @@ def ws_pool_resync_interval_sec(cfg: dict[str, Any]) -> int:
 
 
 def ws_connect_batch_size(cfg: dict[str, Any]) -> int:
-    """Số nick WS connect đồng thời. Windows: luôn 1 (LC79 socks gate)."""
-    import sys
-
-    if sys.platform.startswith("win"):
-        return 1
+    """Số nick WS handshake đồng thời — Windows cũng dùng config (mặc định 4)."""
     gw = game_worker_cfg(cfg)
-    return max(1, int(gw.get("ws_connect_batch_size") or 4))
+    try:
+        n = int(gw.get("ws_connect_batch_size") or 4)
+    except (TypeError, ValueError):
+        n = 4
+    return max(1, min(8, n))
 
 
 def ws_connect_batch_delay_sec(cfg: dict[str, Any]) -> float:
-    """Delay giữa các spawn WS. Windows mặc định 0.5s (LC79 stagger)."""
-    import sys
-
+    """Delay giữa các spawn WS. Mặc định 0.5s (LC79 stagger trên Win)."""
     gw = game_worker_cfg(cfg)
-    if sys.platform.startswith("win"):
-        return max(0.5, float(gw.get("ws_connect_batch_delay_sec") or 0.5))
-    return max(0.0, float(gw.get("ws_connect_batch_delay_sec") or 0.2))
+    raw = gw.get("ws_connect_batch_delay_sec")
+    if raw is None:
+        d = 0.5
+    else:
+        try:
+            d = float(raw)
+        except (TypeError, ValueError):
+            d = 0.5
+    return max(0.0, min(5.0, d))
+
+
+def ws_stuck_unconnected_sec(cfg: dict[str, Any]) -> float:
+    """Hủy task còn sống nhưng chưa Live quá mức này — không skip-reopen mãi."""
+    gw = game_worker_cfg(cfg)
+    try:
+        return max(8.0, float(gw.get("ws_stuck_unconnected_sec") or 30))
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def ws_stale_unconnected_sec(cfg: dict[str, Any], *, unconnected_n: int = 0) -> float:
+    """
+    Ngưỡng respawn nick chưa connect.
+    Scale theo hàng chờ / batch — tránh thrash khi pool lớn + gate hẹp.
+    """
+    gw = game_worker_cfg(cfg)
+    try:
+        base = float(gw.get("ws_stale_unconnected_sec") or 90)
+    except (TypeError, ValueError):
+        base = 90.0
+    batch = max(1, ws_connect_batch_size(cfg))
+    n = max(0, int(unconnected_n))
+    # ~25s/wave ước lượng SOCKS+handshake; tối thiểu base, tối đa 240s.
+    scaled = float(max(1, (n + batch - 1) // batch)) * 25.0
+    return max(base, min(240.0, scaled))
 
 
 def ws_bulk_refresh_threshold(cfg: dict[str, Any]) -> int:
@@ -721,7 +769,8 @@ def sync_status_for_ws_pool_change(
 ) -> None:
     """
     Leave pool: chỉ đóng WS — không ép Hết Tiền/Đủ ngày (để Phiên mới / mark_daily_cap).
-    Join: set Đang Chơi nếu chưa.
+    Join: KHÔNG đổi status — mở WS không được ép Đủ ngày/Hết Tiền → Đang Chơi
+    (soft-restart từng làm vậy → rồi việc2 đóng 1 loạt).
     """
     leave_ids = filter_ws_evict_ids(leaving or [], cfg)
     if leave_ids:
@@ -731,18 +780,50 @@ def sync_status_for_ws_pool_change(
             flow="sync_status_for_ws_pool_change.leaving",
             cfg=cfg,
         )
+    _ = joining  # status do membership (việc3 / nạp), không do spawn WS
 
-    for aid in joining or []:
-        aid = str(aid).strip()
+
+def filter_ids_for_ws_spawn(
+    account_ids: list[str],
+    cfg: dict[str, Any],
+    *,
+    keep_pending_bet: bool = True,
+) -> list[str]:
+    """
+    Soft-restart / apply_pool: chỉ spawn nick Đang Chơi (+ chờ KQ).
+    Bỏ Đủ ngày / Hết Tiền / Lỗi — tránh mở rồi ép status rồi đóng lại.
+    """
+    pending: set[str] = set()
+    if keep_pending_bet:
+        pending = _pending_bet_skip_ids()
+    out: list[str] = []
+    skipped_du: list[str] = []
+    for raw in account_ids:
+        aid = str(raw or "").strip()
         if not aid:
+            continue
+        if is_ws_listener(aid, cfg):
+            continue
+        if aid in pending:
+            out.append(aid)
             continue
         row = get_account(aid) or {}
         st = str(row.get("status") or "").strip()
-        if st == STATUS_DANG_CHOI:
-            continue
         if is_ws_blocked_status(st):
             continue
-        apply_account_status_intent(aid, STATUS_DANG_CHOI, reason="mở WS")
+        if is_ws_pool_active_status(row, cfg):
+            out.append(aid)
+            continue
+        if st == STATUS_DU_NGAY:
+            skipped_du.append(aid)
+    if skipped_du:
+        names = ", ".join(username_for_log(a) for a in skipped_du[:8])
+        extra = f"… +{len(skipped_du) - 8}" if len(skipped_du) > 8 else ""
+        print(
+            f"[WS-POOL] Bỏ spawn (Đủ ngày — không ép Đang Chơi): {names}{extra}",
+            flush=True,
+        )
+    return list(dict.fromkeys(out))
 
 
 def mark_daily_cap_status(account_ids: list[str], cfg: dict[str, Any]) -> None:
@@ -1094,6 +1175,31 @@ def ranked_dang_choi_not_on_ws(
         if str(r.get("id") or "") not in ex
     ]
     return sort_rows_ws_fill_priority(rows, cfg)
+
+
+def dang_choi_without_connected_ws(
+    cfg: dict[str, Any], *, exclude: set[str] | None = None
+) -> list[str]:
+    """
+    Đang Chơi mà chưa ∈ A (WS đã connect).
+
+    Task/pending không tính là đã mở — đúng chỗ luongtienco bị kẹt.
+    """
+    ex = {str(x).strip() for x in (exclude or set()) if str(x).strip()}
+    listener = pick_ws_listener_account(cfg)
+    if listener:
+        ex.add(listener)
+    connected = {
+        str(x).strip() for x in get_connected_ws_accounts() if str(x).strip()
+    }
+    pending_kq = list_C_pending_kq_ids()
+    out: list[str] = []
+    for aid in dang_choi_account_ids(cfg):
+        aid = str(aid).strip()
+        if not aid or aid in ex or aid in connected or aid in pending_kq:
+            continue
+        out.append(aid)
+    return out
 
 
 def list_dang_choi_missing_ws_connect(
@@ -1639,18 +1745,16 @@ def reconcile_ws_pool(
     just_evicted: list[str] | None = None,
 ) -> WsSyncPlan | None:
     """
-    Phiên mới / Resync — đúng 5 việc, chạy song song, mỗi việc tự đọc state:
+    1–2 song song; xong mới 3 (bù theo Đang Chơi đã trừ); rồi 4 → 5.
 
-    1) DB < min, ∉ C → Hết Tiền
-    2) đủ cap cược ngày → Đủ ngày
-    3) bù Đang Chơi (trừ D)
-    4) Đang Chơi chưa có WS → mở WS
-    5) có WS nhưng không Đang Chơi (∉ C) → đóng WS
+    1) Đang Chơi + DB < min, ∉ C → Hết Tiền (chỉ log khi ép)
+    2) đủ cap cược ngày → Đủ ngày (chỉ log khi ép)
+    3) bù Đang Chơi (trừ D) — chỉ log khi bù nick
+    4) Đang Chơi chưa có WS → mở WS (chỉ log khi mở)
+    5) Có WS mở + không còn Đang Chơi → đóng. Chỉ log khi đóng.
 
-    Chỉ log khi có thay đổi. Luồng chia cược độc lập.
+    Luồng chia cược độc lập.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     _ = current_ids, just_evicted
     _reconcile_begin()
 
@@ -1668,7 +1772,6 @@ def reconcile_ws_pool(
     opened: list[str] = []
     closed: list[str] = []
     deposit_ids: list[str] = []
-    lock = threading.Lock()
 
     def _names(ids: list[str], *, n: int = 16) -> str:
         if not ids:
@@ -1678,27 +1781,22 @@ def reconcile_ws_pool(
             shown += f" … +{len(ids) - n}"
         return shown
 
-    def _list_A() -> set[str]:
-        s = {
-            str(x).strip() for x in get_connected_ws_accounts() if str(x).strip()
-        }
-        s |= get_pending_ws_slot_ids()
-        if lid:
-            s.discard(lid)
-        return s
-
     def viec1_het_tien() -> None:
+        """Đang Chơi + DB < min + ∉ C (+ hết TTL win-credit) → Hết Tiền.
+        Chỉ log khi ép thành công."""
         C = list_C_pending_kq_ids()
         dang = dang_choi_account_ids(cfg)
-        A = _list_A()
         done: list[str] = []
-        for aid in sorted(dang | A):
-            if aid in C or (lid and aid == lid):
-                continue
-            if is_win_credit_recheck_pending(aid):
+        win_ttl = win_credit_recheck_ttl_sec(cfg)
+        for aid in sorted(dang):
+            if lid and aid == lid:
                 continue
             row = get_account(aid) or {}
             if not is_balance_too_low_for_ws(row, cfg):
+                continue
+            if aid in C:
+                continue
+            if is_win_credit_recheck_pending(aid, ttl_sec=win_ttl):
                 continue
             if apply_account_status_intent(
                 aid, STATUS_HET_TIEN, reason=f"{ctx} việc1 DB < {min_bal:,}"
@@ -1762,32 +1860,21 @@ def reconcile_ws_pool(
                 dep = []
         except Exception:
             pass
-        with lock:
-            deposit_ids.extend(dep)
+        deposit_ids.extend(dep)
         if done:
             print(
                 f"[WS-POOL] {ctx} việc3 — bù Đang Chơi: {_names(done)}",
-                flush=True,
-            )
-        if dep:
-            print(
-                f"[WS-POOL] {ctx} việc3 — xếp nạp D: {_names(dep)}",
                 flush=True,
             )
 
     def viec4_mo_ws() -> None:
         from xoso66_proxy import is_proxy_dead
 
-        C = list_C_pending_kq_ids()
-        dang = dang_choi_account_ids(cfg)
-        A = _list_A()
         need = [
             a
-            for a in sorted(dang)
-            if a not in A and a not in C and not is_proxy_dead(a)
+            for a in dang_choi_without_connected_ws(cfg)
+            if not is_proxy_dead(a)
         ]
-        room = max(0, min_target - len(A))
-        need = need[:room]
         if not need:
             return
         out = request_ws_open(
@@ -1797,8 +1884,7 @@ def reconcile_ws_pool(
             ensure_dang_choi=False,
             quiet=True,
         )
-        with lock:
-            opened.extend(out)
+        opened.extend(out)
         if out:
             print(
                 f"[WS-POOL] {ctx} việc4 — mở WS: {_names(out)}",
@@ -1806,16 +1892,12 @@ def reconcile_ws_pool(
             )
 
     def viec5_dong_ws() -> None:
-        C = list_C_pending_kq_ids()
         dang = dang_choi_account_ids(cfg)
-        A = _list_A()
-        need = [a for a in sorted(A) if a not in dang and a not in C]
-        for aid in task_keys:
-            if lid and aid == lid:
-                continue
-            if aid in C or aid in dang or aid in need:
-                continue
-            need.append(aid)
+        need = [
+            a
+            for a in get_connected_ws_accounts()
+            if str(a).strip() and str(a).strip() not in dang
+        ]
         if not need:
             return
         out = request_ws_close(
@@ -1823,23 +1905,33 @@ def reconcile_ws_pool(
             reason=f"{ctx} việc5",
             flow=f"{ctx} việc5",
             cfg=cfg,
+            ignore_pending_bet=True,
         )
-        with lock:
-            closed.extend(out)
+        closed.extend(out)
+        if out:
+            print(
+                f"[WS-POOL] {ctx} việc5 — đóng WS: {_names(out)}",
+                flush=True,
+            )
 
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    def _run(fn) -> None:
+        try:
+            fn()
+        except Exception as e:
+            print(f"[WS-POOL] {ctx} lỗi: {e}", flush=True)
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
         futs = [
-            ex.submit(viec1_het_tien),
-            ex.submit(viec2_du_ngay),
-            ex.submit(viec3_bu_dang_choi),
-            ex.submit(viec4_mo_ws),
-            ex.submit(viec5_dong_ws),
+            ex.submit(_run, fn)
+            for fn in (viec1_het_tien, viec2_du_ngay)
         ]
         for fut in as_completed(futs):
-            try:
-                fut.result()
-            except Exception as e:
-                print(f"[WS-POOL] {ctx} lỗi: {e}", flush=True)
+            fut.result()
+    _run(viec3_bu_dang_choi)
+    _run(viec4_mo_ws)
+    _run(viec5_dong_ws)
 
     dang = dang_choi_account_ids(cfg)
     C = list_C_pending_kq_ids()
@@ -1858,8 +1950,7 @@ def reconcile_ws_pool(
     ]
 
     if (
-        not round_start
-        and not deposit_ids
+        not deposit_ids
         and not closed
         and not opened
         and set(task_keys) == set(target)
@@ -1924,7 +2015,7 @@ def schedule_fund_deposit_for_ws_shortage(
         names = ", ".join(username_for_log(a) for a in skipped[:8])
         extra = f"… +{len(skipped) - 8}" if len(skipped) > 8 else ""
         print(
-            f"[WS-POOL] Bỏ lên lịch nạp (đủ tiền / đang có lệnh): {names}{extra}",
+            f"[WS-POOL] Bỏ đề xuất nạp (đủ tiền / đang có lệnh): {names}{extra}",
             flush=True,
         )
     need = ws_slots_need_fill(cfg, task_ids=get_ws_task_accounts())
@@ -2695,34 +2786,120 @@ def win_credit_recheck_delays_sec(cfg: dict[str, Any]) -> list[float]:
     return out[:5]
 
 
-def is_win_credit_recheck_pending(account_id: str) -> bool:
+def win_credit_recheck_ttl_sec(cfg: dict[str, Any] | None = None) -> float:
+    """
+    TTL cờ chờ thưởng: max(mốc) + 60s.
+    Hết hạn → việc1 được ép Hết Tiền (tránh kẹt Đang Chơi khi worker treo getBalance).
+    """
+    delays = win_credit_recheck_delays_sec(cfg if isinstance(cfg, dict) else {})
+    base = float(max(delays)) if delays else 90.0
+    return base + 60.0
+
+
+def win_credit_recheck_age_sec(account_id: str) -> float | None:
+    """Tuổi cờ chờ thưởng (giây); None = không có cờ."""
+    aid = str(account_id).strip()
+    if not aid:
+        return None
+    with _win_credit_recheck_lock:
+        t0 = _win_credit_recheck_since.get(aid)
+        if t0 is None:
+            return None
+        return max(0.0, time.time() - float(t0))
+
+
+def _win_credit_names(account_ids: list[str], *, n: int = 12) -> str:
+    ids = [str(a).strip() for a in account_ids if str(a).strip()]
+    if not ids:
+        return "(không)"
+    shown = ", ".join(username_for_log(a) for a in ids[:n])
+    if len(ids) > n:
+        shown += f" … +{len(ids) - n}"
+    return shown
+
+
+def is_win_credit_recheck_pending(
+    account_id: str, *, ttl_sec: float | None = None
+) -> bool:
+    """True nếu đang chờ thưởng và chưa quá TTL (quá hạn → tự xóa cờ + log)."""
     aid = str(account_id).strip()
     if not aid:
         return False
-    with _win_credit_recheck_lock:
-        return aid in _win_credit_recheck_since
-
-
-def mark_win_credit_recheck(account_ids: list[str]) -> list[str]:
-    """Đánh dấu nick đang chờ thưởng thắng; trả list mới (chưa có timer)."""
+    ttl = float(ttl_sec) if ttl_sec is not None else 150.0
+    if ttl < 30.0:
+        ttl = 30.0
     now = time.time()
+    expired_age: float | None = None
+    with _win_credit_recheck_lock:
+        t0 = _win_credit_recheck_since.get(aid)
+        if t0 is None:
+            return False
+        age = now - float(t0)
+        if age > ttl:
+            _win_credit_recheck_since.pop(aid, None)
+            expired_age = age
+        else:
+            return True
+    if expired_age is not None:
+        print(
+            f"[WS-POOL] win-credit TTL hết — nhả cờ {username_for_log(aid)} "
+            f"(age={expired_age:.0f}s > ttl={ttl:.0f}s)",
+            flush=True,
+        )
+    return False
+
+
+def mark_win_credit_recheck(
+    account_ids: list[str], *, ttl_sec: float | None = None
+) -> list[str]:
+    """Đánh dấu nick đang chờ thưởng thắng; trả list mới (chưa có timer / đã hết TTL)."""
+    now = time.time()
+    ttl = float(ttl_sec) if ttl_sec is not None else 150.0
+    if ttl < 30.0:
+        ttl = 30.0
     fresh: list[str] = []
+    kept: list[str] = []
     with _win_credit_recheck_lock:
         for aid in account_ids:
             aid = str(aid).strip()
             if not aid:
                 continue
-            if aid in _win_credit_recheck_since:
+            prev = _win_credit_recheck_since.get(aid)
+            if prev is not None and (now - float(prev)) <= ttl:
+                kept.append(aid)
                 continue
             _win_credit_recheck_since[aid] = now
             fresh.append(aid)
+    if fresh:
+        print(
+            f"[WS-POOL] win-credit mark: {_win_credit_names(fresh)}",
+            flush=True,
+        )
+    if kept:
+        print(
+            f"[WS-POOL] win-credit giữ cờ (đã pending): {_win_credit_names(kept)}",
+            flush=True,
+        )
     return fresh
 
 
-def clear_win_credit_recheck(account_ids: list[str]) -> None:
+def clear_win_credit_recheck(
+    account_ids: list[str], *, reason: str = ""
+) -> None:
+    cleared: list[str] = []
     with _win_credit_recheck_lock:
         for aid in account_ids:
-            _win_credit_recheck_since.pop(str(aid).strip(), None)
+            aid = str(aid).strip()
+            if not aid:
+                continue
+            if _win_credit_recheck_since.pop(aid, None) is not None:
+                cleared.append(aid)
+    if cleared:
+        tag = f" — {reason}" if reason else ""
+        print(
+            f"[WS-POOL] win-credit clear{tag}: {_win_credit_names(cleared)}",
+            flush=True,
+        )
 
 
 def is_balance_too_low_for_ws(row: dict[str, Any], cfg: dict[str, Any]) -> bool:
@@ -3299,7 +3476,7 @@ def _evict_het_tien_now(
     )
     if not removed:
         return []
-    clear_win_credit_recheck(removed)
+    clear_win_credit_recheck(removed, reason=log_label)
     release_ws_blocks_after_deposit(removed)
     names = ", ".join(username_for_log(a) for a in removed[:12])
     extra = f"… +{len(removed) - 12}" if len(removed) > 12 else ""
@@ -3324,11 +3501,27 @@ def _evict_het_tien_now(
     return removed
 
 
-def _refresh_balance_for_recheck(aid: str, *, db_low_before: bool, attempt_label: str) -> float:
-    """Refresh site + sync DB; trả balance DB sau refresh."""
+def _refresh_balance_for_recheck(
+    aid: str, *, db_low_before: bool, attempt_label: str, timeout_sec: float = 20.0
+) -> float:
+    """Refresh site + sync DB; trả balance DB sau refresh (timeout → giữ DB hiện tại)."""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
     db_before = account_balance_vnd(get_account(aid) or {})
-    _balance_vnd_after_site_refresh(aid)
-    _, _, err = sync_live_balance_vnd(aid)
+
+    def _run() -> tuple[float | None, float, str]:
+        _balance_vnd_after_site_refresh(aid)
+        return sync_live_balance_vnd(aid)
+
+    err = ""
+    try:
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(_run)
+            _, _, err = fut.result(timeout=max(5.0, float(timeout_sec)))
+    except FuturesTimeout:
+        err = f"getBalance timeout {timeout_sec:.0f}s"
+    except Exception as e:
+        err = str(e) or "refresh lỗi"
     if err and db_low_before:
         print(
             f"[WS-POOL] {username_for_log(aid)} {attempt_label} refresh balance: {err}",
@@ -3350,8 +3543,10 @@ def schedule_win_credit_balance_recheck(
     delays = win_credit_recheck_delays_sec(cfg)
     if not delays:
         delays = [10.0, 20.0, 30.0, 40.0, 50.0]
+    ttl = win_credit_recheck_ttl_sec(cfg)
     fresh = mark_win_credit_recheck(
-        [str(x).strip() for x in account_ids if str(x).strip()]
+        [str(x).strip() for x in account_ids if str(x).strip()],
+        ttl_sec=ttl,
     )
     if not fresh:
         return
@@ -3363,14 +3558,27 @@ def schedule_win_credit_balance_recheck(
         min_bal = min_balance_for_ws(cfg)
         still = list(fresh)
         t0 = time.time()
+
+        def _evict_low(ids: list[str], *, log_label: str) -> None:
+            low = [
+                a
+                for a in ids
+                if a
+                and a not in _pending_bet_skip_ids()
+                and is_balance_too_low_for_ws(get_account(a) or {}, cfg)
+            ]
+            clear_win_credit_recheck(ids, reason=log_label)
+            if low:
+                _evict_het_tien_now(cfg, low, log_label=log_label)
+
         for attempt_i, delay in enumerate(delays):
             if not still or stopping():
-                clear_win_credit_recheck(still)
+                _evict_low(still, log_label="Ép Hết Tiền (win-credit dừng)")
                 return
             wait = float(delay) - (time.time() - t0)
             if wait > 0:
                 if not sleep_interruptible(wait) or stopping():
-                    clear_win_credit_recheck(still)
+                    _evict_low(still, log_label="Ép Hết Tiền (win-credit dừng)")
                     return
             next_still: list[str] = []
             to_evict: list[str] = []
@@ -3378,20 +3586,27 @@ def schedule_win_credit_balance_recheck(
             label = f"lần {attempt_i + 1}/{n}"
             for aid in still:
                 if stopping():
-                    clear_win_credit_recheck(still)
+                    _evict_low(still, log_label="Ép Hết Tiền (win-credit dừng)")
                     return
-                if not is_win_credit_recheck_pending(aid):
+                if not is_win_credit_recheck_pending(aid, ttl_sec=ttl):
                     continue
                 if aid in _pending_bet_skip_ids():
+                    age = win_credit_recheck_age_sec(aid)
+                    print(
+                        f"[WS-POOL] {username_for_log(aid)} {label}: "
+                        f"skip refresh — còn C (chờ KQ)"
+                        f"{f', win-credit age={age:.0f}s' if age is not None else ''}",
+                        flush=True,
+                    )
                     next_still.append(aid)
                     continue
                 if is_ws_listener(aid, cfg):
-                    clear_win_credit_recheck([aid])
+                    clear_win_credit_recheck([aid], reason="listener")
                     continue
                 row_before = get_account(aid) or {}
                 db_low_before = is_balance_too_low_for_ws(row_before, cfg)
                 if not db_low_before:
-                    clear_win_credit_recheck([aid])
+                    clear_win_credit_recheck([aid], reason="đã đủ tiền trước refresh")
                     continue
                 db_after = _refresh_balance_for_recheck(
                     aid, db_low_before=True, attempt_label=label
@@ -3402,7 +3617,7 @@ def schedule_win_credit_balance_recheck(
                         f"đủ tiền (DB {db_after:,.0f} >= {min_bal:,}) — giữ WS",
                         flush=True,
                     )
-                    clear_win_credit_recheck([aid])
+                    clear_win_credit_recheck([aid], reason=f"{label} đủ tiền")
                     continue
                 if exceeds_ws_daily_cap(get_account(aid) or {}, cfg):
                     to_evict.append(aid)
@@ -3415,6 +3630,11 @@ def schedule_win_credit_balance_recheck(
                     )
                     to_evict.append(aid)
                 else:
+                    print(
+                        f"[WS-POOL] {username_for_log(aid)} {label}: "
+                        f"chưa về (DB {db_after:,.0f} < {min_bal:,}) — chờ mốc sau",
+                        flush=True,
+                    )
                     next_still.append(aid)
             if to_evict:
                 _evict_het_tien_now(
@@ -3423,7 +3643,26 @@ def schedule_win_credit_balance_recheck(
                     log_label="Ép Hết Tiền (hết chờ thưởng thắng)",
                 )
             still = next_still
-        clear_win_credit_recheck(still)
+        # Hết mốc: còn thiếu + không C → ép; còn C → nhả cờ để việc1 bắt sau KQ.
+        leftover: list[str] = []
+        for aid in still:
+            if aid in _pending_bet_skip_ids():
+                clear_win_credit_recheck(
+                    [aid], reason="hết mốc nhưng còn C — nhả cờ cho việc1"
+                )
+                continue
+            if is_balance_too_low_for_ws(get_account(aid) or {}, cfg):
+                leftover.append(aid)
+            else:
+                clear_win_credit_recheck([aid], reason="hết mốc đủ tiền")
+        if leftover:
+            _evict_het_tien_now(
+                cfg,
+                leftover,
+                log_label="Ép Hết Tiền (hết chờ thưởng thắng)",
+            )
+        else:
+            clear_win_credit_recheck(still, reason="hết mốc")
 
     threading.Thread(
         target=_worker, name="ws-win-credit-recheck", daemon=True
@@ -3493,8 +3732,10 @@ def prune_ws_after_settlement(
 ) -> None:
     """
     Sau KQ (không đóng WS / không đổi status đủ-cap):
-    - Thắng + DB < min → giữ WS, multi-retry refresh (win-credit).
-    - Đủ cap / thua / thiếu tiền: để Phiên mới (việc2 Đủ ngày, việc1 Hết Tiền, việc5 đóng WS).
+    - Thắng + Đang Chơi + DB < min → giữ WS, multi-retry refresh (win-credit).
+    - Đã win-credit pending (phiên trước) → giữ nguyên, không xếp việc1.
+    - Thua / không cược + Đang Chơi + thiếu tiền → Phiên mới việc1 (log 1 lần).
+    - Đã Hết Tiền / Đủ ngày: bỏ qua — không spam mỗi KQ.
     """
     from xoso66_ws_balance import normalize_bet_side, resolve_winning_side
 
@@ -3512,9 +3753,12 @@ def prune_ws_after_settlement(
         pass
 
     ws_live = _ws_live_account_ids()
+    dang = dang_choi_account_ids(cfg)
     win_wait: list[str] = []
+    win_ttl = win_credit_recheck_ttl_sec(cfg)
 
-    # Bettors + mọi nick WS live (sót nick thiếu tiền không cược phiên này).
+    # Bettors + nick WS live còn Đang Chơi (sót thiếu tiền không cược phiên này).
+    # Đã Hết Tiền / Đủ ngày: việc1 không đụng — không log lại mỗi KQ.
     check_ids = list(
         dict.fromkeys(
             [
@@ -3525,17 +3769,41 @@ def prune_ws_after_settlement(
     )
 
     for aid in check_ids:
-        if not aid or is_ws_listener(aid, cfg):
+        if not aid or is_ws_listener(aid, cfg) or aid not in dang:
             continue
         row = get_account(aid) or {}
         if not is_balance_too_low_for_ws(row, cfg):
             continue
+        # Đã chờ thưởng (mọi phiên) — không mark lại / không xếp việc1.
+        if is_win_credit_recheck_pending(aid, ttl_sec=win_ttl):
+            continue
         if aid in winner_ids:
             win_wait.append(aid)
-        # Thua / không cược / thiếu tiền / đủ cap — không ép; Phiên mới xử lý.
+        # Thua / không cược / thiếu tiền — không ép; Phiên mới việc1 xử lý.
 
     if win_wait:
+        print(
+            f"[WS-POOL] Sau KQ — win-credit chờ thưởng "
+            f"(thắng + DB < min): {_win_credit_names(win_wait)}",
+            flush=True,
+        )
         schedule_win_credit_balance_recheck(cfg, win_wait)
+    low_losers = [
+        a
+        for a in check_ids
+        if a
+        and a in dang
+        and a not in winner_ids
+        and not is_ws_listener(a, cfg)
+        and not is_win_credit_recheck_pending(a, ttl_sec=win_ttl)
+        and is_balance_too_low_for_ws(get_account(a) or {}, cfg)
+    ]
+    if low_losers:
+        print(
+            f"[WS-POOL] Sau KQ — thiếu tiền để Phiên mới việc1 "
+            f"(thua/không thắng): {_win_credit_names(low_losers)}",
+            flush=True,
+        )
 
 
 def connected_shortage_actions(
@@ -3739,7 +4007,6 @@ def _wait_deposit_confirmed(cfg: dict[str, Any], aid: str, rep: dict[str, Any]) 
                     flush=True,
                 )
                 return True
-            print(f"[WS-POOL] Nạp Hoàn tất #{oid} {username_for_log(aid)}", flush=True)
             if not deposit_order_confirmed(oid):
                 _finalize_deposit_order_confirmed(aid, oid, poll_rep)
             return True
@@ -3771,7 +4038,9 @@ def open_ws_after_deposit_confirmed(
     release_ws_blocks_after_deposit(ids)
     done: list[str] = []
     for aid in ids:
-        if apply_account_status_intent(aid, STATUS_DANG_CHOI, reason="nạp xong"):
+        if apply_account_status_intent(
+            aid, STATUS_DANG_CHOI, reason="nạp xong", quiet=True
+        ):
             done.append(aid)
         elif str((get_account(aid) or {}).get("status") or "").strip() == STATUS_DANG_CHOI:
             done.append(aid)
@@ -3779,25 +4048,26 @@ def open_ws_after_deposit_confirmed(
         return
     names = ", ".join(username_for_log(a) for a in done[:12])
     extra = f" … +{len(done) - 12}" if len(done) > 12 else ""
-    # Xếp worker trước (chưa pending), rồi mark pending — tránh schedule bỏ qua vì đã ∈ A.
+    # Một đường duy nhất: worker `_connect_after_deposit` → apply_pool.
+    # Không gọi thêm request_ws_open (tránh double-open / pending race).
+    queued: list[str] = []
     try:
         from xoso66_minigame_ws_worker import schedule_ws_connect_after_deposit
 
-        schedule_ws_connect_after_deposit(done)
+        queued = list(schedule_ws_connect_after_deposit(done) or [])
     except Exception as e:
         print(f"[WS-POOL] Nạp xong — không xếp mở WS: {e}", flush=True)
-    opened = request_ws_open(
-        done,
-        reason="nạp xong",
-        cfg=cfg,
-        ensure_dang_choi=False,
-        quiet=True,
-    )
-    print(
-        f"[WS-POOL] Nạp Hoàn tất — Đang Chơi + mở WS: {names}{extra}"
-        + (f" (xếp {len(opened)})" if opened else ""),
-        flush=True,
-    )
+    if queued:
+        print(
+            f"[WS-POOL] 💰💰💰 Nạp Hoàn tất — Đang Chơi + mở WS: {names}{extra}"
+            f" (xếp {len(queued)})",
+            flush=True,
+        )
+    else:
+        print(
+            f"[WS-POOL] 💰💰💰 Nạp Hoàn tất — Đang Chơi (WS đã có): {names}{extra}",
+            flush=True,
+        )
 
 
 def fund_accounts_below_minimum(
@@ -3918,12 +4188,7 @@ def fund_accounts_below_minimum(
                     from xoso66_session import refresh_account_balance_to_db
 
                     bal_rep = refresh_account_balance_to_db(aid, force_relogin=False)
-                    if bal_rep.get("ok"):
-                        print(
-                            f"[WS-POOL] {username_for_log(aid)} balance sau nạp: "
-                            f"{float(bal_rep.get('balance') or 0):,.0f}",
-                            flush=True,
-                        )
+                    _ = bal_rep
                 except Exception as e:
                     print(
                         f"[WS-POOL] {username_for_log(aid)} refresh balance: {e}",
@@ -4140,9 +4405,10 @@ def on_round_start_ws_pool(
     Phiên mới = BẮT ĐẦU phiên game đang theo dõi (hũ cao nhất).
 
     Game khác: im lặng return (không log, không làm gì).
-    5 việc chạy song song / độc lập với luồng cược (không chờ placeOrder).
+    Việc 1–5 (status/nạp + đóng/mở WS) neo begin+18s. Claim muộn / sát end → bỏ.
+    Resync 60s / evict chỉ dự phòng khi không có phiên.
     """
-    _ = next_info, reporter
+    _ = reporter
     from xoso66_shutdown import stopping
 
     if stopping():
@@ -4159,10 +4425,16 @@ def on_round_start_ws_pool(
         return
 
     gw = cfg.get("game_worker") if isinstance(cfg.get("game_worker"), dict) else {}
-    try:
-        delay = max(0.0, float(gw.get("ws_pool_resync_delay_after_round_sec") or 8))
-    except (TypeError, ValueError):
-        delay = 8.0
+    from xoso66_minigame_ws import ws_pool_resync_delay_sec
+
+    delay = ws_pool_resync_delay_sec(next_info, gw)
+    issue_s = str(issue or "").strip()
+    if delay is None:
+        print(
+            f"[WS-POOL] Bỏ việc status issue={issue_s} — claim sát/hết end_time",
+            flush=True,
+        )
+        return
 
     def _schedule() -> None:
         if stopping():
@@ -4171,7 +4443,7 @@ def on_round_start_ws_pool(
             from xoso66_minigame_ws_worker import schedule_ws_pool_round_check
 
             schedule_ws_pool_round_check(
-                game_id=int(game_id), issue=str(issue or "").strip()
+                game_id=int(game_id), issue=issue_s
             )
         except Exception as e:
             print(f"[WS-POOL] Phiên mới — không gọi được resync WS: {e}", flush=True)

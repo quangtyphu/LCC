@@ -272,6 +272,19 @@ def read_profile_cookies(profile_dir: Path, *, host: str = _SITE_HOST) -> dict[s
             val = _decrypt_cookie_value(bytes(enc), key)
         if val:
             out[str(name)] = val
+    # Fallback: PHPSESSID có thể gắn host khác / chưa khớp filter.
+    if "PHPSESSID" not in out:
+        rows2 = _query_cookies_db(
+            db,
+            "SELECT name, value, encrypted_value, host_key FROM cookies WHERE name = 'PHPSESSID'",
+        )
+        for name, value, enc, hk in rows2:
+            val = str(value or "").strip()
+            if not val and enc:
+                val = _decrypt_cookie_value(bytes(enc), key)
+            if val:
+                out["PHPSESSID"] = val
+                break
     return out
 
 
@@ -414,6 +427,162 @@ def terminate_chrome(proc: subprocess.Popen[Any] | None) -> None:
             proc.kill()
         except Exception:
             pass
+
+
+def close_chrome_gracefully(
+    proc: subprocess.Popen[Any] | None,
+    profile_dir: Path,
+    *,
+    wait_unlock_sec: float = 12.0,
+) -> None:
+    """
+    Đóng Chrome nhẹ (taskkill /IM không dùng) — chờ process thoát + unlock profile
+    để cookie (kể cả PHPSESSID) kịp flush xuống disk.
+    """
+    if proc is not None and proc.poll() is None:
+        # Windows: gửi WM_CLOSE tới process tree qua taskkill /T không -F trước.
+        try:
+            if sys.platform == "win32" and proc.pid:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T"],
+                    capture_output=True,
+                    timeout=8,
+                )
+            else:
+                proc.terminate()
+        except Exception:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break
+            time.sleep(0.3)
+        if proc.poll() is None:
+            terminate_chrome(proc)
+    wait_profile_unlocked(profile_dir, timeout_sec=int(wait_unlock_sec))
+    time.sleep(1.0)
+
+
+def mark_chrome_clean_exit(profile_dir: Path) -> bool:
+    """
+    Ghi Preferences exit_type=Normal để lần mở sau không hiện
+    «Restore pages? Chrome didn't shut down correctly» (dễ làm SPA load dở → baseInfo null / 01/01/1970).
+    """
+    pref = Path(profile_dir) / "Default" / "Preferences"
+    if not pref.is_file():
+        return False
+    try:
+        raw = pref.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    profile = data.get("profile")
+    if not isinstance(profile, dict):
+        profile = {}
+        data["profile"] = profile
+    profile["exit_type"] = "Normal"
+    profile["exited_cleanly"] = True
+    session = data.get("session")
+    if isinstance(session, dict):
+        session["exit_type"] = "Normal"
+        session["exited_cleanly"] = True
+    try:
+        pref.write_text(
+            json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        return True
+    except Exception:
+        return False
+
+
+def prepare_profile_for_fresh_nav(profile_dir: Path) -> dict[str, Any]:
+    """
+    Tránh SPA trắng khi mở URL ngay trên cmdline:
+    - exit sạch
+    - không restore session cũ
+    - xóa Current/Last Session|Tabs
+    """
+    meta: dict[str, Any] = {"clean_exit": mark_chrome_clean_exit(profile_dir), "cleared": []}
+    pref = Path(profile_dir) / "Default" / "Preferences"
+    if pref.is_file():
+        try:
+            data = json.loads(pref.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                session = data.get("session")
+                if not isinstance(session, dict):
+                    session = {}
+                    data["session"] = session
+                # 5 = Open the New Tab page (không restore)
+                session["restore_on_startup"] = 5
+                session["exit_type"] = "Normal"
+                session["exited_cleanly"] = True
+                pref.write_text(
+                    json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+                meta["restore_on_startup"] = 5
+        except Exception as e:
+            meta["pref_error"] = str(e)[:120]
+    default = Path(profile_dir) / "Default"
+    for name in (
+        "Current Session",
+        "Current Tabs",
+        "Last Session",
+        "Last Tabs",
+    ):
+        p = default / name
+        if p.is_file():
+            try:
+                p.unlink()
+                meta["cleared"].append(name)
+            except Exception:
+                pass
+    sessions_dir = default / "Sessions"
+    if sessions_dir.is_dir():
+        for p in sessions_dir.iterdir():
+            if p.is_file():
+                try:
+                    p.unlink()
+                    meta["cleared"].append(f"Sessions/{p.name}")
+                except Exception:
+                    pass
+    return meta
+
+
+def profile_has_saved_login(
+    profile_dir: Path,
+    username: str,
+    *,
+    host: str = _SITE_HOST,
+) -> bool:
+    """True nếu Chrome Password Manager đã lưu username cho host (đọc Login Data)."""
+    u = str(username or "").strip()
+    if not u:
+        return False
+    db = Path(profile_dir) / "Default" / "Login Data"
+    if not db.is_file():
+        return False
+    h = str(host or _SITE_HOST).strip().lower()
+    roots = [h]
+    parts = h.split(".")
+    if len(parts) > 2:
+        roots.append(".".join(parts[1:]))
+    rows = _query_cookies_db(
+        db,
+        "SELECT origin_url, username_value FROM logins WHERE username_value = ? COLLATE NOCASE",
+        (u,),
+    )
+    for origin, _uname in rows:
+        ou = str(origin or "").lower()
+        if any(r and r in ou for r in roots):
+            return True
+    return bool(rows)
 
 
 def terminate_chrome_profile(profile_dir: Path) -> int:

@@ -54,19 +54,35 @@ _USER_ADDRESSLIST_ACTIONS = (
 def _get_encrypted(session: dict, path: str, params: dict | None = None) -> tuple[int, Any]:
     """GET endpoint có cek-k (vd. userbanklist): params plaintext + header cek-k."""
     from xoso66_deposit import (
+        DEFAULT_UA,
         apply_response_tokens,
         build_request_headers,
         decrypt_deposit_body,
         encrypt_deposit_body,
         get_form_token
     )
+    from xoso66_secure_headers import (
+        CRYPTO_VERSION_HEADER,
+        CRYPTO_VERSION_V2,
+        generate_secure_headers,
+        unpack_v2_ciphertext,
+    )
 
     params = params if params is not None else {}
     session.pop("aes_session_key", None)
     _, cek_k, aes_key = encrypt_deposit_body(session, params)
     headers = build_request_headers(session, cek_k=cek_k, form_token=get_form_token(session))
+    url = f"{resolve_base_url(session)}{path}"
+    # Frontend 6.1.9 ký mới cho từng request. Header lưu trong DB đã cũ sẽ
+    # khiến API trả code=0/data=[] dù tài khoản thực sự có thẻ ngân hàng.
+    headers.update(
+        generate_secure_headers(
+            url,
+            str(session.get("user_agent") or DEFAULT_UA),
+        )
+    )
     r = _requests_session(session).get(
-        f"{resolve_base_url(session)}{path}",
+        url,
         params=params or None,
         headers=headers,
         timeout=30,
@@ -75,10 +91,26 @@ def _get_encrypted(session: dict, path: str, params: dict | None = None) -> tupl
     _merge_response_cookies(session, r)
     text = r.text
     if text.startswith('"') and text.endswith('"'):
-        text = text[1:-1]
+        # Cipher được trả dưới dạng JSON string; json.loads đồng thời bỏ escape
+        # ``\/``. Chỉ cắt dấu quote sẽ làm sai chữ ký MD5 của định dạng v2.
+        try:
+            text = json.loads(text)
+        except json.JSONDecodeError:
+            text = text[1:-1]
     if r.status_code == 200 and text:
         try:
-            return r.status_code, decrypt_deposit_body(session, text, aes_key, dict(r.headers))
+            if text.lstrip().startswith(("{", "[")):
+                return r.status_code, json.loads(text)
+            response_version = (
+                r.headers.get(CRYPTO_VERSION_HEADER)
+                or r.headers.get(CRYPTO_VERSION_HEADER.title())
+                or headers.get(CRYPTO_VERSION_HEADER)
+            )
+            if response_version == CRYPTO_VERSION_V2:
+                text = unpack_v2_ciphertext(text)
+            return r.status_code, decrypt_deposit_body(
+                session, text, aes_key, dict(r.headers)
+            )
         except Exception as e:
             return r.status_code, {"_decrypt_error": str(e), "_cipher_preview": text[:200]}
     try:

@@ -16,11 +16,11 @@ Luồng (mỗi acc / ngày VN):
        hold_reward_above_min_balance=1:
          balance > min_withdraw_vnd → chỉ refresh số dư + mission/list (không rút, không nhận), xong.
          balance ≤ min_withdraw_vnd → chỉ nhận thưởng (không rút).
-  3. Chưa claim được: poll khi (a) done_bet < 888888 VÀ done_bet < tổng cược ngày,
-     hoặc (b) daily >= bet_target nhưng cửa vẫn status=0; tối đa poll_max_attempts.
-     Trong lúc poll: không ghi đè accounts.daily_bet_total bằng 161.
-  4. Hết poll (poll_max_attempts): nếu done_bet game vẫn < cược ngày DB
-     → ghi accounts.daily_bet_total = done_bet game → thử rút + nhận lại.
+  3. Chưa claim được: poll chỉ khi DB đủ mốc nhận nhưng done_bet site < mốc đó
+     (161 hoặc cửa). Site đã đủ mốc (dù < DB) → không poll, không hạ DB.
+     Trong lúc poll: không ghi đè accounts.daily_bet_total.
+  4. Hết poll mà site vẫn < mốc → ghi accounts.daily_bet_total = done_bet site
+     — không thử nhận lại. Acc chơi tiếp; đủ lại thì hẹn nhận thưởng lần nữa.
   5. Claim chỉ khi chuyển status → «Đủ ngày» (đủ cap / ngắt WS):
        - mốc ~890k → nhận điểm danh (sign_list status=1);
        - nâng cap rồi chơi tới ~2690k → Đủ ngày lần nữa → nhận mini game (mission_list).
@@ -550,7 +550,6 @@ def _maybe_withdraw_before_claim(
             f"balance {int(bal):,} < {min_vnd:,} "
             f"hoặc không đủ bội {step:,} (≥ {min_vnd:,})"
         )
-        print(f"[AUTO-MISSION] {u}: bỏ rút — {out['reason']}", flush=True)
         return out
 
     fund = str(row.get("fund_password") or session.get("fund_password") or "").strip()
@@ -690,13 +689,17 @@ def _can_claim_after_withdraw(
     return bool(withdraw_info.get("withdraw_ok"))
 
 
-def _daily_done_bet_from_levels(levels: list[dict[str, Any]]) -> int:
+def _daily_161_level(levels: list[dict[str, Any]]) -> dict[str, Any]:
     from xoso66_daily_mission_check import DAILY_LEVEL_ID
 
     for lv in levels:
         if int(lv.get("level_id") or 0) == DAILY_LEVEL_ID:
-            return int(lv.get("done_bet_money") or 0)
-    return 0
+            return lv
+    return {}
+
+
+def _daily_done_bet_from_levels(levels: list[dict[str, Any]]) -> int:
+    return int(_daily_161_level(levels).get("done_bet_money") or 0)
 
 
 def _run_claim_flow(
@@ -759,12 +762,17 @@ def _run_claim_flow(
 
     data = rep.get("data") or {}
     levels = collect_tracked_levels(data)
+    task_levels = collect_task_levels_from_data(data)
     db_daily_before = int(daily_bet_today_vnd(row))
     mission_snap = persist_mission_state(
-        u, aid, levels, phase="list", sync_accounts_daily_bet=sync_accounts_daily_bet
+        u,
+        aid,
+        levels,
+        phase="list",
+        sync_accounts_daily_bet=sync_accounts_daily_bet,
+        task_levels=task_levels,
     )
 
-    task_levels = collect_task_levels_from_data(data)
     task_done_max = _max_task_done_bet(task_levels)
     # max(DB trước sync, sau sync, done_bet Cửa) — tránh lọc Cửa khi 161=888888 ghi sai.
     daily_total_for_claim = max(
@@ -866,7 +874,50 @@ def _run_claim_flow(
                         levels,
                         phase="after_claim",
                         sync_accounts_daily_bet=sync_accounts_daily_bet,
+                        task_levels=task_levels,
                     )
+                    # Cửa có thể vừa mở status=1 sau khi nhận điểm danh — nhận tiếp.
+                    claimed_keys = {
+                        (int(c["mission_id"]), int(c["level_id"]))
+                        for c in claims
+                        if c.get("ok")
+                    }
+                    more = [
+                        x
+                        for x in collect_claimable_task_levels_for_daily(
+                            data, daily_total_for_claim
+                        )
+                        if (int(x["mission_id"]), int(x["level_id"]))
+                        not in claimed_keys
+                    ]
+                    if more:
+                        more_claims = execute_mission_claims(
+                            session,
+                            aid,
+                            u,
+                            more,
+                            account_proxy=row_proxy,
+                            log_prefix="[AUTO-MISSION]",
+                        )
+                        claims.extend(more_claims)
+                        if sum(1 for c in more_claims if c.get("ok")) > 0:
+                            _sync_balance_to_db(
+                                aid, session, label="sau nhận thưởng cửa"
+                            )
+                        rep3 = fetch_mission_list(session)
+                        persist_session(aid, session)
+                        if rep3.get("ok"):
+                            data = rep3.get("data") or {}
+                            levels = collect_tracked_levels(data)
+                            task_levels = collect_task_levels_from_data(data)
+                            persist_mission_state(
+                                u,
+                                aid,
+                                levels,
+                                phase="after_claim",
+                                sync_accounts_daily_bet=sync_accounts_daily_bet,
+                                task_levels=task_levels,
+                            )
             else:
                 claim_blocked_by_withdraw = True
                 from xoso66_payment_history_db import latest_unresolved_withdraw_submission
@@ -895,10 +946,21 @@ def _run_claim_flow(
                     )
 
     done_bet = _daily_done_bet_from_levels(levels)
+    daily_161 = _daily_161_level(levels)
+    daily_161_target = int(daily_161.get("bet_target") or 0)
+    try:
+        daily_161_status = (
+            int(daily_161["status"])
+            if daily_161.get("status") is not None and daily_161.get("status") != ""
+            else None
+        )
+    except (TypeError, ValueError):
+        daily_161_status = None
     daily_total = daily_total_for_claim
     task_need_poll, task_poll_detail = needs_task_cua_bet_poll(
         task_levels, daily_total
     )
+    task_site_done = _max_task_done_bet(task_levels)
 
     return {
         "ok": True,
@@ -910,6 +972,8 @@ def _run_claim_flow(
         "withdraw": withdraw_info,
         "done_bet_money": done_bet,
         "daily_bet_total": daily_total,
+        "daily_161_bet_target": daily_161_target,
+        "daily_161_status": daily_161_status,
         "mission_db": mission_snap,
         "had_claimable": bool(claimable),
         "only_retry_levels": bool(only_level_keys),
@@ -919,6 +983,7 @@ def _run_claim_flow(
         "cap_vnd": cap_vnd,
         "task_need_poll": task_need_poll,
         "task_poll_detail": task_poll_detail,
+        "task_site_done_bet": task_site_done,
     }
 
 
@@ -1002,15 +1067,19 @@ def _manual_claim_with_poll(
 
     done_bet = int(result.get("done_bet_money") or 0)
     daily_total = int(result.get("daily_bet_total") or 0)
-    if not needs_daily_161_bet_poll(done_bet, daily_total):
+    bet_target = int(result.get("daily_161_bet_target") or 0)
+    st_161 = result.get("daily_161_status")
+    if not needs_daily_161_bet_poll(
+        done_bet, daily_total, bet_target=bet_target, status=st_161
+    ):
         return _enrich_manual_claim_result(result, poll_attempts=poll_attempts)
 
     needs_poll = True
     max_poll = _manual_poll_max()
     interval = _manual_poll_interval_sec()
     print(
-        f"[AUTO-MISSION] {u}: Ck poll — done_bet {done_bet:,} < cược ngày {daily_total:,} "
-        f"({max_poll} lần, mỗi {interval:.0f}s)",
+        f"[AUTO-MISSION] {u}: Ck poll — done_bet {done_bet:,} < mốc {bet_target:,} "
+        f"(DB {daily_total:,}) ({max_poll} lần, mỗi {interval:.0f}s)",
         flush=True,
     )
 
@@ -1029,23 +1098,26 @@ def _manual_claim_with_poll(
             )
         done_bet = int(result.get("done_bet_money") or 0)
         daily_total = int(result.get("daily_bet_total") or 0)
-        if not needs_daily_161_bet_poll(done_bet, daily_total):
+        bet_target = int(result.get("daily_161_bet_target") or 0)
+        st_161 = result.get("daily_161_status")
+        if not needs_daily_161_bet_poll(
+            done_bet, daily_total, bet_target=bet_target, status=st_161
+        ):
             break
 
-    if needs_daily_161_bet_poll(done_bet, daily_total):
+    if needs_daily_161_bet_poll(
+        done_bet, daily_total, bet_target=bet_target, status=st_161
+    ):
         synced = sync_account_daily_from_game_done_bet(aid, done_bet)
         force_synced = True
         print(
-            f"[AUTO-MISSION] {u}: Ck hết poll — DB cược ngày {daily_total:,} → "
-            f"done_bet game {synced:,} → thử nhận lại",
+            f"[AUTO-MISSION] {u}: Ck hết poll — site chưa đủ mốc {bet_target:,}, "
+            f"DB cược ngày {daily_total:,} → done_bet game {synced:,} (không nhận lại)",
             flush=True,
         )
-        result = _run_claim_flow(
-            aid,
-            do_claim=do_claim,
-            withdraw_before=withdraw_before,
-            sync_accounts_daily_bet=False,
-        )
+        result = dict(result)
+        result["daily_bet_total"] = synced
+        result["force_synced_done_bet"] = synced
     return _enrich_manual_claim_result(
         result,
         poll_attempts=poll_attempts,
@@ -1236,18 +1308,22 @@ def _try_finish_after_claims(
 
     from xoso66_daily_mission_check import needs_daily_161_bet_poll
 
-    if needs_daily_161_bet_poll(done_bet, daily_total):
+    bet_target_161 = int(result.get("daily_161_bet_target") or 0)
+    st_161 = result.get("daily_161_status")
+    if needs_daily_161_bet_poll(
+        done_bet, daily_total, bet_target=bet_target_161, status=st_161
+    ):
         if after_poll_exhausted:
             print(
                 f"[AUTO-MISSION] {u}: dừng sau {poll_count}/{_poll_max_attempts()} poll — "
-                f"161 vẫn chậm (done_bet={done_bet:,}, cược ngày={daily_total:,})",
+                f"161 site {done_bet:,} < mốc {bet_target_161:,} (DB {daily_total:,})",
                 flush=True,
             )
             _mark_queue_done(
                 aid,
                 last_error=(
                     f"161 chậm sau {poll_count} poll "
-                    f"(done_bet={done_bet:,}, cược ngày={daily_total:,})"
+                    f"(done_bet={done_bet:,}, mốc={bet_target_161:,})"
                 ),
                 claimed_cap_vnd=progress_cap,
             )
@@ -1259,73 +1335,72 @@ def _try_finish_after_claims(
             synced = sync_account_daily_from_game_done_bet(aid, done_bet)
             print(
                 f"[AUTO-MISSION] {u}: hết {poll_count}/{_poll_max_attempts()} lần poll — "
-                f"DB cược ngày {daily_total:,} → done_bet game {synced:,} → thử nhận lại",
+                f"site chưa đủ mốc {bet_target_161:,}, "
+                f"DB {daily_total:,} → done_bet {synced:,} "
+                f"(không nhận lại — chơi tiếp nếu thiếu)",
                 flush=True,
             )
-            retry = _run_claim_flow(
+            _mark_queue_done(
                 aid,
-                do_claim=True,
-                withdraw_before=True,
-                sync_accounts_daily_bet=False,
+                last_error=(
+                    f"hết poll 161 — DB → done_bet {synced:,} "
+                    f"(trước {daily_total:,}, mốc {bet_target_161:,})"
+                ),
+                claimed_cap_vnd=min(progress_cap, synced) if synced else progress_cap,
             )
-            return _try_finish_after_claims(
-                aid,
-                u,
-                retry,
-                poll_count=poll_count,
-                reward_retry_count=reward_retry_count,
-                after_poll_exhausted=True,
-            )
+            return True
 
         _reschedule_poll(
             aid,
             poll_count,
-            f"done_bet {done_bet:,} < 888888 và < cược ngày {daily_total:,}",
+            f"done_bet {done_bet:,} < mốc {bet_target_161:,} (DB {daily_total:,})",
         )
         return True
 
     if task_need_poll:
+        task_site_done = int(result.get("task_site_done_bet") or 0)
         if after_poll_exhausted:
             print(
                 f"[AUTO-MISSION] {u}: dừng sau {poll_count}/{_poll_max_attempts()} poll cửa — "
-                f"{task_poll_detail or 'chờ status=1'}",
+                f"{task_poll_detail or 'site chưa đủ mốc'}",
                 flush=True,
             )
             _mark_queue_done(
                 aid,
                 last_error=(
                     f"poll cửa hết {poll_count} lần — "
-                    f"{task_poll_detail or 'chờ status=1'}"
+                    f"{task_poll_detail or 'site chưa đủ mốc'}"
                 ),
                 claimed_cap_vnd=progress_cap,
             )
             return True
 
         if poll_count >= _poll_max_attempts():
+            from xoso66_mission_db import sync_account_daily_from_game_done_bet
+
+            synced = sync_account_daily_from_game_done_bet(aid, task_site_done)
             print(
                 f"[AUTO-MISSION] {u}: hết {poll_count}/{_poll_max_attempts()} lần poll cửa — "
-                f"{task_poll_detail or 'chờ status=1'} → thử nhận lại",
+                f"site chưa đủ mốc, DB {daily_total:,} → done_bet cửa {synced:,} "
+                f"(không nhận lại — chơi tiếp nếu thiếu)"
+                + (f" | {task_poll_detail}" if task_poll_detail else ""),
                 flush=True,
             )
-            retry = _run_claim_flow(
+            _mark_queue_done(
                 aid,
-                do_claim=True,
-                withdraw_before=True,
-                sync_accounts_daily_bet=False,
+                last_error=(
+                    f"hết poll cửa — DB → done_bet {synced:,} "
+                    f"(trước {daily_total:,})"
+                ),
+                claimed_cap_vnd=min(progress_cap, synced) if synced else progress_cap,
             )
-            return _try_finish_after_claims(
-                aid,
-                u,
-                retry,
-                poll_count=poll_count,
-                reward_retry_count=reward_retry_count,
-                after_poll_exhausted=True,
-            )
+            return True
 
         _reschedule_poll(
             aid,
             poll_count,
-            task_poll_detail or f"chờ cửa status=1 (cược ngày {daily_total:,}, cap {cap_vnd:,})",
+            task_poll_detail
+            or f"chờ cửa site đủ mốc (cược ngày {daily_total:,})",
         )
         return True
 

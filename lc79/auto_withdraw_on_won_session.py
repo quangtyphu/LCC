@@ -400,6 +400,167 @@ def get_total_bet_for_user(username: str) -> int:
         return 0
 
 
+# Cache ngắn bet-totals row khi chế độ tuần/tháng chặn rút
+_bet_totals_row_cache: Dict[str, Tuple[float, dict]] = {}
+_BET_TOTALS_ROW_CACHE_TTL = 30.0
+
+
+def _period_bet_mode_threshold(config: dict, mode_key: str) -> Optional[int]:
+    """ENABLED=1 trong mode_key → trả THRESHOLD; tắt / invalid → None."""
+    block = config.get(mode_key)
+    if not isinstance(block, dict):
+        return None
+    try:
+        if int(block.get("ENABLED", 0)) != 1:
+            return None
+    except (TypeError, ValueError):
+        return None
+    try:
+        thr = int(float(block.get("THRESHOLD", 0) or 0))
+    except (TypeError, ValueError):
+        return None
+    return thr if thr > 0 else None
+
+
+def _weekly_bet_mode_threshold(config: dict) -> Optional[int]:
+    return _period_bet_mode_threshold(config, "WEEKLY_BET_MODE")
+
+
+def _monthly_bet_mode_threshold(config: dict) -> Optional[int]:
+    return _period_bet_mode_threshold(config, "MONTHLY_BET_MODE")
+
+
+def _fetch_bet_totals_row(username: str) -> Optional[dict]:
+    """Lấy 1 row bet-totals theo username; None khi lỗi/không có."""
+    u = (username or "").strip()
+    if not u:
+        return None
+    now = time.time()
+    cached = _bet_totals_row_cache.get(u)
+    if cached and (now - cached[0]) < _BET_TOTALS_ROW_CACHE_TTL:
+        return cached[1]
+
+    try:
+        r = requests.get(
+            f"{API_BASE}/api/bet-totals",
+            params={"username": u},
+            timeout=5,
+        )
+        if r.status_code != 200:
+            print(f"⚠️ [{u}] API bet-totals error: {r.status_code}")
+            return None
+        data = r.json()
+        row = data
+        if isinstance(data, dict):
+            inner = data.get("data")
+            if isinstance(inner, list) and inner and isinstance(inner[0], dict):
+                row = inner[0]
+            elif isinstance(inner, dict):
+                row = inner
+        if not isinstance(row, dict):
+            return None
+        _bet_totals_row_cache[u] = (now, row)
+        return row
+    except Exception as e:
+        print(f"⚠️ [{u}] Lỗi lấy bet-totals: {e}")
+        return None
+
+
+def get_total_week_for_user(username: str) -> Optional[int]:
+    """total_week từ bet-totals; None khi lỗi/thiếu field."""
+    row = _fetch_bet_totals_row(username)
+    if row is None:
+        return None
+    raw = (
+        row.get("total_week")
+        or row.get("totalWeek")
+        or row.get("week_bet")
+        or row.get("weekBet")
+    )
+    if raw is None:
+        return None
+    try:
+        return int(float(raw or 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def get_total_month_for_user(username: str) -> Optional[int]:
+    """total_month từ bet-totals; None khi lỗi/thiếu field."""
+    row = _fetch_bet_totals_row(username)
+    if row is None:
+        return None
+    raw = (
+        row.get("total_month")
+        or row.get("totalMonth")
+        or row.get("month_bet")
+        or row.get("monthBet")
+    )
+    if raw is None:
+        return None
+    try:
+        return int(float(raw or 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def weekly_mode_blocks_withdraw(username: str, config: Optional[dict] = None) -> Optional[str]:
+    """
+    Chế độ tuần bật + total_week < THRESHOLD → chặn rút (trả message).
+    API lỗi khi weekly ON → cũng chặn (fail-closed). None = cho rút.
+    """
+    cfg = config if isinstance(config, dict) else load_config()
+    week_max = _weekly_bet_mode_threshold(cfg)
+    if week_max is None:
+        return None
+    tw = get_total_week_for_user(username)
+    if tw is None:
+        return (
+            f"WEEKLY_BET_MODE bật — không lấy được total_week, "
+            f"chặn rút tới khi đạt {week_max:,}"
+        )
+    if tw < week_max:
+        return (
+            f"WEEKLY_BET_MODE: total_week {tw:,} < THRESHOLD {week_max:,}, "
+            "chưa đủ mốc tuần — không rút"
+        )
+    return None
+
+
+def monthly_mode_blocks_withdraw(username: str, config: Optional[dict] = None) -> Optional[str]:
+    """
+    Chế độ tháng bật + total_month < THRESHOLD → chặn rút (trả message).
+    API lỗi khi monthly ON → cũng chặn (fail-closed). None = cho rút.
+    """
+    cfg = config if isinstance(config, dict) else load_config()
+    month_max = _monthly_bet_mode_threshold(cfg)
+    if month_max is None:
+        return None
+    tm = get_total_month_for_user(username)
+    if tm is None:
+        return (
+            f"MONTHLY_BET_MODE bật — không lấy được total_month, "
+            f"chặn rút tới khi đạt {month_max:,}"
+        )
+    if tm < month_max:
+        return (
+            f"MONTHLY_BET_MODE: total_month {tm:,} < THRESHOLD {month_max:,}, "
+            "chưa đủ mốc tháng — không rút"
+        )
+    return None
+
+
+def period_bet_mode_blocks_withdraw(
+    username: str, config: Optional[dict] = None
+) -> Optional[str]:
+    """Chặn rút nếu tuần hoặc tháng (đang bật) chưa đủ THRESHOLD."""
+    cfg = config if isinstance(config, dict) else load_config()
+    return (
+        weekly_mode_blocks_withdraw(username, cfg)
+        or monthly_mode_blocks_withdraw(username, cfg)
+    )
+
+
 def parse_required_bet_from_error(error_message: str) -> Optional[int]:
 
     try:
@@ -696,6 +857,15 @@ def _process_pending_withdrawals():
             _cancel_pending_withdrawal(username, f"invalid pending status: {status}")
             continue
 
+        period_block = period_bet_mode_blocks_withdraw(username)
+        if period_block:
+            _clear_pending_silent(username)
+            print(
+                f"⏸️ [AutoWithdraw][{username}] {period_block} (skip pending)",
+                flush=True,
+            )
+            continue
+
         target_total_bet = required_bets.get(username)
         if isinstance(target_total_bet, int) and target_total_bet > 0:
             current_total = get_total_bet_for_user(username)
@@ -888,13 +1058,24 @@ def handle_won_session_withdrawal(
         threshold = _late_night_min_balance(config)
         threshold_label = "LATE_NIGHT MIN_BALANCE"
 
-    # Chỉ cần số dư > ngưỡng (theo khung giờ: Late Night hoặc nhóm); không chặn theo mốc cược phía client.
+    # Chỉ cần số dư > ngưỡng (theo khung giờ: Late Night hoặc nhóm).
     # 1. Check balance threshold
     if balance <= threshold:
         return {
             "ok": True,
             "withdrew": False,
             "message": f"Balance {balance:,} <= threshold {threshold:,} ({threshold_label}), skip"
+        }
+
+    # 1b. Chế độ cược tuần/tháng: chưa đạt THRESHOLD → không auto-rút
+    period_block = period_bet_mode_blocks_withdraw(username, config)
+    if period_block:
+        _clear_pending_silent(username)
+        print(f"⏸️ [AutoWithdraw][{username}] {period_block}", flush=True)
+        return {
+            "ok": True,
+            "withdrew": False,
+            "message": period_block,
         }
 
     target_total_bet = required_bets.get(username)

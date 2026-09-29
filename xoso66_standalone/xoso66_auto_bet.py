@@ -3,8 +3,8 @@
 Auto cược mini-game (LC79-style):
 
   - Mỗi BẮT ĐẦU PHIÊN: đọc hũ → giữ/đổi game đang chơi → chỉ chia cược đúng game đó
-  - next_info: +2s gán acc; placeOrder theo begin_time+15s; gửi đồng loạt (không stagger)
-    (fire đúng lịch, không chờ HTTP; trễ lịch → neo từ now, vẫn cách 1s)
+  - next_info: +2s gán acc; placeOrder theo begin_time+15s; stagger nhẹ + cap parallel
+    (fire đúng lịch, không chờ HTTP; trễ lịch → neo từ now)
   - WS kết quả → tính thắng/thua (theo pending issue, kể cả sau khi đổi game)
 """
 
@@ -57,6 +57,7 @@ OPEN_AFTER_BEGIN_SEC = 10.0
 BET_PLACE_AFTER_OPEN_SEC = 5.0
 BET_FIRST_AFTER_BEGIN_SEC = OPEN_AFTER_BEGIN_SEC + BET_PLACE_AFTER_OPEN_SEC
 ASSIGN_DELAY_AFTER_NEXT_INFO_SEC = 0.0
+LATE_BET_DIAG_SEC = 10.0
 
 
 def _assign_delay_sec(acfg: dict) -> float:
@@ -157,6 +158,116 @@ def _resolve_first_bet_mono(
     return mono
 
 
+def _print_late_bet_breakdown(
+    *,
+    issue: str,
+    late_sec: float,
+    next_info: dict[str, Any],
+    acfg: dict,
+    game_id: int,
+    claim_mono: float,
+    worker_mono: float,
+    now_mono: float,
+    timing: dict[str, float],
+    n_slots: int,
+    token_checked: bool,
+    end_wall: datetime | None,
+) -> None:
+    """Khi lịch cược trễ ≥10s: in từng bước tốn bao lâu + WS/begin/end."""
+    begin_wall = _parse_round_begin_wall(next_info)
+    now_wall = datetime.now()
+    claim_age = max(0.0, now_mono - claim_mono)
+    claim_wall = now_wall - timedelta(seconds=claim_age)
+    after_begin = _bet_place_after_begin_sec(acfg)
+    after_open = _bet_place_after_open_sec(acfg)
+    begin_first = _first_bet_mono_from_next_info(next_info, acfg)
+    ws_open = get_round_open_mono(int(game_id), str(issue).strip())
+
+    first_src = f"begin+{after_begin:.0f}s"
+    if ws_open is not None:
+        ws_first = ws_open + after_open
+        if begin_first is None or ws_first <= begin_first + 1e-6:
+            first_src = f"WS mở cửa+{after_open:.0f}s"
+        else:
+            first_src = f"begin+{after_begin:.0f}s (WS mở cửa+{after_open:.0f}s muộn hơn)"
+
+    clock_bits: list[str] = []
+    if begin_wall is not None:
+        claim_vs_begin = (claim_wall - begin_wall).total_seconds()
+        clock_bits.append(
+            f"WS claim {claim_vs_begin:+.1f}s vs begin {begin_wall.strftime('%H:%M:%S')}"
+        )
+    else:
+        clock_bits.append("thiếu begin_time")
+    clock_bits.append(f"first_bet={first_src} (đã qua {late_sec:.1f}s)")
+    if end_wall is not None:
+        end_left = (end_wall - now_wall).total_seconds()
+        if end_left >= 0:
+            clock_bits.append(f"còn end_time {end_left:.1f}s")
+        else:
+            clock_bits.append(f"end_time hết {abs(end_left):.1f}s")
+    if ws_open is not None:
+        open_age = now_mono - ws_open
+        if open_age >= 0:
+            clock_bits.append(f"WS mở cửa {open_age:.1f}s trước")
+        else:
+            clock_bits.append(f"WS mở cửa còn {abs(open_age):.1f}s")
+    else:
+        clock_bits.append("WS mở cửa=(chưa có)")
+
+    spent: list[str] = []
+    ws_queue_sec = float(timing.get("ws_queue") or 0)
+    if ws_queue_sec >= 0.01:
+        spent.append(f"WS queue {ws_queue_sec:.2f}s")
+    handler_gap = max(0.0, worker_mono - claim_mono)
+    spent.append(f"thread {handler_gap:.2f}s")
+    delay_sec = float(timing.get("assign_delay") or 0)
+    if delay_sec >= 0.05:
+        spent.append(f"chờ gán {delay_sec:.2f}s")
+    spent.append(
+        f"gán acc {float(timing.get('assign') or 0):.2f}s ({n_slots} nick)"
+    )
+    if token_checked:
+        spent.append(f"ping token {float(timing.get('token') or 0):.2f}s")
+    else:
+        sess_sec = float(timing.get("session") or 0)
+        spent.append(f"load session {sess_sec:.2f}s (ping token tắt)")
+    spent.append(f"chuẩn bị sau claim {claim_age:.1f}s")
+
+    # Một dòng nguyên nhân: WS đến trễ vs mình check chậm.
+    cause = "cộng dồn lịch + chuẩn bị"
+    claim_vs_begin_sec = None
+    if begin_wall is not None:
+        claim_vs_begin_sec = (claim_wall - begin_wall).total_seconds()
+    prep_checks = (
+        handler_gap
+        + delay_sec
+        + float(timing.get("assign") or 0)
+        + float(timing.get("token") or 0)
+        + float(timing.get("session") or 0)
+    )
+    if ws_queue_sec >= LATE_BET_DIAG_SEC:
+        cause = "frame WS tới sớm nhưng kẹt queue/dispatch nội bộ"
+    elif claim_vs_begin_sec is not None and claim_vs_begin_sec >= LATE_BET_DIAG_SEC:
+        if prep_checks < 3.0:
+            cause = "WS next_info đến trễ (claim muộn so với begin_time)"
+        else:
+            cause = (
+                f"WS claim muộn {claim_vs_begin_sec:.1f}s và chuẩn bị thêm {prep_checks:.1f}s"
+            )
+    elif prep_checks >= LATE_BET_DIAG_SEC:
+        cause = "chuẩn bị sau claim chậm (gán acc / token / thread)"
+
+    print(
+        f"  [{issue}]   trễ≥{LATE_BET_DIAG_SEC:.0f}s — {'; '.join(clock_bits)}",
+        flush=True,
+    )
+    print(
+        f"  [{issue}]   tốn: {' | '.join(spent)} → {cause}",
+        flush=True,
+    )
+
+
 def _bet_stagger_per_user_sec(acfg: dict) -> float:
     """Khoảng cách giữa các lệnh: lệnh i tại t0 + base + i * stagger."""
     if acfg.get("bet_stagger_per_user_sec") is not None:
@@ -194,6 +305,49 @@ def _round_start_log_delay_sec(cfg: dict) -> float:
 
 _bootstrap_lock = threading.Lock()
 _bootstrap_done = False
+
+# Nick đang HTTP placeOrder — WS hoãn reconnect để khỏi tranh proxy.
+_placing_bet_ids: set[str] = set()
+_placing_bet_lock = threading.Lock()
+
+
+def mark_accounts_placing_bet(account_ids: list[str] | set[str]) -> None:
+    with _placing_bet_lock:
+        for a in account_ids:
+            s = str(a or "").strip()
+            if s:
+                _placing_bet_ids.add(s)
+
+
+def clear_accounts_placing_bet(account_ids: list[str] | set[str] | None = None) -> None:
+    with _placing_bet_lock:
+        if account_ids is None:
+            _placing_bet_ids.clear()
+            return
+        for a in account_ids:
+            _placing_bet_ids.discard(str(a or "").strip())
+
+
+def is_account_placing_bet(account_id: str) -> bool:
+    aid = str(account_id or "").strip()
+    if not aid:
+        return False
+    with _placing_bet_lock:
+        return aid in _placing_bet_ids
+
+
+def placing_bet_account_ids() -> set[str]:
+    with _placing_bet_lock:
+        return set(_placing_bet_ids)
+
+
+def _place_order_parallel(acfg: dict) -> int:
+    """Số placeOrder HTTP chạy song song (tránh bão proxy khi pool lớn)."""
+    try:
+        n = int(acfg.get("place_order_parallel") or 10)
+    except (TypeError, ValueError):
+        n = 10
+    return max(1, min(32, n))
 
 
 def announce_playing_game(
@@ -334,8 +488,6 @@ def try_bootstrap_playing_game(cfg: dict | None = None) -> bool:
         cfg = load_config()
     acfg = _auto_bet_cfg(cfg)
     if not acfg.get("enabled"):
-        with _bootstrap_lock:
-            _bootstrap_done = True
         return False
 
     wait_sec = float(acfg.get("bootstrap_pick_sec") or 30)
@@ -647,8 +799,8 @@ def _recover_session_after_place_invalid(
     msg: str,
 ) -> None:
     """
-    placeOrder «Thông tin phiên không hợp lệ» → login site + refresh mini-game
-    token + ngắt/mở lại WS (không chỉ probe domain).
+    placeOrder «Thông tin phiên không hợp lệ» → login + refresh token.
+    Không đụng WS (evict/mở lại) — listen_* tự reconnect khi cần; tránh double close.
     """
     aid = str(account_id or "").strip()
     if not aid:
@@ -672,7 +824,7 @@ def _recover_session_after_place_invalid(
 
             hint = str(msg or "Thông tin phiên không hợp lệ").strip()
             print(
-                f"  ↻ {username}: {hint} — login lại + refresh token + mở lại WS…",
+                f"  ↻ {username}: {hint} — login lại + refresh token (giữ WS)…",
                 flush=True,
             )
             session = ensure_session(
@@ -689,19 +841,12 @@ def _recover_session_after_place_invalid(
             print(
                 f"  ↻ {username}: login OK"
                 f"{'' if ok_tok else ' — refresh mini-game token chưa xong'}"
-                f" — reconnect WS",
+                f" — không đụng WS",
                 flush=True,
             )
-            from xoso66_minigame_ws_worker import schedule_ws_connect_after_deposit
-            from xoso66_ws_pool import request_ws_evict_and_resync
-
-            # Ngắt WS cũ (token chết) rồi xếp mở lại với token mới.
-            request_ws_evict_and_resync([aid])
-            time.sleep(3.0)
-            schedule_ws_connect_after_deposit([aid])
         except Exception as e:
             print(
-                f"  ↻ {username}: login/reconnect sau phiên lỗi: {e}",
+                f"  ↻ {username}: login sau phiên lỗi: {e}",
                 flush=True,
             )
 
@@ -871,6 +1016,14 @@ def _validate_slot_tokens_timed(
     )
 
 
+def is_immediate_prev_issue(current: str, candidate: str) -> bool:
+    """issue liền trước (202609220606 ← 202609220605)."""
+    try:
+        return int(str(candidate).strip()) + 1 == int(str(current).strip())
+    except (TypeError, ValueError):
+        return False
+
+
 class AutoBetController:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -907,6 +1060,55 @@ class AutoBetController:
 
     def _bet_key(self, game_id: int, issue: str) -> str:
         return f"{int(game_id)}:{str(issue).strip()}"
+
+    def _purge_stale_pending(
+        self, game_id: int, current_issue: str, *, reason: str = ""
+    ) -> list[str]:
+        """
+        Gỡ C (pending) mọi issue cùng game < current_issue.
+        Issue dạng YYYYMMDD##### → so chuỗi = so thời gian.
+        Phiên mới: giữ đúng issue liền trước — open_info gửi next_info trước KQ.
+        """
+        gid = int(game_id)
+        cur = str(current_issue or "").strip()
+        if not cur:
+            return []
+        prefix = f"{gid}:"
+        orphan_aids: list[str] = []
+        orphan_keys: list[str] = []
+        with self._lock:
+            for key in list(self._pending_bets.keys()):
+                if not key.startswith(prefix):
+                    continue
+                issue_part = key[len(prefix) :]
+                if not issue_part or issue_part >= cur:
+                    continue
+                if reason == "phiên mới" and is_immediate_prev_issue(cur, issue_part):
+                    continue
+                slots = self._pending_bets.pop(key, []) or []
+                orphan_keys.append(key)
+                for s in slots:
+                    aid = str(getattr(s, "account_id", "") or "").strip()
+                    if aid:
+                        orphan_aids.append(aid)
+        if orphan_keys:
+            from xoso66_accounts_db import username_for_log
+
+            names = sorted(
+                {
+                    username_for_log(a) if a else a
+                    for a in orphan_aids
+                    if a
+                }
+            )
+            why = f" ({reason})" if reason else ""
+            print(
+                f"[AUTO-BET] Gỡ C orphan{why} game={gid} "
+                f"trước issue={cur}: {', '.join(orphan_keys)} — "
+                f"{', '.join(names) if names else '(empty)'}",
+                flush=True,
+            )
+        return orphan_aids
 
     def drop_pending_bet_account(self, game_id: int, issue: str, account_id: str) -> None:
         """placeOrder fail → gỡ khỏi C (chỉ giữ lệnh đặt thành công chờ KQ)."""
@@ -978,6 +1180,14 @@ class AutoBetController:
         self, game_id: int, issue: str, *, cfg: dict
     ) -> None:
         """BẮT ĐẦU PHIÊN (chỉ theo dõi) khi chưa đủ hũ — cùng format WS."""
+        key = self._bet_key(game_id, issue)
+        with self._lock:
+            if key in self._session_seen:
+                return
+            self._session_seen.add(key)
+            if len(self._session_seen) > 500:
+                self._session_seen.clear()
+                self._session_seen.add(key)
         try:
             _, gmeta = game_by_id(int(game_id))
             game_label = str(
@@ -1002,6 +1212,7 @@ class AutoBetController:
                     jackpot_vnd=jp,
                     issue=issue,
                     min_jackpot_vnd=min_jp if min_jp > 0 else None,
+                    game_id=int(game_id),
                 )
 
         if plan_after > 0:
@@ -1045,7 +1256,7 @@ class AutoBetController:
             gate_key = (gid, issue_s) if issue_s else None
             with self._lock:
                 if gate_key and self._last_gate_log_key == gate_key:
-                    return False, "below_min_jackpot"
+                    return False, "below_min_jackpot_dup"
                 if gate_key:
                     self._last_gate_log_key = gate_key
             return False, "below_min_jackpot"
@@ -1122,11 +1333,19 @@ class AutoBetController:
     ) -> None:
         from xoso66_shutdown import stopping
 
-        t0 = time.monotonic()
+        t_worker = time.monotonic()
+        t0 = t_worker
         claimed_raw = next_info.get("_claimed_at_mono")
         try:
             if claimed_raw is not None:
                 t0 = float(claimed_raw)
+        except (TypeError, ValueError):
+            pass
+        timing: dict[str, float] = {}
+        received_raw = next_info.get("_ws_received_at_mono")
+        try:
+            if received_raw is not None:
+                timing["ws_queue"] = max(0.0, t0 - float(received_raw))
         except (TypeError, ValueError):
             pass
         cfg = load_config()
@@ -1158,16 +1377,20 @@ class AutoBetController:
             return
 
         assign_delay = _assign_delay_sec(acfg)
+        t_delay0 = time.monotonic()
         if assign_delay > 0 and not _sleep_until(t0 + assign_delay):
             return
+        timing["assign_delay"] = time.monotonic() - t_delay0
 
         with self._lock:
             jp_header = float(self._active_jackpot or 0)
         side_total = resolve_side_total_vnd(cfg, jp_header, game_id=game_id)
 
+        t_assign0 = time.monotonic()
         slots, err, partial_note = _assign_session_bets_timed(
             cfg, plan_deadline, jackpot_vnd=jp_header, game_id=game_id
         )
+        timing["assign"] = time.monotonic() - t_assign0
         elapsed = time.monotonic() - t0
         if elapsed > plan_deadline:
             print(
@@ -1216,15 +1439,19 @@ class AutoBetController:
         place_orders = bool(acfg.get("place_orders", False))
         sessions: dict[str, dict[str, Any]] = {}
         tokens_prevalidated = False
+        token_checked = False
         if place_orders:
             if _token_check_before_bet_enabled(acfg, place_orders=True):
+                token_checked = True
                 tok_timeout = float(acfg.get("token_validate_timeout_sec") or 12)
+                t_tok0 = time.monotonic()
                 sessions, tok_err = _validate_slot_tokens_timed(
                     slots,
                     game_key=gkey,
                     cfg=cfg,
                     timeout_sec=tok_timeout,
                 )
+                timing["token"] = time.monotonic() - t_tok0
                 if tok_err:
                     with self._lock:
                         self._pending_bets.pop(key, None)
@@ -1237,7 +1464,9 @@ class AutoBetController:
                     return
                 tokens_prevalidated = True
             else:
+                t_sess0 = time.monotonic()
                 sessions = _sessions_for_slots(slots)
+                timing["session"] = time.monotonic() - t_sess0
                 slots = [s for s in slots if s.account_id in sessions]
                 with self._lock:
                     self._pending_bets[key] = list(slots)
@@ -1263,6 +1492,7 @@ class AutoBetController:
                     game_label=game_label,
                     jackpot_vnd=jp_header,
                     issue=str(issue).strip(),
+                    game_id=int(game_id),
                 )
                 log_and_maybe_simulate_place(slots, cfg)
 
@@ -1327,6 +1557,21 @@ class AutoBetController:
                 f"đặt hết ngay (không stagger)",
                 flush=True,
             )
+            if late_sec >= LATE_BET_DIAG_SEC:
+                _print_late_bet_breakdown(
+                    issue=str(issue).strip(),
+                    late_sec=late_sec,
+                    next_info=next_info,
+                    acfg=acfg,
+                    game_id=int(game_id),
+                    claim_mono=claim_mono,
+                    worker_mono=t_worker,
+                    now_mono=now_mono,
+                    timing=timing,
+                    n_slots=len(order_slots),
+                    token_checked=token_checked,
+                    end_wall=end_wall,
+                )
 
         threading.Thread(
             target=_emit_bet_plan_log,
@@ -1425,76 +1670,81 @@ class AutoBetController:
                         f"place_fail:{rep.msg or rep.code or 'unknown'}",
                     )
 
-        with ThreadPoolExecutor(max_workers=max(1, len(order_slots))) as ex:
-            for i, slot in enumerate(order_slots):
-                if stopping():
-                    break
-                if cancel is not None and cancel.is_set():
-                    print(
-                        f"  [{issue}] Dừng đặt cược — đã có KQ hoặc phiên mới",
-                        flush=True,
-                    )
-                    break
-                if end_wall is not None and datetime.now() >= end_wall:
-                    print(
-                        f"  [{issue}] Dừng đặt cược — hết end_time",
-                        flush=True,
-                    )
-                    break
-                if not _sleep_until(
-                    _bet_place_at_monotonic(
-                        place_base, acfg, i, stagger_sec=stagger
-                    ),
-                    cancel,
-                ):
-                    if i == 0:
+        with ThreadPoolExecutor(max_workers=max(1, min(len(order_slots), _place_order_parallel(acfg)))) as ex:
+            place_aids = [s.account_id for s in order_slots if s.account_id]
+            mark_accounts_placing_bet(place_aids)
+            try:
+                for i, slot in enumerate(order_slots):
+                    if stopping():
+                        break
+                    if cancel is not None and cancel.is_set():
                         print(
-                            f"  [{issue}] !! Dừng trước khi gửi placeOrder",
+                            f"  [{issue}] Dừng đặt cược — đã có KQ hoặc phiên mới",
                             flush=True,
                         )
-                    break
+                        break
+                    if end_wall is not None and datetime.now() >= end_wall:
+                        print(
+                            f"  [{issue}] Dừng đặt cược — hết end_time",
+                            flush=True,
+                        )
+                        break
+                    if not _sleep_until(
+                        _bet_place_at_monotonic(
+                            place_base, acfg, i, stagger_sec=stagger
+                        ),
+                        cancel,
+                    ):
+                        if i == 0:
+                            print(
+                                f"  [{issue}] !! Dừng trước khi gửi placeOrder",
+                                flush=True,
+                            )
+                        break
 
-                session = sessions.get(slot.account_id)
-                if not session:
-                    with result_lock:
-                        fail_n += 1
-                    print(f"  !! {slot.username}: thiếu session", flush=True)
-                    continue
+                    session = sessions.get(slot.account_id)
+                    if not session:
+                        with result_lock:
+                            fail_n += 1
+                        print(f"  !! {slot.username}: thiếu session", flush=True)
+                        continue
 
-                price = int(slot.amount_vnd * price_scale)
-                if max_per_user > 0 and slot.amount_vnd > max_per_user:
-                    price = int(max_per_user * price_scale)
-                fut = ex.submit(
-                    _place_bet_for_slot,
-                    session,
-                    BetRequest(
+                    price = int(slot.amount_vnd * price_scale)
+                    if max_per_user > 0 and slot.amount_vnd > max_per_user:
+                        price = int(max_per_user * price_scale)
+                    fut = ex.submit(
+                        _place_bet_for_slot,
+                        session,
+                        BetRequest(
+                            game_key=gkey,
+                            side=slot.side,
+                            amount=price,
+                            issue=str(issue),
+                        ),
+                        account_id=slot.account_id,
+                        username=slot.username,
                         game_key=gkey,
-                        side=slot.side,
-                        amount=price,
-                        issue=str(issue),
-                    ),
-                    account_id=slot.account_id,
-                    username=slot.username,
-                    game_key=gkey,
-                    cfg=cfg,
-                    http_timeout=http_timeout,
-                    wall_timeout=wall_timeout,
-                    tokens_prevalidated=tokens_prevalidated,
-                )
-                fut.add_done_callback(
-                    lambda f, s=slot, p=price, sess=session: _on_place_done(
-                        f, s, p, sess
+                        cfg=cfg,
+                        http_timeout=http_timeout,
+                        wall_timeout=wall_timeout,
+                        tokens_prevalidated=tokens_prevalidated,
                     )
-                )
-                pending_futs.append(fut)
+                    fut.add_done_callback(
+                        lambda f, s=slot, p=price, sess=session: _on_place_done(
+                            f, s, p, sess
+                        )
+                    )
+                    pending_futs.append(fut)
 
-            for fut in pending_futs:
-                if cancel is not None and cancel.is_set():
-                    break
-                try:
-                    fut.result()
-                except Exception:
-                    pass
+                for fut in pending_futs:
+                    if cancel is not None and cancel.is_set():
+                        break
+                    try:
+                        fut.result()
+                    except Exception:
+                        pass
+            finally:
+                clear_accounts_placing_bet(place_aids)
 
         with round_console_lock():
             log_round_bet_footer(
@@ -1554,6 +1804,8 @@ class AutoBetController:
                 self._set_playing_game(picked_focus)
 
         issue_s = str(issue or "").strip()
+        # Trước mọi nhánh skip bet: gỡ C orphan (WS nhảy issue / miss KQ).
+        self._purge_stale_pending(int(game_id), issue_s, reason="phiên mới")
         should_bet, skip_reason = self.resolve_round_start(
             cfg, int(game_id), issue=issue_s
         )
@@ -1587,14 +1839,26 @@ class AutoBetController:
     ) -> None:
         cfg = load_config()
         acfg = _auto_bet_cfg(cfg)
-        if not acfg.get("enabled") or not assign_bets_enabled(cfg):
-            return
+        issue_s = str(issue or "").strip()
+        # Luôn gỡ C đúng issue (+ orphan issue cũ) — kể cả lúc tắt assign.
+        # Tránh kẹt C khi WS nhảy issue / miss KQ (log 202609210384 → 386).
+        self._signal_bet_worker_done(int(game_id), issue_s)
+        self._purge_stale_pending(int(game_id), issue_s, reason="KQ")
 
-        self._signal_bet_worker_done(int(game_id), str(issue or "").strip())
-
-        key = self._bet_key(game_id, issue)
+        key = self._bet_key(game_id, issue_s)
         with self._lock:
             slots = list(self._pending_bets.pop(key, []))
+            active_gid = self._active_game_id
+
+        focus_gid = active_gid if active_gid is not None else focus_game_id(cfg)
+        is_focus = focus_gid is not None and int(game_id) == int(focus_gid)
+        if is_focus and resolve_winning_side(open_data):
+            payload = dict(open_data)
+            payload.setdefault("game_id", int(game_id))
+            log_round_settlements(slots, payload, issue=issue_s)
+
+        if not acfg.get("enabled") or not assign_bets_enabled(cfg):
+            return
         if not slots:
             return
 
@@ -1604,7 +1868,7 @@ class AutoBetController:
 
             notify_jackpot_hit_for_our_bets(
                 game_id,
-                issue,
+                issue_s,
                 open_data,
                 slots,
                 game_label=GAME_ID_LABELS.get(int(game_id), ""),
@@ -1616,13 +1880,6 @@ class AutoBetController:
         if not resolve_winning_side(open_data):
             return
 
-        win_rate = float(acfg.get("win_payout_rate") or 0.98)
-        log_round_settlements(
-            slots,
-            open_data,
-            win_rate=win_rate,
-            issue=issue,
-        )
         try:
             from xoso66_ws_pool import prune_ws_after_settlement
 
@@ -1700,17 +1957,14 @@ def setup_auto_bet_handlers() -> None:
     _handlers_registered = True
 
 
-def auto_bet_loop() -> None:
-    from xoso66_shutdown import stopping
+def auto_bet_handlers_ready() -> bool:
+    """Handler phiên đã gắn — đổi enabled=true giữa chừng vẫn nhận BẮT ĐẦU PHIÊN."""
+    return bool(_handlers_registered)
 
-    setup_auto_bet_handlers()
 
-    cfg = load_config()
-    if _auto_bet_cfg(cfg).get("enabled"):
-        init_playing_game(cfg, source="khởi động", wait_sec=0)
+def _announce_auto_bet_on(cfg: dict) -> None:
     acfg = _auto_bet_cfg(cfg)
     min_jp = float(acfg.get("min_jackpot_vnd") or 0)
-
     if assign_bets_enabled(cfg):
         plan_d = float(acfg.get("plan_deadline_sec") or 10)
         plan_a = float(acfg.get("bet_plan_after_sec") or 8)
@@ -1733,10 +1987,28 @@ def auto_bet_loop() -> None:
             flush=True,
         )
 
+
+def auto_bet_loop() -> None:
+    from xoso66_shutdown import stopping
+
+    setup_auto_bet_handlers()
+    was_enabled = False
+
     while not stopping():
-        if not _auto_bet_cfg(load_config()).get("enabled"):
-            time.sleep(5)
+        cfg = load_config()
+        enabled = bool(_auto_bet_cfg(cfg).get("enabled"))
+        if not enabled:
+            was_enabled = False
+            time.sleep(2)
             continue
+        if not was_enabled:
+            _announce_auto_bet_on(cfg)
+            init_playing_game(cfg, source="bật config", wait_sec=0)
+            print(
+                "[AUTO-BET] Chờ BẮT ĐẦU PHIÊN tiếp theo để gán/cược",
+                flush=True,
+            )
+            was_enabled = True
         time.sleep(1)
 
     print("[AUTO-BET] Đã dừng.", flush=True)

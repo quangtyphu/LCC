@@ -106,8 +106,33 @@ def collect_task_levels(
     return rows
 
 
-# Cửa thứ 1 Nhiệm vụ MINI GAME — target cược (site). Muốn chơi tới mốc này: daily_bet_cap ≈ 2_695_000.
+# Cửa Nhiệm vụ MINI GAME — chỉ lưu 2 mốc này (không lưu 26.888k).
 TASK_CUA1_BET_TARGET_VND = 2_688_000
+TASK_CUA2_BET_TARGET_VND = 6_888_000
+TASK_CUA_TARGETS = (TASK_CUA1_BET_TARGET_VND, TASK_CUA2_BET_TARGET_VND)
+
+
+def extract_tracked_cua_doors(
+    task_levels: list[dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """
+    Lấy Cửa 1 (2.688k) và Cửa 2 (6.888k) theo bet_target.
+    Trả {\"cua1\": level|{}, \"cua2\": level|{}}.
+    """
+    by_target: dict[int, dict[str, Any]] = {}
+    for lv in task_levels or []:
+        if not isinstance(lv, dict):
+            continue
+        try:
+            target = int(lv.get("bet_target") or 0)
+        except (TypeError, ValueError):
+            continue
+        if target in TASK_CUA_TARGETS and target not in by_target:
+            by_target[target] = lv
+    return {
+        "cua1": by_target.get(TASK_CUA1_BET_TARGET_VND) or {},
+        "cua2": by_target.get(TASK_CUA2_BET_TARGET_VND) or {},
+    }
 
 
 def collect_claimable_task_levels(
@@ -162,8 +187,9 @@ def needs_task_cua_bet_poll(
     cap_vnd: int | None = None,
 ) -> tuple[bool, str]:
     """
-    Poll chờ site mở cửa: daily >= bet_target nhưng status vẫn 0.
-    cap_vnd bỏ qua (giữ chữ ký cũ); ngưỡng chỉ theo cược ngày thật.
+    Poll chỉ khi DB đủ bet_target cửa nhưng done_bet cửa site < target
+    (site chưa đủ nhận mốc đó). Site đã đủ target / status=1|2 → không poll,
+    kể cả khi done_bet < cược ngày DB.
     """
     _ = cap_vnd
     daily = int(daily_bet_total or 0)
@@ -172,7 +198,7 @@ def needs_task_cua_bet_poll(
     pending: list[str] = []
     for lv in task_levels or []:
         target = int(lv.get("bet_target") or 0)
-        if target <= 0:
+        if target not in TASK_CUA_TARGETS:
             continue
         if daily < target:
             continue
@@ -181,9 +207,15 @@ def needs_task_cua_bet_poll(
             st_i = int(st) if st is not None and st != "" else None
         except (TypeError, ValueError):
             st_i = None
-        if st_i == 0:
-            title = str(lv.get("title") or f"level {lv.get('level_id')}").strip()
-            pending.append(f"{title} {daily:,}/{target:,}")
+        if st_i in (REWARD_CLAIM_STATUS, 2):
+            continue
+        site_done = int(lv.get("done_bet_money") or 0)
+        if site_done >= target:
+            continue
+        title = str(lv.get("title") or f"level {lv.get('level_id')}").strip()
+        pending.append(
+            f"{title} site {site_done:,}/{target:,} (DB {daily:,})"
+        )
     if not pending:
         return False, ""
     return True, "; ".join(pending[:3])
@@ -271,6 +303,17 @@ def process_username(
     claimable = collect_claimable_task_levels(mission) if mission else []
     claims: list[dict[str, Any]] = []
 
+    from xoso66_daily_mission_check import collect_tracked_levels
+    from xoso66_mission_db import persist_mission_state
+
+    persist_mission_state(
+        u,
+        aid,
+        collect_tracked_levels(data),
+        phase="list",
+        task_levels=levels,
+    )
+
     _print_mission_block(u, mission, levels)
 
     if claimable and do_claim:
@@ -296,6 +339,13 @@ def process_username(
             mission = find_minigame_mission(parse_task_missions(data))
             levels = collect_task_levels(mission) if mission else []
             claimable = collect_claimable_task_levels(mission) if mission else []
+            persist_mission_state(
+                u,
+                aid,
+                collect_tracked_levels(data),
+                phase="after_claim",
+                task_levels=levels,
+            )
             _print_mission_block(u, mission, levels)
     elif claimable:
         print(

@@ -539,18 +539,18 @@ def _money_bet_at_top_idx(data: List[dict], top_idx: int = TARGET_TOP_IDX) -> in
 
 
 # USER_COUNT theo mốc top 500 (moneyBet):
-#   > 7tr → 1 | 6tr..7tr → 6 | < 6tr → 8
-_TOP500_USER_COUNT_GT_VND = 7_000_000
+#   > 7tr → 0 (không chạy mode) | 6tr..7tr → 6 | < 6tr → 8
+_TOP500_USER_COUNT_SKIP_VND = 7_000_000
 _TOP500_USER_COUNT_GE_VND = 6_000_000
 
 
 def resolve_user_count_from_top500(money_500: int, *, fallback: int = 8) -> int:
-    """Số user V2 theo moneyBet hạng 500. money_500≤0 → fallback."""
+    """Số user V2 theo moneyBet hạng 500. money_500≤0 → fallback; >7tr → 0 (bỏ qua mode)."""
     m = _to_int(money_500, 0)
     if m <= 0:
         return max(1, int(fallback))
-    if m > _TOP500_USER_COUNT_GT_VND:
-        return 1
+    if m > _TOP500_USER_COUNT_SKIP_VND:
+        return 0
     if m >= _TOP500_USER_COUNT_GE_VND:
         return 6
     return 8
@@ -566,7 +566,8 @@ def compute_top_bet_daily_gap_pick(
 ) -> TopBetPickResult:
     """Lấy mốc top 500, lọc gap, sort total_day, chọn user_count user.
 
-    user_count=None → tự tính theo moneyBet top500 (>7tr→1, 6–7tr→6, <6tr→8).
+    user_count=None → tự tính theo moneyBet top500
+    (>7tr→0 bỏ qua, 6–7tr→6, <6tr→8).
     """
     empty = TopBetPickResult()
 
@@ -674,7 +675,7 @@ def fetch_top_bet_daily(username, date=None, limit=500, nearest_users_count=None
         nearest_users_count = resolve_user_count_from_top500(money_500_raw)
     print(
         f"\nUSER_COUNT={nearest_users_count} "
-        f"(top500={money_500_raw:,}: >7tr→1, 6–7tr→6, <6tr→8)"
+        f"(top500={money_500_raw:,}: >7tr→0, 6–7tr→6, <6tr→8)"
     )
 
     candidates = _fetch_all_cms_candidates()

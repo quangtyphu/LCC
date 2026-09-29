@@ -364,11 +364,10 @@ def _evict_ws_on_proxy_dead(account_id: str) -> None:
         from xoso66_ws_pool import (
             clear_pending_ws_slot,
             request_ws_evict_and_resync,
-            unregister_ws_connected,
         )
 
         clear_pending_ws_slot(aid)
-        unregister_ws_connected(aid)
+        # Không unregister trần — chỉ evict khỏi pool (supervisor dừng task).
         request_ws_evict_and_resync([aid])
     except Exception:
         pass

@@ -2,10 +2,10 @@
 """
 Lỗi site nghiêm trọng → đổi status acc sang «Lỗi» và dừng auto-mission.
 
-Nhận diện (không phân biệt hoa thường):
-  - Thao tác trên hệ thống của bạn lặp lại quá thường xuyên
+«Thao tác … lặp lại quá thường xuyên» và HTTP 475 = tạm thời (CF/spam) —
+xử lý bằng login backoff trong xoso66_session, KHÔNG đánh STATUS_LỖI.
 
-Lưu ý: «Mã xác nhận không chính xác» (captcha) không còn coi là fatal —
+«Mã xác nhận không chính xác» (captcha) cũng không fatal —
 login/register tự giải Capsolver và retry.
 """
 
@@ -13,14 +13,15 @@ from __future__ import annotations
 
 from typing import Any
 
-_FATAL_MSG_MARKERS: tuple[str, ...] = (
-    "thao tác trên hệ thống của bạn lặp lại quá thường xuyên",
-)
+# Chỉ lỗi thật sự cần gỡ acc khỏi pool. Rate-limit tạm không nằm đây.
+_FATAL_MSG_MARKERS: tuple[str, ...] = ()
 
 
 def is_fatal_system_error_msg(msg: str) -> bool:
     m = str(msg or "").strip().lower()
     if not m:
+        return False
+    if not _FATAL_MSG_MARKERS:
         return False
     return any(marker in m for marker in _FATAL_MSG_MARKERS)
 

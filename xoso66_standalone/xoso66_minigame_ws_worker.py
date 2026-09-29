@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -67,6 +67,48 @@ _active_ws_supervisor: Any = None
 _active_ws_loop: asyncio.AbstractEventLoop | None = None
 
 
+def committed_focus_game_id(cfg: dict[str, Any] | None = None) -> int:
+    """Game player WS cần nghe dự phòng; ưu tiên game auto-bet đang giữ."""
+    with contextlib.suppress(Exception):
+        from xoso66_auto_bet import get_auto_bet_controller
+
+        gid = get_auto_bet_controller().active_game_id()
+        if gid is not None and int(gid) > 0:
+            return int(gid)
+    with contextlib.suppress(Exception):
+        from xoso66_config_util import load_config
+        from xoso66_jackpot_picker import focus_game_id
+
+        gid = focus_game_id(cfg or load_config())
+        if gid is not None and int(gid) > 0:
+            return int(gid)
+    return 9
+
+
+def player_subscribe_spec(focus_game_id: int) -> str:
+    gid = max(1, int(focus_game_id or 9))
+    return f"0,{gid}"
+
+
+def listener_is_covering_rounds() -> bool:
+    """Listener thread còn sống và socket đã connect."""
+    sup = _active_ws_supervisor
+    if sup is None:
+        return False
+    runner = getattr(sup, "listener_runner", None)
+    if runner is None or not bool(getattr(runner, "is_alive", lambda: False)()):
+        return False
+    lid = str(getattr(sup, "listener_id", "") or "").strip()
+    if not lid:
+        return False
+    try:
+        from xoso66_ws_pool import get_connected_ws_accounts
+
+        return lid in set(get_connected_ws_accounts() or [])
+    except Exception:
+        return True
+
+
 def remember_ws_pool_snapshot(account_ids: list[str] | set[str]) -> None:
     global _last_ws_pool_snapshot
     cleaned = [str(x).strip() for x in account_ids if str(x).strip()]
@@ -89,9 +131,6 @@ def effective_watch_game_ids(cfg: dict) -> frozenset[int]:
 
     return watch_game_ids_frozen(cfg)
 
-_token_maintain_ids: list[str] = []
-_token_maintain_lock = threading.Lock()
-
 def _sync_ws_status_blocking(
     cfg: dict[str, Any],
     *,
@@ -113,12 +152,6 @@ def _default_ws_count() -> int:
 
 
 WS_WORKER_COUNT = int(os.environ.get("XOSO66_WS_WORKER_ACCOUNTS") or _default_ws_count())
-TOKEN_MAINTAIN_INTERVAL_SEC = int(os.environ.get("XOSO66_TOKEN_MAINTAIN_SEC", "1800"))
-
-
-def _set_token_maintain_ids(account_ids: list[str]) -> None:
-    with _token_maintain_lock:
-        _token_maintain_ids[:] = [str(x).strip() for x in account_ids if str(x).strip()]
 
 
 def _log_async_task_result(task: asyncio.Task[None]) -> None:
@@ -153,9 +186,41 @@ def _is_event_loop_dead_error(exc: BaseException | None) -> bool:
     )
 
 
+def _is_ws_teardown_noise(exc: BaseException | None) -> bool:
+    """Lỗi khi hủy task/đóng loop — không reconnect, không recover fleet."""
+    if exc is None:
+        return False
+    if isinstance(exc, (GeneratorExit, asyncio.CancelledError)):
+        return True
+    if _is_event_loop_dead_error(exc):
+        return True
+    s = str(exc).lower()
+    return (
+        "generatorexit" in s
+        or "destroyed but it is pending" in s
+        or "coroutine ignored" in s
+    )
+
+
+def _is_selector_10038(exc: BaseException | None) -> bool:
+    """WinError 10038 từ selector/Proactor — giống LC79 (cần loop mới)."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, OSError):
+            if getattr(cur, "winerror", None) == 10038:
+                return True
+            msg = str(cur).lower()
+            if "not a socket" in msg or "10038" in msg:
+                return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _is_transient_ws_loop_error(exc: BaseException | None) -> bool:
     """Lỗi socket Windows (10038) khi proxy/task rớt — không thoát / không restart toàn worker."""
-    if _is_event_loop_dead_error(exc):
+    if exc is None or _is_event_loop_dead_error(exc) or _is_ws_teardown_noise(exc):
         return False
     seen: set[int] = set()
     cur: BaseException | None = exc
@@ -178,15 +243,15 @@ def _is_transient_ws_loop_error(exc: BaseException | None) -> bool:
                 return True
         if isinstance(cur, ConnectionError):
             return True
-        if isinstance(cur, RuntimeError):
-            s = str(cur).lower()
-            if "generatorexit" in s or "destroyed but it is pending" in s:
-                return True
         cur = cur.__cause__ or cur.__context__
     return False
 
 
 def _install_loop_exception_handler(loop: asyncio.AbstractEventLoop) -> None:
+    import time as _time
+
+    last_transient_log = [0.0]
+
     def _handler(
         _loop: asyncio.AbstractEventLoop, context: dict[str, Any]
     ) -> None:
@@ -197,36 +262,24 @@ def _install_loop_exception_handler(loop: asyncio.AbstractEventLoop) -> None:
                 return
             if _is_ws_shutdown_error(exc):
                 return
+            if _is_ws_teardown_noise(exc):
+                return
             if _is_transient_ws_loop_error(exc):
-                print(f"[WS-POOL] Loop socket (bỏ qua): {exc}", flush=True)
+                now = _time.monotonic()
+                # Rate-limit: WinError 10038 có thể spam hàng trăm lần/giây từ selector.
+                if now - last_transient_log[0] >= 2.0:
+                    last_transient_log[0] = now
+                    print(f"[WS-POOL] Loop socket (bỏ qua): {exc}", flush=True)
                 return
             print(f"[WS-POOL] Loop exception: {exc} | {msg}", flush=True)
         elif msg:
             if "destroyed but it is pending" in msg.lower():
                 return
+            if "generatorexit" in msg.lower() or "coroutine ignored" in msg.lower():
+                return
             print(f"[WS-POOL] Loop: {msg}", flush=True)
 
     loop.set_exception_handler(_handler)
-
-
-async def _safe_asyncio_wait(
-    pending: set[asyncio.Task[Any]],
-    *,
-    timeout: float,
-    return_when: Any,
-) -> tuple[set[asyncio.Task[Any]], set[asyncio.Task[Any]]]:
-    """asyncio.wait — bắt WinError 10038 (Windows) thay vì sập cả worker."""
-    try:
-        return await asyncio.wait(
-            pending,
-            timeout=timeout,
-            return_when=return_when,
-        )
-    except Exception as e:
-        if not _is_transient_ws_loop_error(e):
-            raise
-        print(f"[WS-POOL] asyncio.wait socket: {e} — giữ loop", flush=True)
-        return set(), {t for t in pending if not t.done()}
 
 
 def _game_worker_float(cfg: dict[str, Any], key: str, default: float) -> float:
@@ -235,84 +288,6 @@ def _game_worker_float(cfg: dict[str, Any], key: str, default: float) -> float:
         return max(0.0, float(gw.get(key, default)))
     except (TypeError, ValueError):
         return default
-
-
-def _maintain_user_tokens_loop() -> None:
-    """Refresh nền khi token già / ping fail — tránh hết token giữa chừng khi cược."""
-    import time
-
-    from xoso66_accounts_db import username_for_log
-    from xoso66_minigame_refresh import (
-        pop_urgent_token_refresh_ids,
-        refresh_minigame_tokens,
-        user_token_status,
-    )
-    from xoso66_session import ensure_session, persist_session
-
-    from xoso66_shutdown import stopping
-
-    def _sleep_until_maintain_due() -> None:
-        from xoso66_minigame_refresh import _urgent_token_refresh_event
-
-        for _ in range(max(1, TOKEN_MAINTAIN_INTERVAL_SEC)):
-            if stopping():
-                return
-            if _urgent_token_refresh_event.wait(timeout=1.0):
-                _urgent_token_refresh_event.clear()
-                return
-
-    while not stopping():
-        _sleep_until_maintain_due()
-        if stopping():
-            return
-        urgent = pop_urgent_token_refresh_ids()
-        with _token_maintain_lock:
-            pool = list(_token_maintain_ids)
-        aids: list[str] = []
-        seen: set[str] = set()
-        for aid in list(urgent.keys()) + pool:
-            a = str(aid).strip()
-            if a and a not in seen:
-                seen.add(a)
-                aids.append(a)
-        for aid in aids:
-            if stopping():
-                return
-            try:
-                from xoso66_cf import is_account_cf_rate_limited
-
-                if is_account_cf_rate_limited(aid):
-                    continue
-                from xoso66_ws_pool import get_connected_ws_accounts
-
-                from xoso66_config_util import load_config
-                from xoso66_minigame_catalog import game_by_key
-                from xoso66_playing_game_store import runtime_token_game_key
-
-                cfg = load_config()
-                game_key = urgent.get(aid) or runtime_token_game_key(cfg)
-                g = game_by_key(game_key)
-                gid = int(g["game_id"])
-                gname = str(g.get("gamename") or "lobby")
-
-                session = ensure_session(aid, force_login=False)
-                st = user_token_status(session, game_id=gid, gamename=gname)
-                if aid in get_connected_ws_accounts() and st.get("ping_ok") and not st.get(
-                    "needs_refresh"
-                ):
-                    continue
-                if st.get("ping_ok") and not st.get("needs_refresh"):
-                    continue
-                refresh_minigame_tokens(
-                    session,
-                    account_id=aid,
-                    game_key=game_key,
-                    force=not st.get("ping_ok"),
-                    ws_only=bool(st.get("ping_ok")),
-                )
-                persist_session(aid, session)
-            except Exception as e:
-                print(f"[TOKEN] {username_for_log(aid)} lỗi maintain: {e}", flush=True)
 
 
 async def _sleep_until_account_cf_cooldown(account_id: str, user: str) -> None:
@@ -335,13 +310,43 @@ async def _sleep_until_account_cf_cooldown(account_id: str, user: str) -> None:
 
 
 def note_ws_task_activity(account_id: str) -> None:
-    """
-    Giữ API tương thích.
-    Không gia hạn _task_started_at khi chưa connect — prune 60s phải bắt
-    task kẹt reconnect mãi (tránh connect=2/N zombie).
-    """
-    _ = account_id
-    return
+    """Mốc lần connect/retry gần nhất — prune không lấy giờ spawn task."""
+    aid = str(account_id or "").strip()
+    if not aid:
+        return
+    sup = _active_ws_supervisor
+    if sup is None:
+        return
+    with contextlib.suppress(Exception):
+        d = getattr(sup, "_unconnected_since", None)
+        if isinstance(d, dict):
+            d[aid] = time.time()
+
+
+def mark_ws_prune_connected(account_id: str) -> None:
+    """Vừa Live — reset đồng hồ «chưa connect» (tránh prune ngay sau drop ngắn)."""
+    aid = str(account_id or "").strip()
+    if not aid:
+        return
+    sup = _active_ws_supervisor
+    if sup is None:
+        return
+    with contextlib.suppress(Exception):
+        getattr(sup, "_unconnected_since", {}).pop(aid, None)
+
+
+def mark_ws_prune_unconnected(account_id: str) -> None:
+    """Rời connected — bắt đầu đếm 60s liên tục chưa connect lại."""
+    aid = str(account_id or "").strip()
+    if not aid:
+        return
+    sup = _active_ws_supervisor
+    if sup is None:
+        return
+    with contextlib.suppress(Exception):
+        d = getattr(sup, "_unconnected_since", None)
+        if isinstance(d, dict) and aid not in d:
+            d[aid] = time.time()
 
 
 async def run_ws_for_account(
@@ -352,128 +357,177 @@ async def run_ws_for_account(
     broadcast: WsBroadcastCoordinator,
     refresh_before_connect: bool = True,
     conn_gen: str | None = None,
+    watch_rounds: bool = False,
+    focus_game_id: int | None = None,
+    focus_game_id_provider: Callable[[], int] | None = None,
 ) -> None:
+    """
+    Task 1 nick — chỉ gọi một vòng listen.
+    watch_rounds=True: listener — claim phiên/hũ. Pool mặc định False (keep-alive).
+    Socket rớt: listen_minigame_ws tự reconnect.
+    Task chết: WsPoolSupervisor.restart_dead_tasks spawn lại nếu nick còn Đang Chơi.
+    """
     from xoso66_accounts_db import username_for_log
     from xoso66_shutdown import stopping
 
     aid = str(account_id).strip()
     user = username_for_log(aid)
-    while not stopping():
-        await _sleep_until_account_cf_cooldown(aid, user)
-        if stopping():
+    await _sleep_until_account_cf_cooldown(aid, user)
+    if stopping():
+        return
+    try:
+        from xoso66_config_util import load_config
+
+        cfg = load_config()
+        watch_ids = effective_watch_game_ids(cfg)
+        backup_gid = 0 if watch_rounds else int(
+            focus_game_id or committed_focus_game_id(cfg)
+        )
+        effective_subscribe = (
+            subscribe_spec
+            if watch_rounds
+            else player_subscribe_spec(backup_gid)
+        )
+        await listen_minigame_ws(
+            {},
+            aid,
+            duration_sec=0,
+            game_key="taixiu_dai_loc",
+            refresh_before_connect=refresh_before_connect,
+            verbose=False,
+            game_watch=True,
+            watch_rounds=bool(watch_rounds),
+            focus_backup_game_id=backup_gid or None,
+            focus_game_id_provider=(
+                None if watch_rounds else focus_game_id_provider
+            ),
+            watch_game_ids=watch_ids,
+            subscribe_spec=effective_subscribe,
+            subscribe_individual=True,
+            ping_game_id=(sorted(watch_ids) if watch_rounds else [0, backup_gid]),
+            save_jackpot=bool(watch_rounds),
+            jackpot_store=jackpot_store,
+            log_game_info=False,
+            broadcast_coordinator=broadcast,
+            conn_gen=conn_gen,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        if stopping() or _is_ws_teardown_noise(e):
             return
-        try:
-            from xoso66_config_util import load_config
-
-            watch_ids = effective_watch_game_ids(load_config())
-            await listen_minigame_ws(
-                {},
-                aid,
-                duration_sec=0,
-                game_key="taixiu_dai_loc",
-                refresh_before_connect=refresh_before_connect,
-                verbose=False,
-                game_watch=True,
-                watch_game_ids=watch_ids,
-                subscribe_spec=subscribe_spec,
-                subscribe_individual=True,
-                ping_game_id=sorted(watch_ids),
-                save_jackpot=True,
-                jackpot_store=jackpot_store,
-                log_game_info=False,
-                broadcast_coordinator=broadcast,
-                conn_gen=conn_gen,
-            )
-        except asyncio.CancelledError:
-            raise
-        except RuntimeError as e:
-            if stopping():
-                return
-            if _is_transient_ws_loop_error(e):
-                print(
-                    f"[WS] [{user}] runtime tạm ({e}) — chỉ nick này, "
-                    f"giữ pool; thử lại sau 7s",
-                    flush=True,
-                )
-                from xoso66_ws_pool import unregister_ws_connected
-
-                unregister_ws_connected(aid, conn_gen=conn_gen)
-                for _ in range(7):
-                    if stopping():
-                        return
-                    await asyncio.sleep(1)
-                continue
-            raise
-        except Exception as e:
-            from xoso66_cf import CfRateLimitError
-
-            if stopping():
-                return
-
-            if isinstance(e, CfRateLimitError):
-                print(f"❌ [{user}] WS: {e}", flush=True)
-                await _sleep_until_account_cf_cooldown(aid, user)
-                continue
-            # WinError 10038 / proxy chết: chỉ nick này nghỉ rồi mở lại — không raise.
-            if _is_transient_ws_loop_error(e):
-                print(
-                    f"[WS] [{user}] socket tạm ({e}) — chỉ nick này, "
-                    f"giữ pool; thử lại sau 7s",
-                    flush=True,
-                )
-                from xoso66_ws_pool import unregister_ws_connected
-
-                unregister_ws_connected(aid, conn_gen=conn_gen)
-                for _ in range(7):
-                    if stopping():
-                        return
-                    await asyncio.sleep(1)
-                continue
+        if not _is_transient_ws_loop_error(e):
             from xoso66_ws_pool import mark_ws_connect_failed
 
             mark_ws_connect_failed(aid, reason=str(e)[:160], exc=e)
             print(f"❌ [{user}] WS: {e}", flush=True)
-            for _ in range(5):
-                if stopping():
-                    return
-                await asyncio.sleep(1)
-        else:
-            if stopping():
-                break
-            print(
-                f"⚠️ [{user}] WS task kết thúc bất thường — chờ 20s rồi mở lại",
-                flush=True,
-            )
-            for _ in range(20):
-                if stopping():
-                    return
-                await asyncio.sleep(1)
+        # Để task chết thật; supervisor là owner duy nhất quyết định spawn lại.
+        raise
+
+
+class DedicatedWsListener:
+    """Listener full chạy trên thread/event-loop riêng, không tranh pool loop."""
+
+    def __init__(self) -> None:
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._lock = threading.Lock()
+        self._last_error: BaseException | None = None
+        self._ready = threading.Event()
+
+    def is_alive(self) -> bool:
+        t = self._thread
+        return bool(t is not None and t.is_alive())
+
+    def last_error(self) -> BaseException | None:
+        with self._lock:
+            return self._last_error
+
+    def start(self, coro_factory: Callable[[], Any], *, name: str) -> None:
+        if self.is_alive():
+            return
+        self._ready.clear()
+
+        def _run() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            task = loop.create_task(coro_factory(), name=name)
+            with self._lock:
+                self._loop = loop
+                self._task = task
+                self._last_error = None
+            self._ready.set()
+            try:
+                loop.run_until_complete(task)
+            except asyncio.CancelledError:
+                pass
+            except BaseException as e:
+                with self._lock:
+                    self._last_error = e
+            finally:
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                for pending_task in pending:
+                    pending_task.cancel()
+                if pending:
+                    with contextlib.suppress(Exception):
+                        loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                with contextlib.suppress(Exception):
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                with contextlib.suppress(Exception):
+                    loop.close()
+                with self._lock:
+                    self._loop = None
+                    self._task = None
+
+        thread = threading.Thread(target=_run, name=name, daemon=True)
+        self._thread = thread
+        thread.start()
+        self._ready.wait(timeout=2.0)
+
+    def stop(self, *, timeout: float = 6.0) -> None:
+        self._ready.wait(timeout=min(2.0, max(0.1, float(timeout))))
+        with self._lock:
+            loop = self._loop
+            task = self._task
+        if loop is not None and task is not None and not task.done():
+            with contextlib.suppress(Exception):
+                loop.call_soon_threadsafe(task.cancel)
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=max(0.1, float(timeout)))
+        if thread is None or not thread.is_alive():
+            self._thread = None
 
 
 class WsPoolSupervisor:
-    """WS pool; ws_account_count = giới hạn slot (task + connect + pending)."""
+    """WS pool — Đang Chơi → mở WS; listener + resync membership."""
 
     def __init__(self) -> None:
         self.jp_store = MinigameJackpotStore()
         self.broadcast = WsBroadcastCoordinator()
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.listener_id: str | None = None
-        self.listener_task: asyncio.Task[None] | None = None
+        self.listener_runner = DedicatedWsListener()
         self._listener_refresh = True
-        self._token_thread: threading.Thread | None = None
         self._resync_lock = asyncio.Lock()
         self._spawn_lock = threading.Lock()
         self._connect_batch_n = 0
         self._last_respawn_at: dict[str, float] = {}
         self._task_started_at: dict[str, float] = {}
+        # Thời điểm bắt đầu chuỗi «chưa connect» (sau spawn hoặc sau unregister).
+        self._unconnected_since: dict[str, float] = {}
+        self._last_skip_reopen_log: dict[str, float] = {}
         self._conn_gen: dict[str, str] = {}
+        self._listener_force_restart_at: float = 0.0
 
-    def _sync_token_maintain_ids(self) -> None:
+    def _sync_pool_snapshot(self) -> None:
         ids = list(self.tasks.keys())
         if self.listener_id and self.listener_id not in ids:
             ids.append(self.listener_id)
         remember_ws_pool_snapshot(ids)
-        _set_token_maintain_ids(ids)
 
     async def ensure_listener(self, cfg: dict[str, Any]) -> None:
         """1 WS cố định nghe phiên/hũ — không evict cap, không cần đủ balance."""
@@ -492,8 +546,8 @@ class WsPoolSupervisor:
         if self.listener_id and self.listener_id != aid:
             await self._stop_listener()
         self.listener_id = aid
-        if self.listener_task is not None and not self.listener_task.done():
-            self._sync_token_maintain_ids()
+        if self.listener_runner.is_alive():
+            self._sync_pool_snapshot()
             return
         user = username_for_log(aid)
         print(
@@ -504,37 +558,35 @@ class WsPoolSupervisor:
         self._listener_refresh = False
         gen = uuid.uuid4().hex
         self._conn_gen[aid] = gen
-        self.listener_task = asyncio.create_task(
-            run_ws_for_account(
+        self.listener_runner.start(
+            lambda: run_ws_for_account(
                 aid,
                 jackpot_store=self.jp_store,
                 subscribe_spec=DEFAULT_WS_SUBSCRIBE,
                 broadcast=self.broadcast,
                 refresh_before_connect=refresh,
                 conn_gen=gen,
+                watch_rounds=True,
             ),
             name=f"ws-listener-{aid}",
         )
-        self.listener_task.add_done_callback(_log_async_task_result)
-        self._sync_token_maintain_ids()
+        self._sync_pool_snapshot()
 
     async def _stop_listener(self) -> None:
         from xoso66_accounts_db import username_for_log
         from xoso66_ws_pool import unregister_ws_connected
 
-        task = self.listener_task
         lid = str(self.listener_id or "").strip()
-        self.listener_task = None
         self.listener_id = None
         if lid:
             unregister_ws_connected(lid)
-        if task is None:
-            return
         user = username_for_log(lid) if lid else "?"
-        if not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        await asyncio.to_thread(self.listener_runner.stop, timeout=6.0)
+        if self.listener_runner.is_alive():
+            print(
+                f"[WS-LISTENER] {user} kẹt đóng WS — bỏ thread, mở lại",
+                flush=True,
+            )
         print(f"[WS-LISTENER] Đã đóng WS: {user}", flush=True)
 
     async def restart_listener_if_dead(self, cfg: dict[str, Any]) -> None:
@@ -545,29 +597,48 @@ class WsPoolSupervisor:
         if not self.listener_id:
             await self.ensure_listener(cfg)
             return
-        task = self.listener_task
-        if task is None or task.done():
-            if task is not None and not task.cancelled():
-                exc = task.exception()
-                if exc:
-                    from xoso66_accounts_db import username_for_log
+        if not self.listener_runner.is_alive():
+            exc = self.listener_runner.last_error()
+            if exc:
+                from xoso66_accounts_db import username_for_log
 
-                    print(
-                        f"[WS-LISTENER] {username_for_log(self.listener_id)} "
-                        f"rớt WS: {exc}",
-                        flush=True,
-                    )
+                print(
+                    f"[WS-LISTENER] {username_for_log(self.listener_id)} "
+                    f"rớt WS: {exc}",
+                    flush=True,
+                )
             await self.ensure_listener(cfg)
-
-    def _ensure_token_thread(self) -> None:
-        if self._token_thread and self._token_thread.is_alive():
             return
-        self._token_thread = threading.Thread(
-            target=_maintain_user_tokens_loop,
-            name="xoso66-token-maintain",
-            daemon=True,
+        # Task còn chạy nhưng không còn phiên — kẹt close/recv (idle log rồi đứng).
+        try:
+            from xoso66_minigame_ws import (
+                WS_OPEN_INFO_STALE_SEC,
+                clear_open_info_rx,
+                newest_open_info_rx,
+            )
+
+            _, age = newest_open_info_rx()
+            stale_lim = max(120.0, float(WS_OPEN_INFO_STALE_SEC or 90) * 1.5)
+        except Exception:
+            age = None
+            stale_lim = 120.0
+        if age is None or age <= stale_lim:
+            return
+        now = time.time()
+        if now - float(self._listener_force_restart_at or 0) < 60.0:
+            return
+        from xoso66_accounts_db import username_for_log
+
+        self._listener_force_restart_at = now
+        print(
+            f"[WS-LISTENER] {username_for_log(self.listener_id)} "
+            f"open_info STALE {age:.0f}s — ép restart",
+            flush=True,
         )
-        self._token_thread.start()
+        with contextlib.suppress(Exception):
+            clear_open_info_rx()
+        await self._stop_listener()
+        await self.ensure_listener(cfg)
 
     def _spawn_task(self, aid: str, *, lead: str, refresh: bool) -> bool:
         """Một nick chỉ một task WS; không ghi đè task đang chạy. Trả True nếu spawn."""
@@ -575,7 +646,6 @@ class WsPoolSupervisor:
         if not aid or aid == self.listener_id:
             return False
         _ = lead
-        # Không check balance / proxy / deposit — chỉ spawn mở WS; lỗi tính sau.
         with self._spawn_lock:
             old = self.tasks.get(aid)
             if old is not None and not old.done():
@@ -588,20 +658,25 @@ class WsPoolSupervisor:
                 return False
             gen = uuid.uuid4().hex
             self._conn_gen[aid] = gen
+            focus_gid = committed_focus_game_id()
             task = loop.create_task(
                 run_ws_for_account(
                     aid,
                     jackpot_store=self.jp_store,
-                    subscribe_spec=DEFAULT_WS_SUBSCRIBE,
+                    subscribe_spec=player_subscribe_spec(focus_gid),
                     broadcast=self.broadcast,
-                    refresh_before_connect=False,
+                    refresh_before_connect=bool(refresh),
                     conn_gen=gen,
+                    watch_rounds=False,
+                    focus_game_id=focus_gid,
+                    focus_game_id_provider=committed_focus_game_id,
                 ),
                 name=f"ws-{aid}",
             )
             task.add_done_callback(_log_async_task_result)
             self.tasks[aid] = task
             self._task_started_at[aid] = time.time()
+            self._unconnected_since[aid] = time.time()
             return True
 
     async def _spawn_staggered(
@@ -612,16 +687,19 @@ class WsPoolSupervisor:
         refresh: bool,
         cfg: dict[str, Any] | None = None,
     ) -> list[str]:
-        """Spawn tuần tự + delay (Windows 0.5s) — tránh 10038 khi mở hàng loạt SOCKS."""
+        """Spawn tuần tự + stagger (LC79-style) — một owner: Supervisor."""
         from xoso66_config_util import load_config
         from xoso66_shutdown import stopping
         from xoso66_ws_pool import ws_connect_batch_delay_sec
 
         if cfg is None:
             cfg = load_config()
-        delay = ws_connect_batch_delay_sec(cfg)
+        ready = [str(a).strip() for a in aids if str(a).strip()]
+        if not ready:
+            return []
+        delay = float(ws_connect_batch_delay_sec(cfg) or 0.0)
         spawned: list[str] = []
-        for i, aid in enumerate(aids):
+        for i, aid in enumerate(ready):
             if stopping():
                 break
             if i > 0 and delay > 0:
@@ -648,7 +726,6 @@ class WsPoolSupervisor:
         refresh_new: bool,
         cfg: dict[str, Any],
     ) -> None:
-        _ = refresh_new
         if not added:
             return
         # Chỉ bỏ listener — không check balance / proxy / nạp.
@@ -664,7 +741,7 @@ class WsPoolSupervisor:
             flush=True,
         )
         await self._spawn_staggered(
-            ready, lead=lead or ready[0], refresh=False, cfg=cfg
+            ready, lead=lead or ready[0], refresh=bool(refresh_new), cfg=cfg
         )
 
     async def _stop_account(self, aid: str) -> None:
@@ -674,6 +751,7 @@ class WsPoolSupervisor:
 
         clear_pending_ws_slot(aid)
         self._task_started_at.pop(aid, None)
+        self._unconnected_since.pop(aid, None)
         self._conn_gen.pop(aid, None)
         # Luôn gỡ khỏi set connect — tránh ghost chiếm slot khi task đã done
         # mà status đã Đủ ngày/Hết Tiền.
@@ -681,9 +759,18 @@ class WsPoolSupervisor:
         task = self.tasks.pop(aid, None)
         if task is None or task.done():
             return
+        from xoso66_accounts_db import username_for_log as _ulog
+
+        print(
+            f"[WS-DIAG] stop-account cancel {_ulog(aid)} (task still running)",
+            flush=True,
+        )
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        try:
+            # Timeout: bỏ chờ cleanup socket/proxy — không spam log (hay >5s trên Windows+SOCKS).
+            await asyncio.wait_for(task, timeout=5.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            pass
 
     async def apply_pool(
         self,
@@ -704,8 +791,10 @@ class WsPoolSupervisor:
             for x in ids
             if str(x).strip() and str(x).strip() != self.listener_id
         ]
-        # Tin list đầu vào — không filter balance / pending / proxy lúc mở.
-        target = list(dict.fromkeys(raw_target))
+        # Soft-restart / list ngoài: bỏ Đủ ngày (không ép Đang Chơi khi spawn).
+        from xoso66_ws_pool import filter_ids_for_ws_spawn
+
+        target = filter_ids_for_ws_spawn(raw_target, cfg, keep_pending_bet=True)
         current = set(self.tasks.keys())
         new_set = set(target)
         # Luôn giữ nick còn lệnh cược chờ KQ — kể cả khi target còn nick khác.
@@ -734,7 +823,7 @@ class WsPoolSupervisor:
                     flush=True,
                 )
         if current == new_set and len(target) == len(self.tasks):
-            self._sync_token_maintain_ids()
+            self._sync_pool_snapshot()
             return False
 
         removed = sorted(
@@ -754,28 +843,12 @@ class WsPoolSupervisor:
                     joining=[],
                 )
 
-        self._sync_token_maintain_ids()
+        self._sync_pool_snapshot()
 
         lead = target[0] if target else ""
         if added:
             from xoso66_shutdown import stopping
-            from xoso66_ws_pool import mark_pending_ws_slots, ws_account_count
-
-            # Không spawn vượt ws_account_count (sau khi đã stop removed).
-            cap = ws_account_count(cfg)
-            room = max(0, cap - len(self.tasks))
-            if len(added) > room:
-                skipped = added[room:]
-                added = added[:room]
-                if skipped:
-                    from xoso66_accounts_db import usernames_for_log
-
-                    print(
-                        f"[WS-POOL] Cắt spawn vượt cap {cap}: giữ {len(added)}, "
-                        f"bỏ {usernames_for_log(skipped[:8])}"
-                        f"{f'… +{len(skipped)-8}' if len(skipped) > 8 else ''}",
-                        flush=True,
-                    )
+            from xoso66_ws_pool import mark_pending_ws_slots
 
             spawned: list[str] = []
             if not stopping() and added:
@@ -789,13 +862,7 @@ class WsPoolSupervisor:
                 )
                 if spawned:
                     mark_pending_ws_slots(spawned)
-                    self._sync_token_maintain_ids()
-                    n = len(spawned)
-                    mode = "chỉ connect"
-                    print(
-                        f"[WS-POOL] Đang mở {n} WS tuần tự ({mode})…",
-                        flush=True,
-                    )
+                    self._sync_pool_snapshot()
                     t = asyncio.create_task(
                         self._sync_joining_accounts(spawned, cfg=cfg),
                         name="ws-pool-sync-joining",
@@ -864,14 +931,12 @@ class WsPoolSupervisor:
             _ws_after_deposit_ids.clear()
         if not pending:
             return False
-        min_bal = 0
-        try:
-            from xoso66_ws_pool import min_balance_for_ws
+        from xoso66_ws_pool import get_connected_ws_accounts, min_balance_for_ws
 
+        min_bal = 0
+        with contextlib.suppress(Exception):
             min_bal = min_balance_for_ws(cfg)
-        except Exception:
-            pass
-        from xoso66_accounts_db import get_account, username_for_log, usernames_for_log
+        from xoso66_accounts_db import get_account, username_for_log
 
         ready: list[str] = []
         for aid in pending:
@@ -887,51 +952,43 @@ class WsPoolSupervisor:
                 )
         if not ready:
             return False
-        from xoso66_ws_pool import (
-            count_ws_slots_in_use,
-            ws_account_count,
-            ws_slots_need_fill,
-        )
-
-        need = ws_slots_need_fill(cfg, task_ids=list(self.tasks.keys()))
-        cap = ws_account_count(cfg)
-        info = count_ws_slots_in_use(cfg, task_ids=list(self.tasks.keys()))
-        if need <= 0:
-            names = ", ".join(usernames_for_log(ready))
-            print(
-                f"[WS-POOL] Nạp Hoàn tất — đủ «Đang Chơi» "
-                f"({info['in_use_n']}/{cap}), chờ bù slot: {names}",
-                flush=True,
-            )
-            return False
-        to_add = ready[:need]
-        if len(to_add) < len(ready):
-            skipped = ready[need:]
-            print(
-                f"[WS-POOL] Nạp Hoàn tất — chỉ bù {need} slot: "
-                f"{usernames_for_log(to_add)}; chờ slot: "
-                f"{usernames_for_log(skipped)}",
-                flush=True,
-            )
-        # Chỉ giữ task đã connect / pending — không giữ zombie trong target.
-        from xoso66_ws_pool import get_connected_ws_accounts, get_pending_ws_slot_ids
-
-        keep_tasks = {
-            a
-            for a in self.tasks
-            if a in get_connected_ws_accounts() or a in get_pending_ws_slot_ids()
+        connected = {
+            str(x).strip() for x in get_connected_ws_accounts() if str(x).strip()
         }
-        target = sorted(keep_tasks | set(to_add))
+        # Task sống nhưng không ∈ A (close đã unregister / hoãn evict) → đóng rồi mở lại.
+        for aid in list(ready):
+            if aid in self.tasks and aid not in connected:
+                print(
+                    f"[WS-POOL] Nạp xong — task WS không connect, mở lại: "
+                    f"{username_for_log(aid)}",
+                    flush=True,
+                )
+                await self._stop_account(aid)
+        # Đang Chơi / nạp xong → mở WS, không cắt theo cap slot.
+        target = sorted(set(self.tasks.keys()) | set(ready))
         return await self.apply_pool(target, cfg=cfg, refresh_new=True)
 
     async def resync_from_config(
         self, *, refresh_new: bool = False, round_start: bool = False
     ) -> bool:
+        """Timeout 90s — tránh kẹt lock mãi → chết 5 việc Phiên mới."""
+        tag = "Phiên mới" if round_start else ("sau nạp" if refresh_new else "Resync")
         async with self._resync_lock:
-            return await self._resync_from_config_impl(
-                refresh_new=refresh_new,
-                round_start=round_start,
-            )
+            try:
+                return await asyncio.wait_for(
+                    self._resync_from_config_impl(
+                        refresh_new=refresh_new,
+                        round_start=round_start,
+                    ),
+                    timeout=90.0,
+                )
+            except asyncio.TimeoutError:
+                print(
+                    f"[WS-POOL] {tag} — resync timeout 90s, nhả lock "
+                    f"(không chặn vòng sau)",
+                    flush=True,
+                )
+                return False
 
     async def _resync_from_config_impl(
         self, *, refresh_new: bool = False, round_start: bool = False
@@ -952,6 +1009,9 @@ class WsPoolSupervisor:
         )
 
         cfg = load_config()
+        current: list[str] = list(self.tasks.keys())
+        just_evicted: list[str] = []
+        changed = False
         current, just_evicted = await self._apply_pending_evictions(cfg)
         changed = await self._connect_after_deposit(cfg)
         from xoso66_ws_pool import account_ws_deposit_busy, clear_pending_ws_slot
@@ -978,7 +1038,7 @@ class WsPoolSupervisor:
             just_evicted=just_evicted,
         )
         if plan is None:
-            self._sync_token_maintain_ids()
+            self._sync_pool_snapshot()
             return changed
 
         if plan.prune_removed:
@@ -994,16 +1054,8 @@ class WsPoolSupervisor:
 
         task_keys = set(self.tasks.keys())
         target_set = set(plan.target)
-        connected_live = {
-            str(x).strip()
-            for x in get_connected_ws_accounts()
-            if str(x).strip()
-        }
         want_open = set(plan.fill_connect_ids or plan.connect_all or [])
-        if round_start:
-            to_open = sorted(a for a in want_open if a not in connected_live)
-        else:
-            to_open = sorted(want_open or (target_set - task_keys))
+        to_open = sorted(want_open or (target_set - task_keys))
         from xoso66_cf import is_account_cf_rate_limited
 
         to_open = [a for a in to_open if not is_account_cf_rate_limited(a)]
@@ -1015,21 +1067,6 @@ class WsPoolSupervisor:
             if t is not None and not t.done()
         }
         need_spawn = [a for a in to_open if a not in running]
-        # Không spawn vượt cap (task đang chạy + sẽ spawn).
-        from xoso66_ws_pool import ws_account_count as _ws_cap
-
-        cap = _ws_cap(cfg)
-        room = max(0, cap - len(running))
-        if len(need_spawn) > room:
-            skipped = need_spawn[room:]
-            need_spawn = need_spawn[:room]
-            if skipped:
-                print(
-                    f"[WS-POOL] Cắt bù WS vượt cap {cap}: giữ {len(need_spawn)}, "
-                    f"bỏ {', '.join(username_for_log(a) for a in skipped[:8])}"
-                    f"{f'… +{len(skipped)-8}' if len(skipped) > 8 else ''}",
-                    flush=True,
-                )
         for aid in need_spawn:
             t = self.tasks.get(aid)
             if t is not None and t.done():
@@ -1047,16 +1084,11 @@ class WsPoolSupervisor:
 
             lead = need_spawn[0]
             spawned = await self._spawn_staggered(
-                need_spawn, lead=lead or need_spawn[0], refresh=False, cfg=cfg
+                need_spawn, lead=lead or need_spawn[0], refresh=True, cfg=cfg
             )
             if spawned:
                 mark_pending_ws_slots(spawned)
-                self._sync_token_maintain_ids()
-                print(
-                    f"[WS-POOL] Đang mở {len(spawned)}/{len(need_spawn)} WS "
-                    f"tuần tự (chỉ connect)…",
-                    flush=True,
-                )
+                self._sync_pool_snapshot()
                 t = asyncio.create_task(
                     self._sync_joining_accounts(spawned, cfg=cfg),
                     name="ws-pool-sync-joining",
@@ -1069,32 +1101,8 @@ class WsPoolSupervisor:
                     f"(đã có task sống)",
                     flush=True,
                 )
-        # Đồng bộ target còn lại (đóng thừa) — không spawn lại qua filter.
-        apply_ids = list(
-            dict.fromkeys(
-                [
-                    *(a for a in plan.target if a in running),
-                    *need_spawn,
-                    *(a for a in running if a in target_set),
-                ]
-            )
-        )
-        # Chỉ stop nick không còn trong apply_ids (không spawn qua apply_pool).
-        to_stop = [
-            a
-            for a in list(self.tasks.keys())
-            if a not in apply_ids and a != self.listener_id
-        ]
-        if to_stop and not stopping():
-            for aid in to_stop:
-                await self._stop_account(aid)
-            await asyncio.to_thread(
-                _sync_ws_status_blocking,
-                cfg,
-                leaving=to_stop,
-                joining=[],
-            )
-            changed = True
+        # Loại khỏi target (thiếu tiền / filter) ≠ đóng WS.
+        # Đóng chỉ việc5 → plan.prune_removed. Còn Đang Chơi thì giữ task.
 
         if plan.deposit_ids and not stopping():
             schedule_fund_deposit_for_ws_shortage(
@@ -1107,10 +1115,96 @@ class WsPoolSupervisor:
             cfg, task_n=task_n
         )
 
-        self._sync_token_maintain_ids()
+        if not stopping():
+            if await self.ensure_dang_choi_have_ws(
+                cfg, skip_reopen_log=set(need_spawn)
+            ):
+                changed = True
+
+        self._sync_pool_snapshot()
         return changed
 
+    async def ensure_dang_choi_have_ws(
+        self,
+        cfg: dict[str, Any],
+        *,
+        skip_reopen_log: set[str] | None = None,
+    ) -> bool:
+        """Đang Chơi chưa WS: spawn nếu không có task. Task sống thì để tự connect."""
+        from xoso66_shutdown import stopping
+        from xoso66_accounts_db import username_for_log
+        from xoso66_ws_pool import (
+            dang_choi_without_connected_ws,
+            get_connected_ws_accounts,
+            ws_stuck_unconnected_sec,
+        )
+
+        if stopping():
+            return False
+        missing = [
+            a
+            for a in dang_choi_without_connected_ws(cfg)
+            if a and a != self.listener_id
+        ]
+        if not missing:
+            return False
+        connected = {
+            str(x).strip() for x in get_connected_ws_accounts() if str(x).strip()
+        }
+        to_spawn: list[str] = []
+        for aid in missing:
+            # Snapshot missing có thể cũ: nick vừa Live thì không đụng.
+            if aid in connected:
+                continue
+            task = self.tasks.get(aid)
+            if task is not None and not task.done():
+                # Cùng vòng vừa bù WS: đừng đụng (task chưa kịp Live).
+                if skip_reopen_log and aid in skip_reopen_log:
+                    continue
+                last_act = float(
+                    self._unconnected_since.get(aid)
+                    or self._task_started_at.get(aid)
+                    or 0.0
+                )
+                age = (time.time() - last_act) if last_act else 0.0
+                stuck_sec = ws_stuck_unconnected_sec(cfg)
+                if age < stuck_sec:
+                    last_log = float(self._last_skip_reopen_log.get(aid) or 0.0)
+                    if (time.time() - last_log) >= 20.0:
+                        self._last_skip_reopen_log[aid] = time.time()
+                        print(
+                            f"[WS-DIAG] skip-reopen {username_for_log(aid)} "
+                            f"task-alive unconnected={age:.0f}s "
+                            f"(chờ ≤{stuck_sec:.0f}s)",
+                            flush=True,
+                        )
+                    continue
+                print(
+                    f"[WS-DIAG] reopen {username_for_log(aid)} "
+                    f"stuck-unconnected={age:.0f}s",
+                    flush=True,
+                )
+                await self._stop_account(aid)
+            if task is not None:
+                print(
+                    f"[WS-DIAG] reopen {username_for_log(aid)} task-done",
+                    flush=True,
+                )
+                await self._stop_account(aid)
+            to_spawn.append(aid)
+        if not to_spawn:
+            return False
+        names = ", ".join(username_for_log(a) for a in to_spawn[:12])
+        extra = f" … +{len(to_spawn) - 12}" if len(to_spawn) > 12 else ""
+        print(
+            f"[WS-POOL] Đang Chơi chưa WS — mở: {names}{extra}",
+            flush=True,
+        )
+        target = sorted(set(self.tasks.keys()) | set(to_spawn))
+        return await self.apply_pool(target, cfg=cfg, refresh_new=True)
+
     async def restart_dead_tasks(self) -> None:
+        """Dọn task done; respawn nếu nick còn trong list mục tiêu (một owner)."""
         from xoso66_shutdown import stopping
 
         if not self.tasks or stopping():
@@ -1124,8 +1218,7 @@ class WsPoolSupervisor:
         from xoso66_accounts_db import get_account, username_for_log
 
         cfg = load_config()
-        with _token_maintain_lock:
-            lead = _token_maintain_ids[0] if _token_maintain_ids else ""
+        lead = next(iter(self.tasks), "")
         now = time.time()
         for aid, task in list(self.tasks.items()):
             if not task.done() or task.cancelled():
@@ -1137,20 +1230,20 @@ class WsPoolSupervisor:
             last = self._last_respawn_at.get(aid, 0.0)
             if now - last < 25.0:
                 continue
-            exc = task.exception()
+            exc = None
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                exc = task.exception()
             row = get_account(aid) or {}
             bet_pending = False
             with contextlib.suppress(Exception):
                 from xoso66_auto_bet import pending_bet_account_ids
 
                 bet_pending = aid in pending_bet_account_ids()
-            # Sai status → không respawn (tránh ghost Đủ ngày/Hết Tiền).
             if not is_ws_pool_active_status(row, cfg) and not bet_pending:
                 self.tasks.pop(aid, None)
                 clear_pending_ws_slot(aid)
                 unregister_ws_connected(aid)
                 continue
-            # Không check balance — cứ mở lại WS; lỗi tính sau.
             if exc:
                 print(f"[WS-WORKER] {username_for_log(aid)} rớt WS: {exc}", flush=True)
             self._last_respawn_at[aid] = now
@@ -1158,24 +1251,32 @@ class WsPoolSupervisor:
 
     async def prune_stale_unconnected_tasks(self, cfg: dict[str, Any]) -> None:
         """
-        Task sống nhưng chưa connect >60s / proxy chết.
-        Proxy chết: gỡ slot. Còn lại: stop + spawn lại cùng nick (LC79-style).
+        Task sống nhưng chưa connect liên tục / proxy chết.
+        Đồng hồ = lần connect/retry gần nhất (không phải giờ spawn).
+        Không đề xuất nạp nếu nick đã đủ tiền.
         """
         from xoso66_shutdown import stopping
 
         if stopping() or not self.tasks:
             return
-        from xoso66_accounts_db import username_for_log
+        from xoso66_accounts_db import get_account, username_for_log
         from xoso66_proxy import is_proxy_dead
         from xoso66_ws_pool import (
+            account_balance_vnd,
             clear_pending_ws_slot,
             get_connected_ws_accounts,
-            mark_pending_ws_slots,
+            get_pending_ws_slot_ids,
+            min_balance_for_ws,
             schedule_fund_deposit_for_ws_shortage,
+            ws_stuck_unconnected_sec,
+            ws_stale_unconnected_sec,
         )
 
         connected = {
             str(x).strip() for x in get_connected_ws_accounts() if str(x).strip()
+        }
+        pending_slots = {
+            str(x).strip() for x in get_pending_ws_slot_ids() if str(x).strip()
         }
         bet_pending: set[str] = set()
         with contextlib.suppress(Exception):
@@ -1184,24 +1285,57 @@ class WsPoolSupervisor:
             bet_pending = {
                 str(x).strip() for x in pending_bet_account_ids() if str(x).strip()
             }
+        placing: set[str] = set()
+        with contextlib.suppress(Exception):
+            from xoso66_auto_bet import placing_bet_account_ids
+
+            placing = {
+                str(x).strip() for x in placing_bet_account_ids() if str(x).strip()
+            }
         now = time.time()
-        stale_sec = 60.0
+        unconnected_n = sum(
+            1
+            for a, t in self.tasks.items()
+            if a != self.listener_id
+            and a not in connected
+            and t is not None
+            and not t.done()
+        )
+        stale_sec = ws_stale_unconnected_sec(cfg, unconnected_n=unconnected_n)
+        stuck_sec = ws_stuck_unconnected_sec(cfg)
+        # Hàng chờ dài: cho thêm thời gian; kẹt thật vẫn cắt ở stuck_sec.
+        force_sec = min(float(stale_sec), max(stuck_sec, 30.0))
+        respawn_cooldown = 20.0
         stale: list[str] = []
         for aid, task in list(self.tasks.items()):
             if aid == self.listener_id:
                 continue
-            if aid in bet_pending:
+            if aid in bet_pending or aid in placing:
                 continue
             if aid in connected:
+                self._unconnected_since.pop(aid, None)
                 continue
             if task is None or task.done():
                 continue
-            started = float(self._task_started_at.get(aid) or 0.0)
-            age = (now - started) if started > 0 else stale_sec + 1.0
+            since = float(
+                self._unconnected_since.get(aid)
+                or self._task_started_at.get(aid)
+                or 0.0
+            )
+            age = (now - since) if since > 0 else stale_sec + 1.0
             proxy_dead = False
             with contextlib.suppress(Exception):
                 proxy_dead = bool(is_proxy_dead(aid))
-            if proxy_dead or age >= stale_sec:
+            if proxy_dead:
+                stale.append(aid)
+                continue
+            # Đang pending mở trong cửa sổ ngắn → để handshake chạy.
+            if aid in pending_slots and age < stuck_sec:
+                continue
+            last_r = float(self._last_respawn_at.get(aid) or 0.0)
+            if last_r > 0 and (now - last_r) < respawn_cooldown:
+                continue
+            if age >= force_sec:
                 stale.append(aid)
         if not stale:
             return
@@ -1222,72 +1356,69 @@ class WsPoolSupervisor:
                 clear_pending_ws_slot(aid)
         if alive:
             print(
-                f"[WS-POOL] Respawn chưa connect >{stale_sec:.0f}s: {names}{extra}",
+                f"[WS-POOL] Chưa connect >{force_sec:.0f}s — hủy task mở lại: "
+                f"{names}{extra}",
                 flush=True,
             )
-            with _token_maintain_lock:
-                lead = (
-                    _token_maintain_ids[0]
-                    if _token_maintain_ids
-                    else (alive[0] if alive else "")
-                )
+            lead = next(iter(self.tasks), alive[0])
             for aid in alive:
+                self._last_respawn_at[aid] = now
                 await self._stop_account(aid)
-                clear_pending_ws_slot(aid)
-            spawned = await self._spawn_staggered(
-                alive, lead=lead or alive[0], refresh=False, cfg=cfg
+            await self._spawn_staggered(
+                alive, lead=lead or alive[0], refresh=True, cfg=cfg
             )
-            if spawned:
-                mark_pending_ws_slots(spawned)
-                self._sync_token_maintain_ids()
-            with contextlib.suppress(Exception):
-                schedule_fund_deposit_for_ws_shortage(
-                    cfg, alive, label="ws-stale-unconnected"
-                )
+            min_bal = min_balance_for_ws(cfg)
+            low = [
+                a
+                for a in alive
+                if account_balance_vnd(get_account(a) or {}) < min_bal
+            ]
+            if low:
+                with contextlib.suppress(Exception):
+                    schedule_fund_deposit_for_ws_shortage(
+                        cfg, low, label="ws-stale-unconnected"
+                    )
 
     async def shutdown(self) -> None:
         for aid in list(self.tasks.keys()):
             await self._stop_account(aid)
         await self._stop_listener()
-        if self._token_thread and self._token_thread.is_alive():
-            self._token_thread.join(timeout=3)
 
 
-def schedule_ws_connect_after_deposit(account_ids: list[str]) -> None:
-    """Sau nạp Hoàn tất — thêm nick vào pool WS (xử lý trên loop asyncio)."""
+def schedule_ws_connect_after_deposit(account_ids: list[str]) -> list[str]:
+    """Sau nạp Hoàn tất — xếp mở WS nếu chưa ∈ A (đã connect).
+
+    Task/pending không được coi là đã mở: close hoãn có thể để task sống
+    nhưng đã (hoặc chưa) ∈ A — nick Đang Chơi sẽ không được gán cược.
+    """
     from xoso66_shutdown import stopping
 
     if stopping():
-        return
-    from xoso66_ws_pool import (
-        get_connected_ws_accounts,
-        get_pending_ws_slot_ids,
-        get_ws_task_accounts,
-    )
+        return []
+    from xoso66_ws_pool import get_connected_ws_accounts
 
     ids = [str(x).strip() for x in account_ids if str(x).strip()]
     if not ids:
-        return
-    occupied = (
-        set(get_ws_task_accounts())
-        | get_pending_ws_slot_ids()
-        | {str(x).strip() for x in get_connected_ws_accounts() if str(x).strip()}
-    )
-    skipped = [x for x in ids if x in occupied]
-    ids = [x for x in ids if x not in occupied]
-    if skipped:
+        return []
+    connected = {
+        str(x).strip() for x in get_connected_ws_accounts() if str(x).strip()
+    }
+    already = [x for x in ids if x in connected]
+    ids = [x for x in ids if x not in connected]
+    if already:
         from xoso66_accounts_db import usernames_for_log
 
         print(
-            f"[WS-POOL] Bỏ lên lịch mở WS (đã task/pending/connect): "
-            f"{usernames_for_log(skipped)}",
+            f"[WS-POOL] Nạp xong — WS đã connect, không mở lại: "
+            f"{usernames_for_log(already)}",
             flush=True,
         )
     if not ids:
-        return
+        return []
     with _ws_after_deposit_lock:
         _ws_after_deposit_ids.update(ids)
     _ws_after_deposit_check.set()
+    return ids
 
 
 def schedule_ws_pool_round_check(
@@ -1383,7 +1514,7 @@ async def run_managed_ws_workers(
             if t is not None and not t.done()
         ]
     )
-    sup._ensure_token_thread()
+    recover_backoff_s = 2.0
     cfg = load_config()
 
     await sup.ensure_listener(cfg)
@@ -1438,6 +1569,10 @@ async def run_managed_ws_workers(
 
     async def _ws_health_log() -> None:
         from xoso66_accounts_db import username_for_log
+        from xoso66_minigame_ws import (
+            format_ws_ingress_health,
+            format_ws_open_info_health,
+        )
         from xoso66_ws_pool import get_connected_ws_accounts
 
         while not stopping():
@@ -1447,14 +1582,15 @@ async def run_managed_ws_workers(
             n_conn = len(get_connected_ws_accounts())
             n_task = len(sup.tasks)
             listener = sup.listener_id
-            listener_ok = (
-                sup.listener_task is not None and not sup.listener_task.done()
-            )
+            listener_ok = sup.listener_runner.is_alive()
             listener_user = username_for_log(listener) if listener else "—"
             listener_state = "OK" if listener_ok else "RỚT"
+            open_info_s = format_ws_open_info_health()
+            ingress_s = format_ws_ingress_health(listener or "")
             print(
                 f"[WS-HEALTH] connect={n_conn}/{n_task} "
-                f"listener={listener_user} ({listener_state})",
+                f"listener={listener_user} ({listener_state}) "
+                f"{open_info_s} {ingress_s}",
                 flush=True,
             )
 
@@ -1479,9 +1615,9 @@ async def run_managed_ws_workers(
         daemon=True,
     ).start()
 
-    async def _supervise_rounds() -> None:
-        """Vòng wait/resync — lỗi socket giữ worker; loop chết → raise soft-restart."""
-        consec_other = 0
+    try:
+        # Giống LC79: nick tự reconnect trong listen_*; 10038 selector → soft-restart
+        # (loop mới). KHÔNG fleet-stop + respawn trên cùng loop (gây GeneratorExit).
         while not stopping():
             try:
                 await _managed_ws_loop_once(
@@ -1490,94 +1626,30 @@ async def run_managed_ws_workers(
                     resync_on=resync_on,
                     interval=interval,
                 )
-                consec_other = 0
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                if stopping():
-                    return
-                if _is_event_loop_dead_error(e):
-                    print(
-                        f"[WS-POOL] Event loop chết ({e}) — "
-                        f"thoát để soft-restart (không spin)",
-                        flush=True,
-                    )
-                    raise
-                if _is_ws_shutdown_error(e):
-                    return
-                transient = _is_transient_ws_loop_error(e)
-                if transient:
-                    consec_other = 0
-                    print(
-                        f"[WS-POOL] Socket tạm ({e}) — giữ worker, "
-                        f"không ngắt hàng loạt / không restart loop",
-                        flush=True,
-                    )
-                else:
-                    consec_other += 1
-                    print(
-                        f"[WS-POOL] Lỗi vòng WS (giữ worker): {e}",
-                        flush=True,
-                    )
-                    if consec_other >= 5:
-                        print(
-                            f"[WS-POOL] Lỗi lặp {consec_other} lần — "
-                            f"soft-restart worker",
-                            flush=True,
-                        )
-                        raise
-                with contextlib.suppress(Exception):
-                    await sup.restart_dead_tasks()
-                with contextlib.suppress(Exception):
-                    await sup.restart_listener_if_dead(cfg)
-                # sleep thất bại (loop chết) → không spin: raise
-                try:
-                    await asyncio.sleep(1.0 if transient else 2.0)
-                except Exception as sleep_exc:
-                    if stopping():
-                        return
-                    print(
-                        f"[WS-POOL] sleep lỗi sau vòng WS ({sleep_exc}) — "
-                        f"soft-restart",
-                        flush=True,
-                    )
-                    raise
-
-    try:
-        # Lớp ngoài: 10038 nuốt giữ pool; loop chết → raise soft-restart.
-        while not stopping():
-            try:
-                await _supervise_rounds()
-                break
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 if stopping() or _is_ws_shutdown_error(e):
                     break
-                if _is_event_loop_dead_error(e):
+                if _is_ws_teardown_noise(e):
+                    continue
+                if _is_event_loop_dead_error(e) or _is_selector_10038(e):
                     print(
-                        f"[WS-POOL] Event loop chết (lớp ngoài): {e} — "
-                        f"soft-restart",
+                        f"[WS-POOL] Event loop hỏng ({e}) — soft-restart",
                         flush=True,
                     )
                     raise
                 if _is_transient_ws_loop_error(e):
+                    # Socket tạm 1 nick đã nuốt trong listen_* — vòng quản lý chỉ sleep.
                     print(
-                        f"[WS-POOL] Socket thoát lớp ngoài ({e}) — "
-                        f"nuốt, giữ pool (không soft-restart / không đóng WS)",
+                        f"[WS-POOL] Socket tạm (giữ pool, không fleet-recover): {e}",
                         flush=True,
                     )
-                    with contextlib.suppress(Exception):
-                        await sup.restart_dead_tasks()
-                    try:
-                        await asyncio.sleep(1.0)
-                    except Exception as sleep_exc:
-                        if _is_event_loop_dead_error(sleep_exc):
-                            raise
-                        raise
+                    await asyncio.sleep(recover_backoff_s)
+                    recover_backoff_s = min(recover_backoff_s * 1.5, 30.0)
                     continue
                 print(
-                    f"[WS-POOL] Lỗi lớp ngoài — soft-restart: {e}",
+                    f"[WS-POOL] Lỗi vòng WS — soft-restart: {e}",
                     flush=True,
                 )
                 raise
@@ -1590,7 +1662,6 @@ async def run_managed_ws_workers(
             progress_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await progress_task
-        # Shutdown không được ném 10038 ra ngoài → soft-restart cả pool.
         with contextlib.suppress(Exception):
             await _graceful_ws_supervisor_shutdown(sup, timeout=12.0)
         pending_tasks = [
@@ -1616,7 +1687,7 @@ async def _managed_ws_loop_once(
     resync_on: bool,
     interval: float,
 ) -> None:
-    """Một vòng wait/resync — tách ra để bắt WinError 10038 không thoát worker."""
+    """Một vòng sleep/event + resync — không wait fleet (tránh 10038 selector)."""
     from xoso66_shutdown import stopping
 
     await sup.ensure_listener(cfg)
@@ -1627,164 +1698,133 @@ async def _managed_ws_loop_once(
     ):
         await sup.resync_from_config(refresh_new=False)
 
-    wait_sec = interval if resync_on else 30
-    listener_tasks: list[asyncio.Task[None]] = []
-    if sup.listener_task is not None:
-        listener_tasks = [sup.listener_task]
-    ws_tasks = list(sup.tasks.values())
-    try:
-        sleep_task = asyncio.create_task(asyncio.sleep(wait_sec))
-    except RuntimeError as e:
-        if _is_event_loop_dead_error(e):
+    wait_sec = float(interval if resync_on else 30)
+    elapsed = 0.0
+    slice_s = 1.0
+    sleep_done = False
+    while not stopping() and elapsed < wait_sec:
+        if (
+            _ws_pool_round_check.is_set()
+            or _ws_pool_resync_check.is_set()
+            or _ws_after_deposit_check.is_set()
+        ):
+            break
+        try:
+            await asyncio.sleep(slice_s)
+        except Exception as e:
+            if _is_event_loop_dead_error(e) or _is_transient_ws_loop_error(e):
+                raise
             raise
-        raise RuntimeError("no running event loop") from e
-    pending = set(ws_tasks + listener_tasks + [sleep_task])
-    done: set[asyncio.Task] = set()
-    try:
-        while pending and not stopping():
-            finished, pending = await _safe_asyncio_wait(
-                pending,
-                timeout=1.0,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            done |= finished
-            if (
-                _ws_pool_round_check.is_set()
-                or _ws_pool_resync_check.is_set()
-                or _ws_after_deposit_check.is_set()
-            ):
-                break
-            if finished:
-                for task in finished:
-                    if task.cancelled():
-                        continue
-                    try:
-                        exc = task.exception()
-                    except asyncio.CancelledError:
-                        continue
-                    except Exception as e:
-                        if _is_transient_ws_loop_error(e):
-                            continue
-                        raise
-                    if exc and not isinstance(exc, asyncio.CancelledError):
-                        if _is_transient_ws_loop_error(exc):
-                            print(
-                                f"[WS-POOL] Task {task.get_name() or '?'} "
-                                f"socket: {exc}",
-                                flush=True,
-                            )
-                        elif task is not sup.listener_task:
-                            print(
-                                f"[WS-POOL] Task {task.get_name() or '?'} "
-                                f"lỗi: {exc}",
-                                flush=True,
-                            )
-        if stopping():
-            for t in pending:
-                t.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
-            _ws_pool_round_check.clear()
-            _ws_pool_resync_check.clear()
-            _ws_after_deposit_check.clear()
-            return
-        if _ws_after_deposit_check.is_set() and not stopping():
-            _ws_after_deposit_check.clear()
-            try:
-                await sup.resync_from_config(
-                    refresh_new=True, round_start=False
-                )
-            except Exception as e:
-                if _is_transient_ws_loop_error(e):
-                    print(
-                        f"[WS-POOL] Resync sau nạp — socket tạm (bỏ qua, giữ pool): {e}",
-                        flush=True,
-                    )
-                else:
-                    print(f"[WS-POOL] Resync sau nạp lỗi: {e}", flush=True)
-        ran_phiên_mới = False
-        if _ws_pool_round_check.is_set() and not stopping():
-            _ws_pool_round_check.clear()
-            global _ws_round_resync_done, _ws_round_resync_pending
-            pending_key: tuple[int, str] | None
-            with _ws_round_resync_lock:
-                pending_key = _ws_round_resync_pending
-            try:
-                await sup.resync_from_config(
-                    refresh_new=False, round_start=True
-                )
-                ran_phiên_mới = True
-                if pending_key is not None:
-                    with _ws_round_resync_lock:
-                        _ws_round_resync_done = pending_key
-                        if _ws_round_resync_pending == pending_key:
-                            _ws_round_resync_pending = None
-            except Exception as e:
-                if _is_transient_ws_loop_error(e):
-                    print(
-                        f"[WS-POOL] Resync đầu phiên — socket tạm (bỏ qua, giữ pool): {e}",
-                        flush=True,
-                    )
-                else:
-                    print(f"[WS-POOL] Resync đầu phiên lỗi: {e}", flush=True)
-        if _ws_pool_resync_check.is_set() and not stopping():
-            _ws_pool_resync_check.clear()
-            # Vừa chạy Phiên mới trong cùng tick → bỏ Resync trùng.
-            if not ran_phiên_mới:
-                try:
-                    await sup.resync_from_config(
-                        refresh_new=False, round_start=False
-                    )
-                except Exception as e:
-                    if _is_transient_ws_loop_error(e):
-                        print(
-                            f"[WS-POOL] Resync (evict/stale) — socket tạm "
-                            f"(bỏ qua, giữ pool): {e}",
-                            flush=True,
-                        )
-                    else:
-                        print(
-                            f"[WS-POOL] Resync (evict/stale) lỗi: {e}",
-                            flush=True,
-                        )
-        elif sleep_task in done and resync_on and not stopping():
-            try:
-                await sup.resync_from_config(refresh_new=False)
-            except Exception as e:
-                if _is_transient_ws_loop_error(e):
-                    print(
-                        f"[WS-POOL] Resync định kỳ — socket tạm (bỏ qua, giữ pool): {e}",
-                        flush=True,
-                    )
-                else:
-                    print(f"[WS-POOL] Resync định kỳ lỗi: {e}", flush=True)
+        elapsed += slice_s
+    else:
         if not stopping():
+            sleep_done = elapsed >= wait_sec
+
+    if stopping():
+        _ws_pool_round_check.clear()
+        _ws_pool_resync_check.clear()
+        _ws_after_deposit_check.clear()
+        return
+
+    # Phiên mới TRƯỚC (việc 1–5). Nạp xong chỉ mở nick đó, không Resync cả pool.
+    ran_phiên_mới = False
+    if _ws_pool_round_check.is_set() and not stopping():
+        _ws_pool_round_check.clear()
+        global _ws_round_resync_done, _ws_round_resync_pending
+        pending_key: tuple[int, str] | None
+        with _ws_round_resync_lock:
+            pending_key = _ws_round_resync_pending
+        issue_s = ""
+        if pending_key is not None:
+            issue_s = f" game={pending_key[0]} issue={pending_key[1]}"
+        print(
+            f"[WS-POOL] Phiên mới — việc 1-5 status/nạp + đóng/mở WS{issue_s}",
+            flush=True,
+        )
+        try:
+            await sup.resync_from_config(
+                refresh_new=False, round_start=True
+            )
+            ran_phiên_mới = True
+            if pending_key is not None:
+                with _ws_round_resync_lock:
+                    _ws_round_resync_done = pending_key
+                    if _ws_round_resync_pending == pending_key:
+                        _ws_round_resync_pending = None
+        except Exception as e:
+            if _is_transient_ws_loop_error(e):
+                print(
+                    f"[WS-POOL] Resync đầu phiên — socket tạm (bỏ qua, giữ pool): {e}",
+                    flush=True,
+                )
+            else:
+                print(f"[WS-POOL] Resync đầu phiên lỗi: {e}", flush=True)
+
+    if _ws_after_deposit_check.is_set() and not stopping():
+        _ws_after_deposit_check.clear()
+        try:
+            await sup._connect_after_deposit(cfg)
+        except Exception as e:
+            if _is_transient_ws_loop_error(e):
+                print(
+                    f"[WS-POOL] Mở WS sau nạp — socket tạm "
+                    f"(bỏ qua, giữ pool): {e}",
+                    flush=True,
+                )
+            else:
+                print(f"[WS-POOL] Mở WS sau nạp lỗi: {e}", flush=True)
+
+    if _ws_pool_resync_check.is_set() and not stopping():
+        _ws_pool_resync_check.clear()
+        if not ran_phiên_mới:
             try:
-                await sup.restart_dead_tasks()
+                await sup.resync_from_config(
+                    refresh_new=False, round_start=False
+                )
             except Exception as e:
                 if _is_transient_ws_loop_error(e):
                     print(
-                        f"[WS-POOL] restart_dead — socket tạm (giữ pool): {e}",
+                        f"[WS-POOL] Resync (evict/stale) — socket tạm "
+                        f"(bỏ qua, giữ pool): {e}",
                         flush=True,
                     )
                 else:
-                    print(f"[WS-POOL] restart_dead lỗi: {e}", flush=True)
-            try:
-                await sup.prune_stale_unconnected_tasks(cfg)
-            except Exception as e:
-                if not _is_transient_ws_loop_error(e):
-                    print(f"[WS-POOL] prune_stale lỗi: {e}", flush=True)
-            try:
-                await sup.restart_listener_if_dead(cfg)
-            except Exception as e:
-                if not _is_transient_ws_loop_error(e):
-                    print(f"[WS-POOL] restart_listener lỗi: {e}", flush=True)
-    finally:
-        if sleep_task in pending or sleep_task in done or not sleep_task.done():
-            sleep_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await sleep_task
+                    print(
+                        f"[WS-POOL] Resync (evict/stale) lỗi: {e}",
+                        flush=True,
+                    )
+    elif sleep_done and resync_on and not stopping():
+        try:
+            await sup.resync_from_config(refresh_new=False)
+        except Exception as e:
+            if _is_transient_ws_loop_error(e):
+                print(
+                    f"[WS-POOL] Resync định kỳ — socket tạm (bỏ qua, giữ pool): {e}",
+                    flush=True,
+                )
+            else:
+                print(f"[WS-POOL] Resync định kỳ lỗi: {e}", flush=True)
+    if not stopping():
+        try:
+            await sup.restart_dead_tasks()
+        except Exception as e:
+            if _is_transient_ws_loop_error(e):
+                print(
+                    f"[WS-POOL] restart_dead — socket tạm (giữ pool): {e}",
+                    flush=True,
+                )
+            else:
+                print(f"[WS-POOL] restart_dead lỗi: {e}", flush=True)
+        try:
+            await sup.prune_stale_unconnected_tasks(cfg)
+        except Exception as e:
+            if not _is_transient_ws_loop_error(e):
+                print(f"[WS-POOL] prune_stale lỗi: {e}", flush=True)
+        try:
+            await sup.restart_listener_if_dead(cfg)
+        except Exception as e:
+            if not _is_transient_ws_loop_error(e):
+                print(f"[WS-POOL] restart_listener lỗi: {e}", flush=True)
 
 
 async def _graceful_ws_supervisor_shutdown(
@@ -1830,84 +1870,32 @@ def _close_event_loop(loop: asyncio.AbstractEventLoop) -> None:
     _active_ws_loop = None
 
 
-async def run_dual_ws_workers(
-    account_ids: list[str] | None = None,
-    *,
-    ws_count: int = WS_WORKER_COUNT,
-    refresh_before_connect: bool = True,
-) -> None:
-    """Tương thích cũ — không resync định kỳ."""
-    from xoso66_shutdown import stopping
-
-    if account_ids:
-        if len(account_ids) < ws_count:
-            raise RuntimeError(f"Cần {ws_count} account_id, nhận {len(account_ids)}")
-        picked = account_ids[:ws_count]
-    else:
-        from xoso66_config_util import load_config
-
-        picked = select_ws_account_ids(load_config())[:ws_count]
-
-    from xoso66_config_util import load_config
-
-    sup = WsPoolSupervisor()
-    sup._ensure_token_thread()
-    cfg = load_config()
-    await sup.ensure_listener(cfg)
-    await sup.apply_pool(picked, cfg=cfg, refresh_new=refresh_before_connect)
-    try:
-        gather_tasks = list(sup.tasks.values())
-        if sup.listener_task is not None:
-            gather_tasks.append(sup.listener_task)
-        await asyncio.gather(*gather_tasks)
-    except asyncio.CancelledError:
-        pass
-    finally:
-        await sup.shutdown()
-        if stopping():
-            print("[WS-WORKER] Đã dừng (Ctrl+C).", flush=True)
-
-
 def _run_ws_worker_once(
     account_ids: list[str] | None = None,
     *,
     ws_count: int = WS_WORKER_COUNT,
     refresh_before_connect: bool = True,
 ) -> None:
-    from xoso66_config_util import load_config
     from xoso66_shutdown import stopping
-    from xoso66_ws_pool import ws_pool_resync_enabled
 
     if stopping():
         return
 
-    cfg = load_config()
     ids = account_ids
+    _ = ws_count  # legacy dual path đã bỏ — luôn managed
 
     async def _main() -> None:
-        if ws_pool_resync_enabled(cfg):
-            await run_managed_ws_workers(
-                ids,
-                refresh_before_connect=refresh_before_connect,
-            )
-        else:
-            await run_dual_ws_workers(
-                ids,
-                ws_count=ws_count or ws_account_count(cfg),
-                refresh_before_connect=refresh_before_connect,
-            )
+        await run_managed_ws_workers(
+            ids,
+            refresh_before_connect=refresh_before_connect,
+        )
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    _install_loop_exception_handler(loop)
+    loop: asyncio.AbstractEventLoop | None = None
     sup_ref: Any = None
     crash_snap: list[str] = []
-    try:
-        loop.run_until_complete(_main())
-    except BaseException as e:
-        if not isinstance(e, Exception):
-            raise
-        # Snapshot TRƯỚC khi finally đóng task — tránh ghi đè list rỗng.
+
+    def _snap_from_live() -> None:
+        nonlocal crash_snap, sup_ref
         with contextlib.suppress(Exception):
             live_sup = _active_ws_supervisor
             if live_sup is not None:
@@ -1918,14 +1906,29 @@ def _run_ws_worker_once(
                 ]
                 if crash_snap:
                     remember_ws_pool_snapshot(crash_snap)
-        if _is_transient_ws_loop_error(e):
-            print(
-                f"[WS-WORKER] Loop socket thoát (_main): {e} — "
-                f"soft-reconnect list nick (hiếm; lỗi đã nuốt trong vòng quản lý)",
-                flush=True,
-            )
-        sup_ref = _active_ws_supervisor
-        raise
+                sup_ref = live_sup
+
+    try:
+        # Một lần chạy = một event loop. Mọi quyết định restart nằm duy nhất
+        # ở run_ws_worker_blocking (tránh hai vòng soft-restart chồng nhau).
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _install_loop_exception_handler(loop)
+        from xoso66_ws_selector_trace import WsSelectorTrace
+
+        _sel_trace = WsSelectorTrace()
+        _sel_trace.install(loop)
+        try:
+            loop.run_until_complete(_main())
+        except BaseException as e:
+            if isinstance(e, Exception):
+                _snap_from_live()
+            if _is_selector_10038(e) or _is_transient_ws_loop_error(e):
+                print(_sel_trace.dump(e), flush=True)
+            raise
+        finally:
+            with contextlib.suppress(Exception):
+                _sel_trace.restore()
     finally:
         if crash_snap:
             remember_ws_pool_snapshot(crash_snap)
@@ -1933,26 +1936,27 @@ def _run_ws_worker_once(
             with contextlib.suppress(Exception):
                 live_sup = sup_ref or _active_ws_supervisor
                 if live_sup is not None:
-                    ids = [
+                    ids_live = [
                         str(a).strip()
                         for a in (getattr(live_sup, "tasks", {}) or {})
                         if str(a).strip()
                     ]
-                    if ids:
-                        remember_ws_pool_snapshot(ids)
-        sup_ref = sup_ref or _active_ws_supervisor
-        if sup_ref is not None and not loop.is_closed():
-            shut_coro = None
-            try:
-                shut_coro = _graceful_ws_supervisor_shutdown(sup_ref)
-                loop.run_until_complete(shut_coro)
+                    if ids_live:
+                        remember_ws_pool_snapshot(ids_live)
+        if loop is not None and not loop.is_closed():
+            live = sup_ref or _active_ws_supervisor
+            if live is not None:
                 shut_coro = None
-            except Exception:
-                pass
-            finally:
-                if shut_coro is not None:
-                    shut_coro.close()
-        _close_event_loop(loop)
+                try:
+                    shut_coro = _graceful_ws_supervisor_shutdown(live)
+                    loop.run_until_complete(shut_coro)
+                    shut_coro = None
+                except Exception:
+                    pass
+                finally:
+                    if shut_coro is not None:
+                        shut_coro.close()
+            _close_event_loop(loop)
 
 
 def run_ws_worker_blocking(
@@ -1963,7 +1967,7 @@ def run_ws_worker_blocking(
 ) -> None:
     """
     Chạy WS pool — tự restart khi crash (24/7).
-    Lỗi socket tạm (WinError 10038…): không escalate backoff; ưu tiên reconnect pool cũ.
+    Lỗi socket tạm (WinError 10038…): đóng loop hỏng + backoff 2→30s rồi loop mới.
     Thoát sạch khi request_stop() / Ctrl+C.
     """
     from xoso66_config_util import load_config
@@ -1998,13 +2002,13 @@ def run_ws_worker_blocking(
                 resume_ids = snap
             # Snapshot quá mỏng sau crash → lấy lại list Đang Chơi (đúng ý: giữ list, chỉ mở WS).
             with contextlib.suppress(Exception):
-                from xoso66_ws_pool import dang_choi_account_ids, ws_account_count
+                from xoso66_ws_pool import dang_choi_account_ids
 
                 dang = [
                     a
                     for a in dang_choi_account_ids(cfg)
                     if str(a).strip()
-                ][: ws_account_count(cfg)]
+                ]
                 if dang and len(resume_ids) < max(3, len(dang) // 2):
                     print(
                         f"[WS-WORKER] Soft restart — snapshot {len(resume_ids)} quá mỏng, "
@@ -2014,6 +2018,17 @@ def run_ws_worker_blocking(
                     resume_ids = dang
                     last_pool_ids = dang
                     remember_ws_pool_snapshot(dang)
+            # Luôn lọc Đủ ngày khỏi snapshot — tránh spawn rồi ép Đang Chơi.
+            with contextlib.suppress(Exception):
+                from xoso66_ws_pool import filter_ids_for_ws_spawn
+
+                before_n = len(resume_ids)
+                resume_ids = filter_ids_for_ws_spawn(
+                    resume_ids, cfg, keep_pending_bet=True
+                )
+                if len(resume_ids) != before_n:
+                    remember_ws_pool_snapshot(resume_ids)
+                    last_pool_ids = list(resume_ids)
             reset_ws_pool_runtime_state()
             cancel_ws_pool_pending_work()
         try:
@@ -2038,12 +2053,25 @@ def run_ws_worker_blocking(
                 if not sleep_interruptible(2.0):
                     break
                 continue
-            if _is_transient_ws_loop_error(e) or _is_event_loop_dead_error(e):
+            # Socket tạm lọt ra ngoài _run_ws_worker_once: backoff ngắn, không spin.
+            if _is_transient_ws_loop_error(e):
+                n_keep = len(get_last_ws_pool_snapshot() or resume_ids)
+                wait = min(5.0, max(2.0, initial_backoff))
+                print(
+                    f"[WS-WORKER] Socket tạm ({e}) — mở lại sau {wait:.0f}s "
+                    f"(giữ ~{n_keep} nick, lần {attempt})",
+                    flush=True,
+                )
+                if not sleep_interruptible(wait):
+                    break
+                backoff = initial_backoff
+                next_refresh = False
+                continue
+            if _is_event_loop_dead_error(e):
                 wait = min(5.0, max(2.0, initial_backoff))
                 n_keep = len(get_last_ws_pool_snapshot() or resume_ids)
-                why = "loop chết" if _is_event_loop_dead_error(e) else "socket"
                 print(
-                    f"[WS-WORKER] Crash ({why}): {e} — soft restart "
+                    f"[WS-WORKER] Crash (loop chết): {e} — soft restart "
                     f"sau {wait:.0f}s (giữ ~{n_keep} nick, không ép refresh, lần {attempt})",
                     flush=True,
                 )

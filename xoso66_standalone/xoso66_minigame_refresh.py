@@ -21,7 +21,6 @@ import json
 import os
 import re
 import sys
-import threading
 import time
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -49,37 +48,6 @@ AUTH_FAIL_MSG = re.compile(
     r"token|phiên|phien|login|đăng nhập|dang nhap|hết hạn|het han|unauthorized",
     re.I,
 )
-
-_urgent_token_refresh_lock = threading.Lock()
-_urgent_token_refresh: dict[str, str] = {}
-_urgent_token_refresh_event = threading.Event()
-
-
-def request_urgent_token_refresh(
-    account_id: str,
-    *,
-    game_key: str = "taixiu_dai_loc",
-) -> None:
-    """Đánh thức luồng TOKEN maintain — refresh ngay (không chờ 30 phút)."""
-    aid = str(account_id or "").strip()
-    if not aid:
-        return
-    with _urgent_token_refresh_lock:
-        _urgent_token_refresh[aid] = str(game_key or "taixiu_dai_loc")
-    _urgent_token_refresh_event.set()
-
-
-def pop_urgent_token_refresh_ids() -> dict[str, str]:
-    """account_id → game_key; rỗng nếu không có yêu cầu urgent."""
-    if not _urgent_token_refresh_event.is_set():
-        return {}
-    with _urgent_token_refresh_lock:
-        out = dict(_urgent_token_refresh)
-        _urgent_token_refresh.clear()
-        if not _urgent_token_refresh:
-            _urgent_token_refresh_event.clear()
-    return out
-
 
 _SESSION_INVALID_MSG_NEEDLES = (
     "thông tin phiên không hợp lệ",
@@ -494,8 +462,6 @@ def ensure_user_token_for_bet(
             or rep.get("msg")
             or "refresh xong vẫn ping fail"
         )
-        if account_id:
-            request_urgent_token_refresh(account_id, game_key=game_key)
         ping = ping_user_token(
             session, game_id=gid, gamename=gname, sub_game_code=sub_code
         )
@@ -504,11 +470,7 @@ def ensure_user_token_for_bet(
             ping=ping,
             session=session,
             extra_err=err,
-            queued_urgent=True,
         )
-
-    if account_id:
-        request_urgent_token_refresh(account_id, game_key=game_key)
 
     ping = ping_user_token(
         session, game_id=gid, gamename=gname, sub_game_code=sub_code
@@ -517,7 +479,6 @@ def ensure_user_token_for_bet(
         account_id,
         ping=ping,
         session=session,
-        queued_urgent=bool(account_id),
     )
 
 
@@ -612,7 +573,6 @@ def _format_user_token_fail_message(
     ping: dict[str, Any],
     session: dict,
     extra_err: str = "",
-    queued_urgent: bool = False,
 ) -> str:
     st = user_token_status(session, do_ping=False)
     age_db = st.get("age_db_sec")
@@ -628,12 +588,9 @@ def _format_user_token_fail_message(
         parts.append(f"age_token={age_tok:.0f}s")
     if extra_err:
         parts.append(extra_err)
-    if queued_urgent:
-        parts.append("đã lên lịch refresh user-token nền (TOKEN maintain)")
-    else:
-        parts.append(
-            f"Refresh: python xoso66_minigame_refresh.py -a {account_id} --force"
-        )
+    parts.append(
+        f"Refresh: python xoso66_minigame_refresh.py -a {account_id} --force"
+    )
     return ". ".join(parts)
 
 
@@ -712,7 +669,7 @@ def refresh_minigame_cf(
                 {
                     "method": "playwright_minigame",
                     "ok": False,
-                    "skipped": "Windows+asyncio — dùng curl_cffi hoặc TOKEN maintain nền",
+                    "skipped": "Windows+asyncio — dùng curl_cffi; loop WS sẽ retry khi cần",
                 }
             )
         elif not ok and not allow_playwright:

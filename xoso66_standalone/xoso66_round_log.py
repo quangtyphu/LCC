@@ -10,6 +10,29 @@ from typing import Any
 from xoso66_bet_assign import BetSlot
 
 _round_console_lock = threading.RLock()
+_start_log_keys: set[str] = set()
+_start_log_lock = threading.Lock()
+
+
+def _claim_round_start_line(game_label: str, issue: str, *, game_id: int | None = None) -> bool:
+    """True nếu chưa in BẮT ĐẦU PHIÊN cho issue này."""
+    issue_s = str(issue or "").strip()
+    if not issue_s:
+        return True
+    key = (
+        f"{int(game_id)}:{issue_s}"
+        if game_id is not None
+        else f"{game_label}:{issue_s}"
+    )
+    with _start_log_lock:
+        if key in _start_log_keys:
+            return False
+        _start_log_keys.add(key)
+        if len(_start_log_keys) > 200:
+            old = list(_start_log_keys)[:100]
+            for item in old:
+                _start_log_keys.discard(item)
+        return True
 
 
 def assign_bet_console_enabled() -> bool:
@@ -54,8 +77,11 @@ def log_round_start_line(
     jackpot_vnd: float = 0,
     issue: str = "",
     min_jackpot_vnd: float | None = None,
+    game_id: int | None = None,
 ) -> None:
     """Cùng dòng WS: BẮT ĐẦU PHIÊN — gọi sau round_start_log_delay_sec."""
+    if not _claim_round_start_line(game_label, issue, game_id=game_id):
+        return
     jp = _fmt_vnd(jackpot_vnd) if jackpot_vnd else "—"
     iss = f" | issue={issue}" if issue else ""
     below = ""

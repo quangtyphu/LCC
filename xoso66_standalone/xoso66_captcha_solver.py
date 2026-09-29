@@ -376,6 +376,28 @@ REGISTER_DISPATCH_JS = """async (body) => {
     }
 }"""
 
+LOGIN_DISPATCH_JS = """async (body) => {
+    const app = document.querySelector('#app');
+    const vm = app && app.__vue__;
+    if (!vm || !vm.$store) return { error: 'no_vue_store' };
+    try {
+        const r = await vm.$store.dispatch('user/login', body);
+        return { ok: true, response: r };
+    } catch (e) {
+        let detail = '';
+        try {
+            detail = typeof e === 'object' && e !== null ? JSON.stringify(e) : String(e);
+        } catch (err) {
+            detail = String(e);
+        }
+        return {
+            ok: false,
+            error: detail,
+            message: e && e.message ? String(e.message) : detail
+        };
+    }
+}"""
+
 
 def fetch_captcha_json_via_page(page) -> dict[str, Any]:
     raw = page.evaluate(FETCH_CAPTCHA_JS)

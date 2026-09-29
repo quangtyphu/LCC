@@ -70,6 +70,9 @@ def _normalize_urls(urls: list[str] | None, fallback: str = "") -> list[str]:
         u = (raw or "").strip()
         if not u or u.startswith("#"):
             continue
+        if u == "about:blank":
+            out.append(u)
+            continue
         if not u.startswith(("http://", "https://")):
             u = "https://" + u
         out.append(u)

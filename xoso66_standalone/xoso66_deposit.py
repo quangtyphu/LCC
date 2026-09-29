@@ -1440,7 +1440,8 @@ def fetch_transfer_info_from_pay_url(
     qr_uri, qr_url = _parse_qr_value(data.get("qrCode"))
     ti = {
         "amount": data.get("amount") or amount,
-        "bank_name": data.get("bankName") or data.get("bankCode"),
+        # TimePay đôi khi trả bankName = STK/chủ TK/SĐT; bankCode mới ổn định (ACB, VCB…).
+        "bank_name": data.get("bankCode") or data.get("bankName"),
         "account_no": data.get("bankAccount") or data.get("accountNo"),
         "account_name": data.get("payName") or data.get("accountName"),
         "transfer_content": data.get("descCode") or data.get("remark"),
@@ -1504,7 +1505,7 @@ def create_deposit_order(
     try:
         from xoso66_accounts_db import account_to_session_dict, get_account
         from xoso66_proxy import ensure_proxy
-        from xoso66_session import ensure_session, persist_session
+        from xoso66_session import ensure_session, persist_session, post_encrypted
 
         if session is None:
             row = get_account(account_id)
@@ -1574,35 +1575,24 @@ def create_deposit_order(
     if not crypto_available():
         raise RuntimeError("pip install pycryptodome (hoac them xoso66_crypto_impl.js)")
 
-    encrypted_body, cek_k, aes_key = encrypt_deposit_body(session, plain)
-
-    status, cipher_resp, resp_headers = post_deposit_order(
-        session, encrypted_body, cek_k=cek_k, form_token=form_token
+    # Dùng luồng POST mã hóa chung để luôn áp dụng secure headers + body v2.
+    # Luồng cũ gọi post_deposit_order trực tiếp nên vẫn gửi cipher v1.
+    session.pop("aes_session_key", None)
+    status, decrypted, resp_headers = post_encrypted(
+        session,
+        DEPOSIT_ORDER_PATH,
+        plain,
     )
     if status != 200:
-        return {"ok": False, "error": f"HTTP {status}", "cipher_response": cipher_resp[:500]}
+        return {"ok": False, "error": f"HTTP {status}", "raw": decrypted}
+    if isinstance(decrypted, dict) and decrypted.get("_decrypt_error"):
+        return {
+            "ok": False,
+            "error": f"Decrypt lỗi: {decrypted.get('_decrypt_error')}",
+            "raw": decrypted,
+        }
 
     method = "http"
-    try:
-        decrypted = decrypt_deposit_body(session, cipher_resp, aes_key, resp_headers)
-    except Exception as e:
-        decrypted = None
-        if cipher_resp.strip().startswith("{"):
-            try:
-                decrypted = json.loads(cipher_resp)
-            except json.JSONDecodeError:
-                return {
-                    "ok": False,
-                    "error": f"Decrypt loi: {e}",
-                    "cipher_response": cipher_resp[:300],
-                }
-        else:
-            return {
-                "ok": False,
-                "error": f"Decrypt loi: {e}",
-                "cipher_response": cipher_resp[:300],
-            }
-
     parsed = parse_deposit_response(decrypted)
     raw_code = (parsed.get("raw") or {}).get("code")
     if not parsed.get("success") and raw_code in _HTTP_DEPOSIT_FALLBACK_CODES:
@@ -1761,7 +1751,8 @@ def _normalize_transfer_info(js: Any) -> dict:
         d = d[0] if isinstance(d[0], dict) else {}
     info: dict[str, Any] = {
         "amount": d.get("amount") or d.get("money") or d.get("payAmount"),
-        "bank_name": d.get("bankName") or d.get("bank") or d.get("bank_name") or d.get("bankCode"),
+        # Ưu tiên bankCode: một số cổng (TimePay) trả bankName sai (trùng STK/chủ TK).
+        "bank_name": d.get("bankCode") or d.get("bankName") or d.get("bank") or d.get("bank_name"),
         "account_no": (
             d.get("accountNo")
             or d.get("accountNumber")

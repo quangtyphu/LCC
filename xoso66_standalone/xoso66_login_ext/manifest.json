@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "XOSO66 Login Bridge",
+  "version": "1.0.2",
+  "description": "Auto login via Vue store — no CDP",
+  "permissions": [],
+  "host_permissions": [
+    "http://*.whskxk1.com/*",
+    "http://*.whskxk2.com/*",
+    "http://*.whskxk3.com/*",
+    "http://*.whskxk4.com/*",
+    "http://*.whskxk5.com/*",
+    "https://*.whskxk1.com/*",
+    "https://*.whskxk2.com/*",
+    "https://*.whskxk3.com/*",
+    "https://*.whskxk4.com/*",
+    "https://*.whskxk5.com/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*.whskxk1.com/*",
+        "http://*.whskxk2.com/*",
+        "http://*.whskxk3.com/*",
+        "http://*.whskxk4.com/*",
+        "http://*.whskxk5.com/*",
+        "https://*.whskxk1.com/*",
+        "https://*.whskxk2.com/*",
+        "https://*.whskxk3.com/*",
+        "https://*.whskxk4.com/*",
+        "https://*.whskxk5.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

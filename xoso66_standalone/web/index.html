@@ -36,7 +36,8 @@
     .btn-balance:disabled { opacity: 0.55; cursor: wait; }
     .btn-sm { font-size: 12px; padding: 6px 10px; }
     td .cell-actions {
-      display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; align-items: center;
+      display: flex; flex-wrap: nowrap; gap: 4px; justify-content: center; align-items: center;
+      white-space: nowrap;
     }
     .inline-input {
       width: 100%; max-width: 100%; box-sizing: border-box;
@@ -156,10 +157,17 @@
       box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
     }
     .acc-pagination {
-      display: flex; gap: 8px; align-items: center; justify-content: center; margin: 0;
-      justify-self: center;
+      display: flex; flex-wrap: wrap; gap: 4px; align-items: center; justify-content: center;
+      margin: 0; justify-self: center;
     }
-    .acc-page-info { font-size: 13px; }
+    .acc-pagination button {
+      padding: 4px 8px; border: none; border-radius: 4px; background: #3498db; color: #fff;
+      cursor: pointer; font-size: 12px; margin-right: 0; min-width: 28px;
+    }
+    .acc-pagination button:hover { background: #2980b9; }
+    .acc-pagination button.active { background: #27ae60; }
+    .acc-pagination button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .acc-page-info { font-size: 12px; color: #666; margin-left: 6px; }
     .rt-toolbar {
       position: fixed;
       top: 20px;
@@ -198,13 +206,19 @@
     th.th-holder, td.td-holder { width: 100px; max-width: 140px; padding: 6px 4px; }
     td.td-inline .inline-input { white-space: normal; word-break: break-all; }
     th.th-mission, td.td-mission { min-width: 88px; font-size: 12px; }
-    th.th-mini, td.td-mini { min-width: 220px; font-size: 12px; text-align: left; }
-    .mini-cell-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+    th.th-nhiemvu, td.td-nhiemvu { width: 52px; min-width: 44px; text-align: center; font-size: 13px; }
+    .nhiemvu-cell { font-weight: 700; font-variant-numeric: tabular-nums; }
+    .nhiemvu-cell.nv-0 { color: #7f8c8d; }
+    .nhiemvu-cell.nv-1 { color: #e67e22; }
+    .nhiemvu-cell.nv-2 { color: #27ae60; }
+    th.th-mini, td.td-mini { min-width: 260px; white-space: nowrap; font-size: 12px; text-align: left; }
+    .mini-cell-wrap { display: flex; flex-direction: row; align-items: center; gap: 0; }
     button.mini-day.mini-check {
       cursor: pointer;
       font: inherit;
       margin: 0;
       vertical-align: top;
+      flex-shrink: 0;
     }
     .mini-day.mini-check {
       background: #ebdef0;
@@ -260,9 +274,9 @@
     .vip-dot.st-3 { background: #8e44ad; }
     .vip-dot.st-none { background: #dfe6e9; border-color: #bdc3c7; }
     .mini-head { font-weight: 600; margin-bottom: 4px; color: #2c3e50; }
-    .mini-days { display: flex; flex-wrap: wrap; gap: 3px; justify-content: flex-start; }
+    .mini-days { display: flex; flex-wrap: nowrap; gap: 3px; align-items: center; justify-content: flex-start; }
     .mini-day {
-      display: inline-flex; flex-direction: column; align-items: center;
+      display: inline-flex; flex-direction: column; align-items: center; flex-shrink: 0;
       min-width: 26px; padding: 2px 3px; border-radius: 4px; font-size: 10px; line-height: 1.1;
       border: 1px solid #ddd; background: #f4f6f7;
     }
@@ -469,11 +483,7 @@
     <div class="acc-search">
       <input type="text" class="acc-search-user" placeholder="Tìm username…" autocomplete="off" spellcheck="false">
     </div>
-    <div class="acc-pagination">
-      <button type="button" class="btn btn-gray btn-sm btn-acc-prev">← Trước</button>
-      <span class="acc-page-info">Trang 1 / 1</span>
-      <button type="button" class="btn btn-gray btn-sm btn-acc-next">Sau →</button>
-    </div>
+    <div class="acc-pagination" aria-label="Accounts pagination"></div>
     <div aria-hidden="true"></div>
   </div>
   <div class="acc-list-totals" id="accListTotals" aria-live="polite">
@@ -492,6 +502,7 @@
         <th>STT</th><th>Username</th><th>Phone</th><th>Tên ĐK</th><th>Status</th>
         <th>Số dư</th><th>Tổng nạp</th><th>Tổng rút</th><th title="Tổng rút + số dư − tổng nạp">Lợi nhuận</th><th title="Click ô để sửa · Enter/blur lưu">Tổng cược ngày</th>
         <th class="th-mission" title="Điểm danh mỗi ngày — level 161">161</th>
+        <th class="th-nhiemvu" title="Cửa nhiệm vụ MINI GAME: 0 chưa nhận · 1 cửa 2688k · 2 cửa 6888k">Nhiệm vụ</th>
         <th class="th-mini" title="MINI GAME điểm danh 7 ngày">MINI GAME</th>
         <th class="th-device" title="Sửa trực tiếp, Enter/blur để lưu">Thiết Bị</th>
         <th class="th-proxy" title="Sửa trực tiếp">Proxy</th>
@@ -511,7 +522,7 @@
         <td id="tblTotalWithdraw" class="tbl-total-wd" title="Tổng rút Hoàn tất">0</td>
         <td id="tblTotalProfit" class="tbl-total-profit" title="Tổng rút + số dư − tổng nạp">0</td>
         <td id="tblTotalDailyBet" class="tbl-total-bet" title="Tổng cược hôm nay (giờ VN)">0</td>
-        <td colspan="12"></td>
+        <td colspan="13"></td>
       </tr>
     </tfoot>
   </table>
@@ -519,11 +530,7 @@
     <div class="acc-search">
       <input type="text" class="acc-search-user" placeholder="Tìm username…" autocomplete="off" spellcheck="false">
     </div>
-    <div class="acc-pagination">
-      <button type="button" class="btn btn-gray btn-sm btn-acc-prev">← Trước</button>
-      <span class="acc-page-info">Trang 1 / 1</span>
-      <button type="button" class="btn btn-gray btn-sm btn-acc-next">Sau →</button>
-    </div>
+    <div class="acc-pagination" aria-label="Accounts pagination"></div>
     <div aria-hidden="true"></div>
   </div>
 
@@ -1010,6 +1017,21 @@ function renderDaily161Cell(row) {
     + `<div class="mission-daily-sub">${bet}</div>`;
 }
 
+/** 0 chưa nhận · 1 đã nhận cửa 1 (2688k) · 2 đã nhận cửa 2 (6888k) */
+function renderNhiemVuCuaCell(row) {
+  const tier = Number(row.nhiem_vu_cua);
+  const n = tier === 1 || tier === 2 ? tier : 0;
+  const tips = {
+    0: "Chưa nhận cửa nhiệm vụ",
+    1: "Đã nhận cửa 1 (2.688k)" + (row.cua1_label ? " · " + row.cua1_label : ""),
+    2: "Đã nhận cửa 2 (6.888k)" + (row.cua2_label ? " · " + row.cua2_label : ""),
+  };
+  let tip = tips[n];
+  if (row.cua_synced_day) tip += " · sync: " + row.cua_synced_day;
+  else tip += " · chưa sync hôm nay";
+  return `<span class="nhiemvu-cell nv-${n}" title="${escAttr(tip)}">${n}</span>`;
+}
+
 function vipBoxClass(status) {
   if (status === null || status === undefined || status === "") return "st-none";
   return "st-" + String(status);
@@ -1059,7 +1081,6 @@ function renderVipCell(row) {
 }
 
 function renderMiniWeekCell(row) {
-  const head = esc(row.mini_current_label || "—");
   const cur = Number(row.mini_current_day) || 0;
   const days = Array.isArray(row.mini_week_days) ? row.mini_week_days : [];
   const badges = days.map((d) => {
@@ -1072,9 +1093,7 @@ function renderMiniWeekCell(row) {
       + `<span class="mini-day-num">D${day}</span>`
       + `<span class="mini-day-icon">${esc(d.label || "—")}</span></span>`;
   }).join("");
-  const syncTip = row.mission_synced_at ? " · " + row.mission_synced_at : "";
   return `<div class="mini-cell-wrap">`
-    + `<div class="mini-head" title="${escAttr(head + syncTip)}">${head}</div>`
     + `<div class="mini-days">${badges}<button type="button" class="mini-day mini-check" data-mchk="${esc(row.id || "")}" data-user="${esc(row.username || "")}" title="Auto-mission (rút + nhận 161/MINI) — log [AUTO-MISSION] trên terminal main.py"><span class="mini-day-num">Ck</span><span class="mini-day-icon">↻</span></button></div>`
     + `</div>`;
 
@@ -1919,6 +1938,57 @@ function bindAccTableActions(tbody) {
   });
 }
 
+function goAccPage(page) {
+  const next = parseInt(page, 10);
+  if (!Number.isFinite(next)) return;
+  accPage = next;
+  clampAccPage();
+  renderAccPage();
+}
+
+function renderAccPagination(totalItems, totalPages, filterHint) {
+  document.querySelectorAll("[data-acc-pagination] .acc-pagination").forEach((container) => {
+    container.innerHTML = "";
+    if (totalPages <= 1) {
+      const info = document.createElement("span");
+      info.className = "acc-page-info";
+      info.textContent = `Tổng ${totalItems} tài khoản${filterHint}`;
+      container.appendChild(info);
+      return;
+    }
+
+    const addBtn = (label, page, opts) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      b.dataset.accPage = String(page);
+      if (opts && opts.active) b.classList.add("active");
+      if (opts && opts.disabled) b.disabled = true;
+      container.appendChild(b);
+    };
+
+    addBtn("<<", 1, { disabled: accPage === 1 });
+    addBtn("<", accPage - 1, { disabled: accPage === 1 });
+
+    const maxButtons = 7;
+    let start = Math.max(1, accPage - Math.floor(maxButtons / 2));
+    let finish = Math.min(totalPages, start + maxButtons - 1);
+    if (finish - start < maxButtons - 1) start = Math.max(1, finish - maxButtons + 1);
+
+    for (let i = start; i <= finish; i++) {
+      addBtn(String(i), i, { active: i === accPage });
+    }
+
+    addBtn(">", accPage + 1, { disabled: accPage === totalPages });
+    addBtn(">>", totalPages, { disabled: accPage === totalPages });
+
+    const info = document.createElement("span");
+    info.className = "acc-page-info";
+    info.textContent = ` Tổng ${totalItems} tài khoản - Trang ${accPage}/${totalPages}${filterHint}`;
+    container.appendChild(info);
+  });
+}
+
 function renderAccPage() {
   const tbody = document.querySelector("#tbl tbody");
   if (!tbody) return;
@@ -1948,6 +2018,7 @@ function renderAccPage() {
       <td class="${profitTdClass(accountProfit(row))}" title="Rút + số dư − nạp">${fmtProfit(accountProfit(row))}</td>
       <td class="td-bet td-inline" title="${escAttr(row.daily_bet_day || "")}">${renderInlineInput(row.id, "daily_bet_total", Math.round(dailyBetToday(row) || 0), "field-daily-bet", { type: "number" })}</td>
       <td class="td-mission">${renderDaily161Cell(row)}</td>
+      <td class="td-nhiemvu">${renderNhiemVuCuaCell(row)}</td>
       <td class="td-mini">${renderMiniWeekCell(row)}</td>
       <td class="td-device td-inline">${renderInlineInput(row.id, "device", row.device, "field-device")}</td>
       <td class="td-proxy td-inline">${renderInlineInput(row.id, "proxy", row.proxy, "field-proxy")}</td>
@@ -1973,16 +2044,7 @@ function renderAccPage() {
   const filterHint = accUsernameQuery.trim()
     ? ` · ${filtered.length}/${accAllRows.length} khớp`
     : "";
-  const pageLabel = `Trang ${accPage} / ${pages}${filterHint}`;
-  document.querySelectorAll("[data-acc-pagination] .acc-page-info").forEach((el) => {
-    el.textContent = pageLabel;
-  });
-  document.querySelectorAll("[data-acc-pagination] .btn-acc-prev").forEach((btn) => {
-    btn.disabled = accPage <= 1;
-  });
-  document.querySelectorAll("[data-acc-pagination] .btn-acc-next").forEach((btn) => {
-    btn.disabled = accPage >= pages;
-  });
+  renderAccPagination(filtered.length, pages, filterHint);
   syncAccSearchInputs();
   bindAccTableActions(tbody);
 }
@@ -3127,22 +3189,9 @@ if (btnDpSaveNow) btnDpSaveNow.onclick = () => saveDailyProfitNow();
 const pageAccountsEl = document.getElementById("pageAccounts");
 if (pageAccountsEl) {
   pageAccountsEl.addEventListener("click", (ev) => {
-    const prevBtn = ev.target.closest(".btn-acc-prev");
-    if (prevBtn) {
-      if (accPage > 1) {
-        accPage--;
-        renderAccPage();
-      }
-      return;
-    }
-    const nextBtn = ev.target.closest(".btn-acc-next");
-    if (nextBtn) {
-      const pages = accTotalPages();
-      if (accPage < pages) {
-        accPage++;
-        renderAccPage();
-      }
-    }
+    const pageBtn = ev.target.closest("[data-acc-page]");
+    if (!pageBtn || pageBtn.disabled) return;
+    goAccPage(pageBtn.dataset.accPage);
   });
   pageAccountsEl.querySelectorAll(".acc-search-user").forEach((el) => {
     el.addEventListener("input", () => {

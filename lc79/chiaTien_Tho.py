@@ -84,24 +84,41 @@ def get_player_count() -> int:
     except Exception:
         return 4
 
-# ====== Hàm chia tiền ======
-def _split_amount_for_people(total: int, n_people: int) -> List[int]:
+def get_force_120k_max_bets(default_value: int = 0) -> int:
+    """
+    FORCE_120K_MAX_BETS: 0|1
+    1 = khi mỗi bên >= 100k: chia tối đa số mức; chỉ ép 120–199 khi vẫn đủ chỗ
+      (mỗi bên < 100k → chia kiểu cũ, không ép)
+    0 = chia random kiểu cũ
+    Có thể override theo TIME_WINDOWS.
+    """
+    config = load_config()
+    w = _get_active_window(config)
+    if "FORCE_120K_MAX_BETS" in w:
+        try:
+            return 1 if int(w["FORCE_120K_MAX_BETS"]) else 0
+        except Exception:
+            pass
+    try:
+        return 1 if int(config.get("FORCE_120K_MAX_BETS", default_value)) else 0
+    except Exception:
+        return 1 if default_value else 0
+
+# ====== Hàm chia tiền (kiểu cũ) ======
+def _split_amount_for_people_legacy(total: int, n_people: int) -> List[int]:
     result = []
     remain = total
 
-    MAX_BET = 200000                # giới hạn trên (không được bằng)
-    # amt * heSoNhan must be strictly < MAX_BET
-    max_amt = (MAX_BET - 1) // heSoNhan   # ví dụ heSoNhan=1000 -> max_amt = 199
+    MAX_BET_RAW = 200000
+    max_amt = (MAX_BET_RAW - 1) // heSoNhan  # 199
 
     for i in range(n_people):
         if i == n_people - 1:
-            # Người cuối cùng nhận hết phần còn lại nhưng vẫn < 200k
             final_amt = min(remain, max_amt)
             if final_amt > 0:
                 result.append(final_amt * heSoNhan)
             break
 
-        # Nếu số dư nhỏ (< 10) thì dồn hết (nhưng vẫn chặn <200k)
         if remain < 10:
             final_amt = min(remain, max_amt)
             if final_amt > 0:
@@ -109,25 +126,93 @@ def _split_amount_for_people(total: int, n_people: int) -> List[int]:
             remain = 0
             break
 
-        # Giới hạn chọn random để không vượt quá 200k (không được bằng)
         max_allowed = min(remain, max_amt)
 
-        # Nếu max_allowed < 10 (không thể chọn giá trị theo step 10),
-        # thì gán trực tiếp phần càng nhỏ càng tốt (nếu >0).
         if max_allowed < 10:
             if max_allowed > 0:
-                # gán phần tối đa cho user hiện tại (vẫn <200k)
                 result.append(max_allowed * heSoNhan)
                 remain -= max_allowed
             else:
-                # không đủ để gán giá trị hợp lệ (bội 10 nhỏ nhất)
-                # dừng vòng và thoát
                 break
         else:
-            # chọn random theo step 10 trong khoảng hợp lệ
             amt = random.choice(range(10, max_allowed + 1, 10))
             result.append(amt * heSoNhan)
             remain -= amt
+
+    return result
+
+# ====== Hàm chia tiền (ép 120k + tối đa mức cược) ======
+def _split_amount_for_people_force_120k(
+    total: int,
+    n_people: int,
+    *,
+    force_first_in_120_199: bool = False,
+) -> List[int]:
+    """
+    Chia total (đơn vị / heSoNhan):
+    - Ưu tiên 1: đủ / tối đa số mức cược (min 10k mỗi mức) → không giảm n để ép 120k
+    - Ưu tiên 2: nếu vẫn đủ chỗ thì ép mức đầu 120–199
+      (vd 120/130/140 với 4 mức: trần lần 1 < 120 → không ép)
+    - Mỗi lần random trừ dự trữ 10k × số người còn lại
+    """
+    MIN_AMT = 10
+    MAX_BET_RAW = 200000
+    max_amt = (MAX_BET_RAW - 1) // heSoNhan  # 199
+    FIRST_BET_MIN = 120
+    FIRST_BET_MAX = 199
+
+    if total < MIN_AMT or n_people < 1:
+        return []
+
+    # Ưu tiên đủ mức: chỉ cắt theo total // 10, không giảm thêm vì ép 120k
+    n = min(n_people, total // MIN_AMT)
+    if n < 1:
+        return []
+
+    def _choices(lo: int, hi: int) -> List[int]:
+        if hi < lo:
+            return []
+        out = list(range(lo, hi + 1, 10))
+        if hi == FIRST_BET_MAX and FIRST_BET_MAX not in out:
+            out.append(FIRST_BET_MAX)
+        return [c for c in out if lo <= c <= hi]
+
+    result: List[int] = []
+    remain = total
+
+    for i in range(n):
+        people_after = n - i - 1
+        if people_after == 0:
+            final_amt = min(remain, max_amt)
+            if final_amt > 0:
+                result.append(final_amt * heSoNhan)
+            break
+
+        reserved = people_after * MIN_AMT
+        max_allowed = min(remain - reserved, max_amt)
+        if max_allowed < MIN_AMT:
+            break
+
+        # Chỉ ép 120–199 khi trần lần đầu vẫn >= 120 (không hy sinh số mức)
+        can_force_first = (
+            force_first_in_120_199
+            and i == 0
+            and max_allowed >= FIRST_BET_MIN
+        )
+        if can_force_first:
+            hi = min(max_allowed, FIRST_BET_MAX)
+            choices = _choices(FIRST_BET_MIN, hi)
+            if not choices:
+                choices = _choices(MIN_AMT, max_allowed)
+            amt = random.choice(choices)
+        else:
+            choices = _choices(MIN_AMT, max_allowed)
+            if not choices:
+                break
+            amt = random.choice(choices)
+
+        result.append(amt * heSoNhan)
+        remain -= amt
 
     return result
 
@@ -181,11 +266,29 @@ def distribute_for_devices(devices: List[Dict]) -> List[Tuple[None, int, str]]:
         range(bet_range_cfg["START"], bet_range_cfg["STOP"] + 1, bet_range_cfg["STEP"])
     )
 
+    force_mode = get_force_120k_max_bets() == 1
+    # Mỗi bên < 100k: không ép tối đa mức / không ép 120k → chia kiểu cũ
+    use_force_split = force_mode and total_per_side >= 100
+
     bets: List[Tuple[None, int, str]] = []
-    for amt in _split_amount_for_people(total_per_side, n_tai):
-        bets.append((None, amt, "TAI"))
-    for amt in _split_amount_for_people(total_per_side, n_xiu):
-        bets.append((None, amt, "XIU"))
+    if use_force_split:
+        # Ưu tiên đủ mức; chỉ ép 1 mức 120–199 (TAI/XIU) khi trần lần đầu >= 120
+        force_first_high = total_per_side >= 120
+        force_on_tai = random.choice([True, False]) if force_first_high else False
+        for amt in _split_amount_for_people_force_120k(
+            total_per_side, n_tai, force_first_in_120_199=(force_first_high and force_on_tai)
+        ):
+            bets.append((None, amt, "TAI"))
+        for amt in _split_amount_for_people_force_120k(
+            total_per_side, n_xiu, force_first_in_120_199=(force_first_high and not force_on_tai)
+        ):
+            bets.append((None, amt, "XIU"))
+    else:
+        for amt in _split_amount_for_people_legacy(total_per_side, n_tai):
+            bets.append((None, amt, "TAI"))
+        for amt in _split_amount_for_people_legacy(total_per_side, n_xiu):
+            bets.append((None, amt, "XIU"))
+
     for _, amt, side in bets:
         if amt >= 200000:
             print(f"⚠️ Bet {amt} ({side}) >= 200k → random lại toàn bộ phiên!")

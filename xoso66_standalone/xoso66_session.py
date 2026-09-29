@@ -18,6 +18,7 @@ Dùng:
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import threading
@@ -33,6 +34,9 @@ LOGIN_PATH = "/server/user/login"
 GET_BALANCE_PATH = "/server/user/getBalance"
 ENCRYPT_KEY_PATH = "/server/index/encryptKey"
 LOGIN_CODE_2FA = 80080
+# Cloudflare chặn POST /user/login (475) — thường khi gửi captcha / POST liên tiếp.
+LOGIN_CF_BLOCK_HTTP_STATUSES = frozenset({475, 403})
+LOGIN_CF_RETRIES = max(1, int(os.environ.get("XOSO66_LOGIN_CF_RETRIES", "2")))
 
 # Cookie định danh phiên user — không copy giữa acc / không lấy từ CF warm.
 SESSION_IDENTITY_COOKIE_NAMES = frozenset({"PHPSESSID"})
@@ -76,8 +80,23 @@ SESSION_MAX_AGE_SEC = int(os.environ.get("XOSO66_SESSION_MAX_AGE_SEC", str(6 * 3
 LOGIN_ATTEMPT_COOLDOWN_SEC = int(
     os.environ.get("XOSO66_LOGIN_ATTEMPT_COOLDOWN_SEC", "90")
 )
+# Sau CF 475 / site «lặp lại quá thường xuyên» — chờ lâu hơn trước khi login lại.
+LOGIN_CF_BACKOFF_SEC = int(os.environ.get("XOSO66_LOGIN_CF_BACKOFF_SEC", "180"))
+LOGIN_SPAM_BACKOFF_SEC = int(os.environ.get("XOSO66_LOGIN_SPAM_BACKOFF_SEC", "300"))
+# Chỉ 1 login HTTP/PW tại một thời điểm — tránh 16 WS mở → 16 login song song → 475.
+LOGIN_GLOBAL_CONCURRENCY = max(1, int(os.environ.get("XOSO66_LOGIN_GLOBAL_CONCURRENCY", "1")))
 _LOGIN_ATTEMPT_LAST: dict[str, float] = {}
+_LOGIN_BLOCKED_UNTIL: dict[str, float] = {}
 _LOGIN_ATTEMPT_LOCK = threading.Lock()
+_LOGIN_GATE = threading.Semaphore(LOGIN_GLOBAL_CONCURRENCY)
+
+
+class LoginBlockedError(RuntimeError):
+    """Acc đang backoff login (CF 475 / site rate limit) — không đánh STATUS_LỖI."""
+
+    def __init__(self, message: str = "", *, remaining_sec: float = 0) -> None:
+        super().__init__(message)
+        self.remaining_sec = remaining_sec
 
 
 def _login_cooldown_remaining(account_id: str) -> float:
@@ -89,12 +108,96 @@ def _login_cooldown_remaining(account_id: str) -> float:
     return max(0.0, LOGIN_ATTEMPT_COOLDOWN_SEC - (time.time() - last))
 
 
+def _login_blocked_remaining(account_id: str) -> float:
+    key = str(account_id or "").strip()
+    if not key:
+        return 0.0
+    with _LOGIN_ATTEMPT_LOCK:
+        until = _LOGIN_BLOCKED_UNTIL.get(key, 0.0)
+    return max(0.0, until - time.time())
+
+
 def _mark_login_attempt(account_id: str) -> None:
     key = str(account_id or "").strip()
     if not key:
         return
     with _LOGIN_ATTEMPT_LOCK:
         _LOGIN_ATTEMPT_LAST[key] = time.time()
+
+
+def _mark_login_blocked(account_id: str, *, sec: int | None = None) -> float:
+    """Chặn login acc trong `sec` giây. Trả remaining."""
+    key = str(account_id or "").strip()
+    wait = max(30, int(sec if sec is not None else LOGIN_CF_BACKOFF_SEC))
+    until = time.time() + wait
+    if not key:
+        return float(wait)
+    with _LOGIN_ATTEMPT_LOCK:
+        prev = _LOGIN_BLOCKED_UNTIL.get(key, 0.0)
+        _LOGIN_BLOCKED_UNTIL[key] = max(prev, until)
+        _LOGIN_ATTEMPT_LAST[key] = time.time()
+        rem = max(0.0, _LOGIN_BLOCKED_UNTIL[key] - time.time())
+    return rem
+
+
+def _clear_login_blocked(account_id: str) -> None:
+    key = str(account_id or "").strip()
+    if not key:
+        return
+    with _LOGIN_ATTEMPT_LOCK:
+        _LOGIN_BLOCKED_UNTIL.pop(key, None)
+
+
+def _account_id_from_session(session: dict) -> str:
+    return str(
+        session.get("id") or session.get("_balance_log_account_id") or ""
+    ).strip()
+
+
+def _is_site_login_spam_msg(msg: str) -> bool:
+    m = str(msg or "").strip().lower()
+    return "lặp lại quá thường xuyên" in m
+
+
+def _raise_login_blocked(account_id: str, reason: str, *, sec: int) -> None:
+    rem = _mark_login_blocked(account_id, sec=sec)
+    raise LoginBlockedError(
+        f"{reason} — chờ ~{int(rem)}s rồi thử lại (không đánh Lỗi)",
+        remaining_sec=rem,
+    )
+
+
+def _mark_account_loi_http_475(
+    session: dict, account_id: str = "", *, status: int = 475
+) -> None:
+    """getBalance fail → login gặp CF 475 → ép status Lỗi, bỏ khỏi pool."""
+    from xoso66_accounts_db import STATUS_LOI, get_account, set_account_status, username_for_log
+
+    aid = str(account_id or _account_id_from_session(session) or "").strip()
+    if not aid:
+        return
+    row = get_account(aid) or {}
+    u = username_for_log(aid, row or session)
+    reason = f"login: HTTP {status} Cloudflare chặn POST /user/login"
+    if str(row.get("status") or "").strip() != STATUS_LOI:
+        set_account_status(aid, STATUS_LOI, reason=reason)
+    else:
+        print(f"[ACCOUNT] {u}: lỗi hệ thống (đã Lỗi) — {reason}", flush=True)
+    try:
+        from xoso66_auto_mission_reward import cancel_mission_claim_queue
+
+        cancel_mission_claim_queue(aid)
+    except Exception:
+        pass
+    _mark_login_blocked(aid, sec=LOGIN_CF_BACKOFF_SEC)
+
+
+def _raise_login_cf_475(session: dict, account_id: str = "", *, status: int = 475) -> None:
+    """HTTP 475 sau getBalance fail — đánh Lỗi rồi raise."""
+    _mark_account_loi_http_475(session, account_id, status=status)
+    raise RuntimeError(
+        f"Login HTTP {status} (Cloudflare chặn POST /user/login) — đã đánh Lỗi"
+    )
 
 
 def _session_needs_relogin(session: dict) -> bool:
@@ -238,6 +341,239 @@ def _merge_response_cookies(session: dict, resp: requests.Response) -> None:
     merge_session_cookies(session, incoming, allow_identity=True)
 
 
+def _merge_any_response_cookies(session: dict, resp: Any) -> None:
+    """Gộp cookie từ requests hoặc curl_cffi response."""
+    try:
+        incoming = {c.name: c.value for c in resp.cookies}
+    except Exception:
+        try:
+            incoming = dict(resp.cookies or {})
+        except Exception:
+            incoming = {}
+    if incoming:
+        merge_session_cookies(session, incoming, allow_identity=True)
+
+
+def _decrypt_encrypted_http_body(
+    session: dict, resp: Any, aes_key: str, *, text: str | None = None
+) -> Any:
+    from xoso66_deposit import decrypt_deposit_body
+
+    raw = text if text is not None else (resp.text or "")
+    if raw.startswith('"') and raw.endswith('"'):
+        raw = raw[1:-1]
+    if resp.status_code == 200 and raw:
+        try:
+            return decrypt_deposit_body(session, raw, aes_key, dict(resp.headers))
+        except Exception as e:
+            return {"_decrypt_error": str(e), "_cipher_preview": raw[:200]}
+    return None
+
+
+def _login_use_cffi() -> bool:
+    return os.environ.get("XOSO66_LOGIN_USE_CFFI", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+_LOGIN_FETCH_POST_JS = """async ([url, headers, body]) => {
+    const r = await fetch(url, {
+        method: 'POST',
+        headers,
+        body,
+        credentials: 'include',
+    });
+    const text = await r.text();
+    const out = {};
+    r.headers.forEach((v, k) => { out[k] = v; });
+    return { status: r.status, text, headers: out };
+}"""
+
+
+def _login_via_playwright(session: dict, plain: dict) -> tuple[int, Any, dict]:
+    """
+    POST login encrypt qua fetch() trong Playwright — tránh CF HTTP 475 (requests/cffi).
+    Fallback Vue store nếu XOSO66_LOGIN_PLAYWRIGHT_MODE=vue.
+    """
+    from xoso66_deposit import (
+        build_request_headers,
+        encrypt_deposit_body,
+        get_form_token,
+    )
+
+    mode = os.environ.get("XOSO66_LOGIN_PLAYWRIGHT_MODE", "fetch").strip().lower()
+    if mode == "vue":
+        return _login_via_playwright_vue(session, plain)
+
+    form_token = get_form_token(session)
+    encrypted_body, cek_k, aes_key = encrypt_deposit_body(session, plain)
+    headers = build_request_headers(session, cek_k=cek_k, form_token=form_token)
+    url = f"{resolve_base_url(session)}{LOGIN_PATH}"
+
+    from xoso66_cf import _inject_session_cookies, attach_cf_request_sniffer
+    from xoso66_playwright_ctx import playwright_browser
+
+    _base = resolve_base_url(session)
+    headless = os.environ.get("XOSO66_CF_HEADLESS", "1") != "0"
+    fetch_js: Any = None
+    with playwright_browser(
+        session, base_url=_base, headless=headless
+    ) as (_p, _browser, context):
+        host = _base.split("//", 1)[-1].split("/", 1)[0]
+        _inject_session_cookies(context, session, host)
+        page = context.new_page()
+        attach_cf_request_sniffer(page, session)
+        page.goto(f"{_base}/home/", wait_until="domcontentloaded", timeout=90_000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=20_000)
+        except Exception:
+            page.wait_for_timeout(6_000)
+        page.wait_for_timeout(2_000)
+        fetch_js = page.evaluate(
+            _LOGIN_FETCH_POST_JS,
+            [url, headers, encrypted_body],
+        )
+        merge_playwright_cookies(session, context.cookies())
+
+    if not isinstance(fetch_js, dict):
+        return 0, {"code": 0, "msg": "playwright fetch lỗi"}, {}
+    status = int(fetch_js.get("status") or 0)
+    resp_headers = fetch_js.get("headers") if isinstance(fetch_js.get("headers"), dict) else {}
+    text = str(fetch_js.get("text") or "")
+    if resp_headers:
+        from xoso66_deposit import apply_response_tokens
+
+        apply_response_tokens(session, resp_headers)
+    decrypted: Any = None
+    if status == 200 and text:
+        from xoso66_deposit import decrypt_deposit_body
+
+        raw = text[1:-1] if text.startswith('"') and text.endswith('"') else text
+        try:
+            decrypted = decrypt_deposit_body(session, raw, aes_key, resp_headers)
+        except Exception as e:
+            decrypted = {"_decrypt_error": str(e), "_cipher_preview": raw[:200]}
+    return status, decrypted, resp_headers
+
+
+def _login_via_playwright_vue(session: dict, plain: dict) -> tuple[int, Any, dict]:
+    """Login qua Vue store — dùng khi fetch không decrypt được."""
+    from xoso66_captcha_solver import LOGIN_DISPATCH_JS
+    from xoso66_cf import attach_cf_request_sniffer, bootstrap_register_page
+    from xoso66_playwright_ctx import playwright_browser
+
+    _base = resolve_base_url(session)
+    headless = os.environ.get("XOSO66_CF_HEADLESS", "1") != "0"
+    pw_js: Any = None
+    with playwright_browser(session, base_url=_base, headless=headless) as (
+        _p,
+        _browser,
+        context,
+    ):
+        page = context.new_page()
+        attach_cf_request_sniffer(page, session)
+        boot = bootstrap_register_page(
+            page, session, context=context, headless=headless
+        )
+        if not boot.get("ok"):
+            msg = str(boot.get("msg") or boot.get("error") or "bootstrap_failed")
+            return 0, {"code": 0, "msg": msg}, {}
+        pw_js = page.evaluate(LOGIN_DISPATCH_JS, plain)
+        merge_playwright_cookies(session, context.cookies())
+
+    if not isinstance(pw_js, dict):
+        return 0, {"code": 0, "msg": "playwright response không hợp lệ"}, {}
+    if pw_js.get("error") == "no_vue_store":
+        return 0, {"code": 0, "msg": "no_vue_store"}, {}
+    data = pw_js.get("response") if isinstance(pw_js.get("response"), dict) else pw_js
+    if not isinstance(data, dict):
+        err = str(pw_js.get("message") or pw_js.get("error") or "playwright login lỗi")
+        return 0, {"code": 0, "msg": err}, {}
+    return 200, data, {}
+
+
+def _submit_login(
+    session: dict,
+    plain: dict,
+    *,
+    http: requests.Session | None = None,
+    prefer_playwright: bool = False,
+    cf_retry: int = 0,
+) -> tuple[int, Any, dict]:
+    """
+    Gửi login.
+    prefer_playwright=False → HTTP/curl_cffi (kể cả có captcha — giống form web).
+    prefer_playwright=True → Playwright fetch (fallback khi HTTP 475).
+    """
+    if prefer_playwright:
+        return _login_via_playwright(session, plain)
+    return post_login_encrypted(
+        session,
+        LOGIN_PATH,
+        plain,
+        http=http,
+        force_cffi=cf_retry > 0 or _login_use_cffi(),
+    )
+
+
+def post_login_encrypted(
+    session: dict,
+    path: str,
+    plain: dict,
+    *,
+    http: requests.Session | None = None,
+    force_cffi: bool = False,
+) -> tuple[int, Any, dict]:
+    """
+    POST login encrypt — ưu tiên curl_cffi (TLS Chrome) để tránh CF HTTP 475.
+    force_cffi=True: chỉ curl_cffi (sau refresh CF).
+    """
+    from xoso66_deposit import (
+        build_request_headers,
+        crypto_available,
+        encrypt_deposit_body,
+        get_form_token,
+    )
+    from xoso66_proxy import build_proxies, ensure_proxy
+
+    if not crypto_available():
+        raise RuntimeError("pip install pycryptodome")
+
+    form_token = get_form_token(session)
+    encrypted_body, cek_k, aes_key = encrypt_deposit_body(session, plain)
+    headers = build_request_headers(session, cek_k=cek_k, form_token=form_token)
+    url = f"{resolve_base_url(session)}{path}"
+
+    if force_cffi or _login_use_cffi():
+        try:
+            from curl_cffi import requests as cffi_requests
+
+            ensure_proxy(session)
+            r = cffi_requests.post(
+                url,
+                data=encrypted_body,
+                headers=headers,
+                cookies=session.get("cookies") or {},
+                proxies=build_proxies(session["proxy"]),
+                impersonate=os.environ.get("XOSO66_CF_IMPERSONATE", "chrome120"),
+                timeout=45,
+            )
+            decrypted = _decrypt_encrypted_http_body(session, r, aes_key)
+            _merge_any_response_cookies(session, r)
+            return r.status_code, decrypted, dict(r.headers)
+        except ImportError:
+            if force_cffi:
+                raise RuntimeError("curl_cffi chưa cài — pip install curl_cffi")
+        except Exception:
+            if force_cffi:
+                raise
+
+    return post_encrypted(session, path, plain, http=http)
+
+
 def merge_playwright_cookies(session: dict, pw_cookies: Any) -> None:
     """Gộp cookie từ Playwright browser_context.cookies()."""
     incoming: dict[str, Any] = {}
@@ -334,11 +670,19 @@ def post_encrypted(
     http: requests.Session | None = None,
 ) -> tuple[int, Any, dict]:
     from xoso66_deposit import (
+        DEFAULT_UA,
         build_request_headers,
         crypto_available,
         decrypt_deposit_body,
         encrypt_deposit_body,
         get_form_token,
+    )
+    from xoso66_secure_headers import (
+        CRYPTO_VERSION_HEADER,
+        CRYPTO_VERSION_V2,
+        generate_secure_headers,
+        pack_v2_ciphertext,
+        unpack_v2_ciphertext,
     )
 
     if not crypto_available():
@@ -347,26 +691,104 @@ def post_encrypted(
     form_token = get_form_token(session)
     encrypted_body, cek_k, aes_key = encrypt_deposit_body(session, plain)
     headers = build_request_headers(session, cek_k=cek_k, form_token=form_token)
+    url = f"{resolve_base_url(session)}{path}"
+    headers.update(
+        generate_secure_headers(
+            url,
+            str(session.get("user_agent") or DEFAULT_UA),
+        )
+    )
     http = http or _requests_session(session)
-    r = http.post(f"{resolve_base_url(session)}{path}", data=encrypted_body, headers=headers, timeout=45)
+    r = http.post(
+        url,
+        data=pack_v2_ciphertext(encrypted_body),
+        headers=headers,
+        timeout=45,
+    )
     text = r.text
     if text.startswith('"') and text.endswith('"'):
-        text = text[1:-1]
+        try:
+            text = json.loads(text)
+        except json.JSONDecodeError:
+            text = text[1:-1]
     decrypted: Any = None
     if r.status_code == 200 and text:
         try:
-            decrypted = decrypt_deposit_body(session, text, aes_key, dict(r.headers))
+            if text.lstrip().startswith(("{", "[")):
+                # Lỗi validation có thể được server trả JSON rõ dù request dùng v2.
+                decrypted = json.loads(text)
+            else:
+                response_version = (
+                    r.headers.get(CRYPTO_VERSION_HEADER)
+                    or r.headers.get(CRYPTO_VERSION_HEADER.title())
+                    or headers.get(CRYPTO_VERSION_HEADER)
+                )
+                if response_version == CRYPTO_VERSION_V2:
+                    text = unpack_v2_ciphertext(text)
+                decrypted = decrypt_deposit_body(session, text, aes_key, dict(r.headers))
         except Exception as e:
             decrypted = {"_decrypt_error": str(e), "_cipher_preview": text[:200]}
     _merge_response_cookies(session, r)
     return r.status_code, decrypted, dict(r.headers)
 
 
-def refresh_cloudflare(session: dict) -> dict[str, Any]:
+def refresh_cloudflare(session: dict, *, prefer_playwright: bool = False) -> dict[str, Any]:
     """Tự lấy cf-* headers (+ cf_clearance nếu có)."""
     from xoso66_cf import refresh_cloudflare as _refresh
 
-    return _refresh(session)
+    return _refresh(session, prefer_playwright=prefer_playwright)
+
+
+def is_login_cf_blocked(status: int | None) -> bool:
+    """True nếu HTTP status là Cloudflare chặn POST login (475/403)."""
+    try:
+        return int(status or 0) in LOGIN_CF_BLOCK_HTTP_STATUSES
+    except (TypeError, ValueError):
+        return False
+
+
+def _recover_login_after_cf_block(session: dict) -> Any:
+    """
+    Renew CF + form-token sau HTTP 475.
+    CF thường chặn POST /login lần 2 (captcha retry) — cần cf-* mới trước khi gửi lại.
+    """
+    refresh_cloudflare(session, prefer_playwright=True)
+    http = _requests_session(session)
+    bootstrap_prelogin(session, http=http)
+    return http
+
+
+def _prefetch_login_captcha(session: dict) -> str:
+    """GET captcha + Capsolver trước POST login — tránh POST trống → 1011 → POST lại (dễ 475)."""
+    from xoso66_captcha_solver import (
+        captcha_base64_from_payload,
+        captcha_enabled,
+        solve_image_captcha_auto,
+    )
+    from xoso66_register import get_captcha
+
+    if not captcha_enabled():
+        return ""
+    username = session.get("username") or session.get("phone") or "?"
+    try:
+        cap = get_captcha(session)
+        b64 = captcha_base64_from_payload(cap.get("raw") or {})
+        if not b64:
+            return ""
+        solved = solve_image_captcha_auto(b64)
+        if not solved.get("ok"):
+            print(
+                f"[LOGIN] {username} captcha prefetch fail: {solved.get('error')}",
+                flush=True,
+            )
+            return ""
+        text = str(solved.get("text") or "").strip()
+        if text:
+            print(f"[LOGIN] {username} captcha prefetch: {text!r}", flush=True)
+        return text
+    except Exception as e:
+        print(f"[LOGIN] {username} captcha prefetch lỗi: {e}", flush=True)
+        return ""
 
 
 def login_account(session: dict) -> dict:
@@ -390,6 +812,52 @@ def login_account(session: dict) -> dict:
     password = session.get("password") or session.get("login_pass")
     if not username or not password:
         raise ValueError('Thiếu "username" / "password" trong xoso66_sessions.json')
+
+    aid = _account_id_from_session(session)
+    blocked = _login_blocked_remaining(aid) if aid else 0.0
+    if blocked > 0:
+        raise LoginBlockedError(
+            f"Login backoff ~{int(blocked)}s (CF/spam) — bỏ qua",
+            remaining_sec=blocked,
+        )
+
+    # Toàn process chỉ 1 login cùng lúc — WS pool 16 nick không spam CF.
+    if not _LOGIN_GATE.acquire(timeout=120):
+        raise LoginBlockedError(
+            "Login gate timeout — quá nhiều acc đang login",
+            remaining_sec=30,
+        )
+    try:
+        return _login_account_locked(session, username=str(username), password=str(password))
+    finally:
+        _LOGIN_GATE.release()
+
+
+def _login_account_locked(
+    session: dict, *, username: str, password: str
+) -> dict:
+    """
+    Login giống web:
+      1) POST không captcha (ô captcha chưa hiện) → thường code 1011 + ảnh
+      2) Capsolver giải → POST 1 lần có captcha
+      3) Sai captcha tối đa thêm 1 lần (không refresh CF giữa chừng)
+    HTTP 475 → đánh Lỗi ngay (không spam retry → «lặp lại quá thường xuyên»).
+    """
+    from xoso66_cf import (
+        CfRateLimitError,
+        cf_rate_limit_message,
+        cf_rate_limit_remaining,
+        is_cf_rate_limited,
+        session_cf_ready,
+    )
+    from xoso66_captcha_solver import (
+        captcha_base64_from_payload,
+        captcha_enabled,
+        is_wrong_captcha_response,
+        solve_image_captcha_auto,
+    )
+
+    aid = _account_id_from_session(session)
 
     # Tránh dính PHPSESSID của nick khác (cookie pollute → getBalance trả số dư lẫn).
     strip_identity_cookies(session)
@@ -416,49 +884,50 @@ def login_account(session: dict) -> dict:
     http = _requests_session(session)
     bootstrap_prelogin(session, http=http)
 
-    cap_cfg = load_captcha_config()
-    max_attempts = max(1, int(cap_cfg.get("max_attempts") or 3))
-    captcha_text = str(session.get("captcha") or "")
+    # Giống web: tối đa 1 lần không captcha + 2 lần có captcha (sai 1 lần rồi gửi lại).
+    max_with_captcha = 2 if captcha_enabled() else 0
+    captcha_text = ""
     data: Any = None
     code: Any = None
     msg = ""
+    status = 0
 
-    for attempt in range(max_attempts):
+    def _post(captcha: str, *, use_playwright: bool) -> tuple[int, Any]:
         plain = prepare_login_payload(
             username,
             password,
-            captcha=captcha_text,
+            captcha=captcha,
             source=str(session.get("login_source") or ""),
         )
-        status, data, _ = post_encrypted(session, LOGIN_PATH, plain, http=http)
-        if status != 200:
-            raise RuntimeError(f"Login HTTP {status}")
-        if not isinstance(data, dict):
-            raise RuntimeError(f"Login response lỗi: {data!r}")
-        code = data.get("code")
-        msg = str(data.get("msg") or "")
-        if code == LOGIN_CODE_2FA:
-            raise RuntimeError("Tài khoản cần 2FA (code 80080)")
-        if code == 1:
-            user_data = data.get("data") if isinstance(data.get("data"), dict) else {}
-            session.pop("captcha", None)
-            return {
-                "cookies": session.get("cookies"),
-                "form_token": session.get("form_token"),
-                "headers": session.get("headers"),
-                "user_info": user_data,
-                "login_raw": data,
-            }
+        if use_playwright and captcha:
+            print(
+                f"[LOGIN] {username} gửi captcha={captcha!r} (Playwright)",
+                flush=True,
+            )
+        st, body, _ = _submit_login(
+            session,
+            plain,
+            http=http,
+            prefer_playwright=use_playwright,
+            cf_retry=0,
+        )
+        return st, body
 
-        # Sai / thiếu captcha → Capsolver + retry
-        if (
-            not is_wrong_captcha_response(code, msg)
-            or attempt + 1 >= max_attempts
-            or not captcha_enabled()
-        ):
-            break
+    def _ok_result(body: dict) -> dict:
+        user_data = body.get("data") if isinstance(body.get("data"), dict) else {}
+        session.pop("captcha", None)
+        if aid:
+            _clear_login_blocked(aid)
+        return {
+            "cookies": session.get("cookies"),
+            "form_token": session.get("form_token"),
+            "headers": session.get("headers"),
+            "user_info": user_data,
+            "login_raw": body,
+        }
 
-        b64 = captcha_base64_from_payload(data)
+    def _solve_from_body(body: Any) -> str:
+        b64 = captcha_base64_from_payload(body) if isinstance(body, dict) else ""
         if not b64:
             try:
                 from xoso66_register import get_captcha
@@ -468,23 +937,89 @@ def login_account(session: dict) -> dict:
             except Exception:
                 b64 = ""
         if not b64:
-            break
-
+            return ""
         solved = solve_image_captcha_auto(b64)
         if not solved.get("ok"):
             print(
                 f"[LOGIN] Captcha Capsolver fail: {solved.get('error')}",
                 flush=True,
             )
-            break
-        captcha_text = str(solved.get("text") or "").strip()
-        session["captcha"] = captcha_text
-        print(
-            f"[LOGIN] {username} captcha retry {attempt + 1}/{max_attempts}: {captcha_text!r}",
-            flush=True,
+            return ""
+        text = str(solved.get("text") or "").strip()
+        if text:
+            session["captcha"] = text
+            print(f"[LOGIN] {username} captcha: {text!r}", flush=True)
+        return text
+
+    # --- Bước 1: không captcha (web: bấm Đăng nhập khi chưa hiện ô) ---
+    status, data = _post("", use_playwright=False)
+    if is_login_cf_blocked(status):
+        _raise_login_cf_475(session, aid, status=int(status))
+    if status not in (0, 200):
+        raise RuntimeError(f"Login HTTP {status}")
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Login response lỗi: {data!r}")
+    code = data.get("code")
+    msg = str(data.get("msg") or "")
+    if code == LOGIN_CODE_2FA:
+        raise RuntimeError("Tài khoản cần 2FA (code 80080)")
+    if code == 1:
+        return _ok_result(data)
+    if _is_site_login_spam_msg(msg):
+        _raise_login_blocked(
+            aid, f"Site rate-limit login: {msg}", sec=LOGIN_SPAM_BACKOFF_SEC
         )
 
+    if not is_wrong_captcha_response(code, msg) or not captcha_enabled():
+        from xoso66_account_errors import maybe_mark_account_loi_from_session
+
+        fail_msg = msg or f"Login thất bại code={code}"
+        maybe_mark_account_loi_from_session(session, fail_msg, source="login")
+        raise RuntimeError(fail_msg)
+
+    # --- Bước 2+: có captcha (web: hiện ô → nhập → Đăng nhập) ---
+    for cap_i in range(max_with_captcha):
+        captcha_text = _solve_from_body(data)
+        if not captcha_text:
+            break
+
+        # Ưu tiên HTTP (giống form web); 475 → Playwright 1 lần; vẫn 475 → Lỗi.
+        status, data = _post(captcha_text, use_playwright=False)
+        if is_login_cf_blocked(status):
+            print(
+                f"[LOGIN] {username} HTTP {status} khi gửi captcha — thử Playwright 1 lần",
+                flush=True,
+            )
+            status, data = _post(captcha_text, use_playwright=True)
+        if is_login_cf_blocked(status):
+            _raise_login_cf_475(session, aid, status=int(status))
+        if status not in (0, 200):
+            raise RuntimeError(f"Login HTTP {status}")
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Login response lỗi: {data!r}")
+        code = data.get("code")
+        msg = str(data.get("msg") or "")
+        if code == LOGIN_CODE_2FA:
+            raise RuntimeError("Tài khoản cần 2FA (code 80080)")
+        if code == 1:
+            return _ok_result(data)
+        if _is_site_login_spam_msg(msg):
+            _raise_login_blocked(
+                aid, f"Site rate-limit login: {msg}", sec=LOGIN_SPAM_BACKOFF_SEC
+            )
+        if not is_wrong_captcha_response(code, msg):
+            break
+        if cap_i + 1 < max_with_captcha:
+            print(
+                f"[LOGIN] {username} captcha sai — lấy ảnh mới ({cap_i + 2}/{max_with_captcha})",
+                flush=True,
+            )
+
     fail_msg = msg or f"Login thất bại code={code}"
+    if _is_site_login_spam_msg(fail_msg):
+        _raise_login_blocked(
+            aid, f"Site rate-limit login: {fail_msg}", sec=LOGIN_SPAM_BACKOFF_SEC
+        )
     from xoso66_account_errors import maybe_mark_account_loi_from_session
 
     maybe_mark_account_loi_from_session(session, fail_msg, source="login")
@@ -601,6 +1136,8 @@ def refresh_account_balance_to_db(
             session["user_info"] = ui
         ui["money"] = bal.get("balance")
 
+    # Cho phép đẩy balance↑ từ getBalance (persist thường thì không).
+    session["_force_balance_sync"] = True
     save_session_runtime(aid, session)
     return {
         "ok": True,
@@ -618,24 +1155,18 @@ def prep_site_session_before_ws(
     account_id: str, *, force_balance_refresh: bool = True
 ) -> bool:
     """
-    Trước mở WS: đảm bảo session (+ getBalance khi force_balance_refresh).
-    force_balance_refresh=False (bù/soft restart): tin số dư DB nếu đã >= ngưỡng.
+    Probe/tool: ensure session + (optional) getBalance trước mở WS.
+    Không đổi status — Hết Tiền do việc1 / _evict_het_tien_now.
     """
     aid = str(account_id or "").strip()
     if not aid:
         return False
     try:
-        from xoso66_accounts_db import (
-            STATUS_HET_TIEN,
-            get_account,
-            set_account_status,
-            username_for_log,
-        )
+        from xoso66_accounts_db import get_account, username_for_log
         from xoso66_config_util import load_config
         from xoso66_ws_pool import account_balance_vnd, min_balance_for_ws
 
         row = get_account(aid) or {}
-        status = str(row.get("status") or "").strip()
         min_bal = float(min_balance_for_ws(load_config()))
         db_bal = float(account_balance_vnd(row))
 
@@ -645,28 +1176,16 @@ def prep_site_session_before_ws(
 
         rep = refresh_account_balance_to_db(aid, session, refresh=True)
         if not rep.get("ok"):
-            # Soft path: DB còn đủ thì vẫn cho mở (tránh kẹt cả pool vì 1 API chậm).
             if not force_balance_refresh and db_bal >= min_bal:
                 return True
             return False
         bal = _as_money(rep.get("balance"))
         if bal is not None and bal < min_bal:
-            user = username_for_log(aid)
             print(
-                f"[WS-POOL] {user}: sau check số dư {bal:,.0f} < {min_bal:,.0f} "
-                f"— không mở WS",
+                f"[WS-POOL] {username_for_log(aid)}: sau check số dư "
+                f"{bal:,.0f} < {min_bal:,.0f} — không mở WS",
                 flush=True,
             )
-            if status != STATUS_HET_TIEN:
-                set_account_status(aid, STATUS_HET_TIEN, reason="thiếu tiền trước mở WS")
-            try:
-                from xoso66_ws_pool import schedule_fund_deposit_for_ws_shortage
-
-                schedule_fund_deposit_for_ws_shortage(
-                    load_config(), [aid], label="ws-prep-low-balance"
-                )
-            except Exception:
-                pass
             return False
         return True
     except Exception:
@@ -957,7 +1476,25 @@ def ensure_session(
     has_token = bool(str(acc.get("form_token") or "").strip())
     needs_relogin = _session_needs_relogin(acc)
 
-    if not force_login and needs_relogin:
+    # TTL local hết (>6h): probe getBalance trước — site có thể còn session, tránh login dồn → 475.
+    if (
+        not force_login
+        and needs_relogin
+        and not ignore_session_ttl
+        and has_token
+    ):
+        bal_ttl = get_user_balance(acc)
+        if bal_ttl.get("rate_limited"):
+            raise CfRateLimitError(
+                cf_rate_limit_message(acc),
+                remaining_sec=cf_rate_limit_remaining(acc),
+            )
+        if bal_ttl.get("ok"):
+            _mark_session_logged_in(acc)
+            persist_session(account_id, acc)
+            return acc
+        force_login = True
+    elif not force_login and needs_relogin:
         force_login = True
 
     # Session còn TTL: probe getBalance trước — bỏ qua nếu force_login.
@@ -1005,11 +1542,24 @@ def ensure_session(
         _maybe_refresh_cf()
 
     def _try_login() -> None:
-        cooldown_rem = _login_cooldown_remaining(account_id)
-        # force_login=True: bỏ cooldown (caller chủ động yêu cầu login).
-        if cooldown_rem > 0 and not needs_relogin and not force_login:
+        # CF 475 / site spam backoff — luôn tôn trọng (kể cả TTL force_login).
+        blocked_rem = _login_blocked_remaining(account_id)
+        if blocked_rem > 0:
             bal = get_user_balance(acc)
             if bal.get("ok"):
+                _mark_session_logged_in(acc)
+                return
+            raise LoginBlockedError(
+                f"Login backoff ~{int(blocked_rem)}s (CF/spam) — getBalance vẫn fail",
+                remaining_sec=blocked_rem,
+            )
+        cooldown_rem = _login_cooldown_remaining(account_id)
+        # force_login=True từ CLI: bỏ cooldown thường; TTL force vẫn giữ cooldown.
+        bypass_cooldown = force_login and not needs_relogin
+        if cooldown_rem > 0 and not bypass_cooldown:
+            bal = get_user_balance(acc)
+            if bal.get("ok"):
+                _mark_session_logged_in(acc)
                 return
             raise RuntimeError(
                 f"Login cooldown ~{int(cooldown_rem)}s — getBalance vẫn fail"
@@ -1017,14 +1567,25 @@ def ensure_session(
         _mark_login_attempt(account_id)
         merge_account(acc, login_account(acc))
         _mark_session_logged_in(acc)
+        _clear_login_blocked(account_id)
 
     try:
         _try_login()
-    except CfRateLimitError:
+    except (CfRateLimitError, LoginBlockedError):
         raise
-    except Exception:
+    except Exception as login_err:
+        err_s = str(login_err)
+        # 475 đã đánh Lỗi trong login_account — không refresh+login lại.
+        if "475" in err_s or is_login_cf_blocked(getattr(login_err, "status", None)):
+            if "đã đánh Lỗi" not in err_s:
+                _mark_account_loi_http_475(acc, account_id, status=475)
+            raise
+        if _is_site_login_spam_msg(err_s):
+            if _login_blocked_remaining(account_id) <= 0:
+                _mark_login_blocked(account_id, sec=LOGIN_SPAM_BACKOFF_SEC)
+            raise
         if not is_cf_rate_limited(acc):
-            refresh_cloudflare(acc)
+            refresh_cloudflare(acc, prefer_playwright=True)
         _try_login()
 
     persist_session(account_id, acc)

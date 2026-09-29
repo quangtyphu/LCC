@@ -425,6 +425,7 @@ def set_account_status(
     status: str,
     *,
     reason: str = "",
+    quiet: bool = False,
 ) -> bool:
     """Ghi status CMS/DB; trả True nếu đổi."""
     aid = str(account_id).strip()
@@ -438,11 +439,12 @@ def set_account_status(
     if old_st == new_st:
         return False
     update_account(aid, {"status": new_st})
-    tag = f" — {reason}" if reason else ""
-    print(
-        f"[ACCOUNT] {username_for_log(aid, row)}: {old_st or '(trống)'} → {new_st}{tag}",
-        flush=True,
-    )
+    if not quiet:
+        tag = f" — {reason}" if reason else ""
+        print(
+            f"[ACCOUNT] {username_for_log(aid, row)}: {old_st or '(trống)'} → {new_st}{tag}",
+            flush=True,
+        )
     # Mọi lần → «Đủ ngày» đều hẹn rút + nhận thưởng (~5p).
     if new_st == STATUS_DU_NGAY:
         try:
@@ -755,7 +757,8 @@ def _merge_minigame_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[st
 
 
 def save_session_runtime(account_id: str, session: dict[str, Any]) -> dict[str, Any]:
-    """Lưu cookies/token sau login — merge vào session_json + sync balance."""
+    """Lưu cookies/token sau login — merge vào session_json (+ balance có điều kiện)."""
+    aid = str(account_id or "").strip()
     runtime_keys = (
         "cookies",
         "headers",
@@ -776,6 +779,9 @@ def save_session_runtime(account_id: str, session: dict[str, Any]) -> dict[str, 
         "default_card_id",
         "minigame",
     )
+    # Chỉ refresh_account_balance_to_db (và caller tương tự) được phép đẩy balance↑.
+    # persist thường (ensure_session / token) dễ mang user_info.money cũ → đè post-placeOrder.
+    force_bal = bool(session.pop("_force_balance_sync", False))
     patch: dict[str, Any] = {"session_json": {}}
     for k in runtime_keys:
         if k not in session or session[k] is None:
@@ -791,11 +797,40 @@ def save_session_runtime(account_id: str, session: dict[str, Any]) -> dict[str, 
     money = ui.get("money") or ui.get("total_money")
     if money is not None:
         try:
-            patch["balance"] = float(money)
+            money_f = float(money)
         except (TypeError, ValueError):
-            pass
+            money_f = None
+        if money_f is not None:
+            cur = get_account(aid) or {}
+            try:
+                db_bal = float(cur.get("balance") or 0)
+            except (TypeError, ValueError):
+                db_bal = 0.0
+            allow = False
+            if force_bal:
+                allow = True
+            elif money_f < db_bal - 0.5:
+                # Persist thường: chỉ cho giảm (session đã khớp placeOrder).
+                allow = True
+            if allow:
+                try:
+                    from xoso66_ws_balance import pending_bet_blocks_balance_increase
 
-    return update_account(account_id, patch)
+                    if pending_bet_blocks_balance_increase(aid, money_f):
+                        allow = False
+                except Exception:
+                    pass
+            if allow:
+                patch["balance"] = money_f
+            elif isinstance(patch.get("session_json"), dict) and isinstance(
+                patch["session_json"].get("user_info"), dict
+            ):
+                # Giữ money trong session_json khớp DB — tránh lần persist sau đè tiếp.
+                ui_fix = dict(patch["session_json"]["user_info"])
+                ui_fix["money"] = db_bal
+                patch["session_json"]["user_info"] = ui_fix
+
+    return update_account(aid, patch)
 
 
 def save_accounts_from_session_map(accounts: dict[str, dict]) -> None:

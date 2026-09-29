@@ -174,26 +174,36 @@ def worker_session_health(interval_sec: int, *, quiet: bool = False) -> None:
 
 
 def worker_auto_bet() -> threading.Thread | None:
-    """Chọn game theo hũ + cược khi WS báo BẮT ĐẦU PHIÊN (cần game_worker_enabled)."""
+    """Luồng auto-bet: luôn chạy khi có WS — enabled=false vẫn giữ handler."""
     cfg = load_config()
-    ab = cfg.get("auto_bet")
-    if not isinstance(ab, dict) or not ab.get("enabled"):
-        return None
     if not cfg.get("game_worker_enabled"):
-        print(
-            "[AUTO-BET] Bật auto_bet nhưng game_worker_enabled=false — "
-            "cần WS worker để nhận phiên.",
-            flush=True,
-        )
+        ab = cfg.get("auto_bet")
+        if isinstance(ab, dict) and ab.get("enabled"):
+            print(
+                "[AUTO-BET] Bật auto_bet nhưng game_worker_enabled=false — "
+                "cần WS worker để nhận phiên.",
+                flush=True,
+            )
         return None
     from xoso66_auto_bet import start_auto_bet_thread
 
     ab = cfg.get("auto_bet") if isinstance(cfg.get("auto_bet"), dict) else {}
-    if ab.get("assign_bets_enabled"):
-        print("[AUTO-BET] Worker: chọn game theo hũ + chia cược khi BẮT ĐẦU PHIÊN.", flush=True)
+    if ab.get("enabled"):
+        if ab.get("assign_bets_enabled"):
+            print(
+                "[AUTO-BET] Worker: chọn game theo hũ + chia cược khi BẮT ĐẦU PHIÊN.",
+                flush=True,
+            )
+        else:
+            print(
+                "[AUTO-BET] Worker: đọc hũ → chọn game → chờ BẮT ĐẦU PHIÊN "
+                "(chưa chia cược).",
+                flush=True,
+            )
     else:
         print(
-            "[AUTO-BET] Worker: đọc hũ → chọn game → chờ BẮT ĐẦU PHIÊN (chưa chia cược).",
+            "[AUTO-BET] TẮT — đổi auto_bet.enabled=true trên config, "
+            "phiên sau sẽ cược (không cần restart).",
             flush=True,
         )
     return start_auto_bet_thread()
@@ -203,10 +213,17 @@ def _ws_worker_target() -> None:
     """Luồng WS 24/7 — pool + listen; crash được xử lý trong run_ws_worker_blocking."""
     from xoso66_accounts_db import usernames_for_log
     from xoso66_config_util import main_progress
+    from xoso66_minigame_ws import WS_HOST, _resolve_ws_tcp_host
     from xoso66_minigame_ws_worker import run_ws_worker_blocking
     from xoso66_shutdown import sleep_interruptible, stopping
     from xoso66_ws_pool import prepare_ws_pool
 
+    ws_tcp_host = _resolve_ws_tcp_host()
+    print(
+        f"[GAME] WS TCP target: {ws_tcp_host}:443 "
+        f"(URI/SNI: {WS_HOST})",
+        flush=True,
+    )
     while not stopping():
         try:
             cfg = load_config()
@@ -508,14 +525,8 @@ def main() -> int:
     elif not quiet:
         print("[WORKER] Session health TẮT — chỉ API CMS (đăng ký/nạp/rút khi CMS gọi)", flush=True)
 
-    ab = cfg.get("auto_bet")
-    ab_enabled = isinstance(ab, dict) and ab.get("enabled")
     ab_thread = None
-    if ab_enabled and cfg.get("game_worker_enabled"):
-        from xoso66_auto_bet import setup_auto_bet_handlers, init_playing_game
-
-        setup_auto_bet_handlers()
-        init_playing_game(cfg, source="khởi động", wait_sec=0)
+    if cfg.get("game_worker_enabled"):
         ab_thread = worker_auto_bet()
         if ab_thread is not None:
             _track_thread(ab_thread)
@@ -531,17 +542,10 @@ def main() -> int:
         _graceful_shutdown()
         return 130
 
-    if ab_thread is None:
+    if ab_thread is None and cfg.get("game_worker_enabled"):
         ab_thread = worker_auto_bet()
     if ab_thread is not None and ab_thread not in _bg_threads:
         _track_thread(ab_thread)
-    else:
-        ab = cfg.get("auto_bet")
-        if not (isinstance(ab, dict) and ab.get("enabled")) and not quiet:
-            print(
-                "[AUTO-BET] TẮT — chỉ chọn user WS + nạp (bật lại khi sẵn sàng đặt cược)",
-                flush=True,
-            )
 
     ui_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     main_progress(

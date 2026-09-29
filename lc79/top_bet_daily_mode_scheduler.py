@@ -7,7 +7,8 @@ Config TOP_BET_DAILY_MODE:
   START: giờ kích hoạt hàng ngày (Asia/Ho_Chi_Minh), 1 lần/ngày sau START
   API_INTERVAL_SECONDS: mỗi N giây gọi game API lấy mốc top 500 (khi đang monitor)
   USER_COUNT: không dùng cố định — số user V2 theo mốc top500:
-    top500 > 7tr → 1 | 6tr ≤ top500 ≤ 7tr → 6 | top500 < 6tr → 8
+    top500 > 7tr → 0 (bỏ qua, không chạy mode / không đổi strategy)
+    | 6tr ≤ top500 ≤ 7tr → 6 | top500 < 6tr → 8
   THRESHOLD_OFFSET_VND: loại user có total_day − top500 > ngưỡng này khi chọn (vd 1_000_000)
   EXIT_GAP_MIN_VND: thoát V2 khi mọi user V2 có total_day − top500 > ngưỡng này (vd 200_000)
   API_USERNAME: user gọi game API (trống → WS đang chạy hoặc user đầu V2/PRIORITY)
@@ -15,7 +16,7 @@ Config TOP_BET_DAILY_MODE:
 Luồng:
   Sau START (chưa chạy hôm nay): API top500 + CMS (chỉ Đang Chơi / Hết Tiền) → lọc/sort → V2, strategy=8
   Monitor: bỏ V2 user không còn Đang Chơi/Hết Tiền; khi mọi user còn lại gap > EXIT_GAP_MIN_VND
-    → xóa V2, strategy=3; MAX outside theo config/TIME_WINDOWS; chờ ngày hôm sau mới chọn lại.
+    → xóa V2, strategy=10; MAX outside theo config/TIME_WINDOWS; chờ ngày hôm sau mới chọn lại.
   Ngoài phiên V2: không ép strategy/MAX liên tục — chỉ dùng config/TIME_WINDOWS.
 """
 
@@ -219,7 +220,7 @@ def _v2_usernames_from_cfg(cfg: dict) -> List[str]:
     return [str(u or "").strip() for u in lst if str(u or "").strip()]
 
 
-_OUTSIDE_WINDOW_STRATEGY = 3
+_OUTSIDE_WINDOW_STRATEGY = 10
 _ACTIVE_STRATEGY = 8
 _MAX_ACTIVE_IN_WINDOW = 0
 
@@ -255,7 +256,7 @@ def _sync_limits_and_strategy(cfg: dict) -> bool:
 
 
 def _clear_v2_and_exit(cfg: dict) -> bool:
-    """Xóa V2 + strategy 3 (MAX outside giữ theo config)."""
+    """Xóa V2 + strategy 10 (MAX outside giữ theo config)."""
     v2_old = cfg.get("PRIORITY_USERS_V2")
     if not isinstance(v2_old, list):
         v2_old = []
@@ -373,7 +374,7 @@ def top_bet_daily_mode_daily_pick_tick(*, force: bool = False) -> None:
             _set_session_active(False, last_pick_date=_today_str(now))
             return
 
-        # USER_COUNT tự theo mốc top500 (>7tr→1, 6–7tr→6, <6tr→8)
+        # USER_COUNT tự theo mốc top500 (>7tr→0 bỏ qua, 6–7tr→6, <6tr→8)
         pick = compute_top_bet_daily_gap_pick(username, user_count=None)
         user_count = resolve_user_count_from_top500(pick.money_500)
         selected = [
@@ -387,6 +388,16 @@ def top_bet_daily_mode_daily_pick_tick(*, force: bool = False) -> None:
             global _cached_money_500, _last_api_fetch_mono
             _cached_money_500 = pick.money_500
             _last_api_fetch_mono = time.monotonic()
+
+        # >7tr → coi như TOP_BET_DAILY_MODE không chạy hôm nay (không đụng V2/strategy)
+        if user_count <= 0:
+            print(
+                f"[TOP-BET-DAY] ⏭️ Bỏ qua — top500={pick.money_500:,} > 7tr "
+                f"(USER_COUNT=0). Không đổi V2/ASSIGN_STRATEGY.",
+                flush=True,
+            )
+            _set_session_active(False, last_pick_date=today)
+            return
 
         if not selected:
             print(

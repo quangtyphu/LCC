@@ -85,12 +85,10 @@ def _check_balance_enabled(acfg: dict) -> bool:
 
 def _assign_ws_pool_only(acfg: dict) -> bool:
     """
-    Chiến lược 2: gán trên mọi acc «Đang Chơi» đủ proxy (HTTP placeOrder),
-    không giới hạn nick đang mở WS — tránh bỏ sót acc cược ngày thấp.
-    Chiến lược 1 / 3: mặc định chỉ pool WS (assign_ws_pool_only=true).
+    Chỉ gán cược nick đang có WS (A) — mọi strategy (1/2/3).
+    Tránh strategy 2 cược HTTP ngoài WS rồi kẹt Đang Chơi thiếu tiền
+    (việc1/Hết Tiền dựa pool WS + status).
     """
-    if int(acfg.get("assign_strategy") or 1) == 2:
-        return False
     return bool(acfg.get("assign_ws_pool_only", True))
 
 
@@ -320,12 +318,16 @@ def _largest_fitting_amount(
     return fitting[0] if fitting else None
 
 
-def _evict_ws_if_daily_exhausted(
+def _mark_daily_cap_if_exhausted(
     cfg: dict,
     pool: list[dict[str, Any]],
     daily: dict[str, float],
     acfg: dict,
 ) -> list[dict[str, Any]]:
+    """
+    Đủ cap → Đủ ngày (status only). Không đóng WS — việc5 Phiên mới/Resync đóng.
+    Log status: [ACCOUNT] … → Đủ ngày.
+    """
     limit = _daily_ws_limit(acfg)
     exhausted: list[dict[str, Any]] = []
     kept: list[dict[str, Any]] = []
@@ -334,20 +336,12 @@ def _evict_ws_if_daily_exhausted(
             exhausted.append(row)
         else:
             kept.append(row)
-    if exhausted and _assign_ws_pool_only(acfg):
-        from xoso66_ws_pool import mark_daily_cap_status, request_ws_evict_and_resync
+    # Ép Đủ ngày mọi strategy — không gắn _assign_ws_pool_only
+    # (flag đó chỉ lọc pool WS; strategy 2 cũng phải đổi status).
+    if exhausted:
+        from xoso66_ws_pool import mark_daily_cap_status
 
-        aids = [str(r["id"]) for r in exhausted]
-        mark_daily_cap_status(aids, cfg)
-        request_ws_evict_and_resync(aids)
-        names = ", ".join(
-            str(r.get("username") or r["id"]) for r in exhausted
-        )
-        print(
-            f"[BET-ASSIGN] Ngắt WS — cược ngày >= {limit:,} "
-            f"(cap - bet_step), thay nick: {names}",
-            flush=True,
-        )
+        mark_daily_cap_status([str(r["id"]) for r in exhausted], cfg)
     return kept
 
 
@@ -922,13 +916,12 @@ def _apply_consolidate_round_aftermath(account_ids: list[str], cfg: dict) -> Non
     )
     from xoso66_sessions_io import load_sessions
     from xoso66_session import refresh_account_balance_to_db
-    from xoso66_ws_pool import min_balance_for_ws, request_ws_evict_and_resync
+    from xoso66_ws_pool import min_balance_for_ws
 
     acfg = _auto_bet_cfg(cfg)
     min_ws = min_balance_for_ws(cfg)
     min_withdraw = consolidate_min_withdraw_vnd(acfg)
     sessions = load_sessions()
-    evict: list[str] = []
 
     for aid in account_ids:
         aid = str(aid).strip()
@@ -953,13 +946,10 @@ def _apply_consolidate_round_aftermath(account_ids: list[str], cfg: dict) -> Non
                 flush=True,
             )
         elif bal > min_withdraw:
-            if set_account_status(
+            # Chỉ Đủ ngày — đóng WS / bù nick: việc5 + việc3.
+            set_account_status(
                 aid, STATUS_DU_NGAY, reason=CONSOLIDATE_WITHDRAW_REASON
-            ):
-                evict.append(aid)
-
-    if evict:
-        request_ws_evict_and_resync(evict)
+            )
 
 
 def schedule_consolidate_round_aftermath(slots: list[BetSlot], cfg: dict) -> None:
@@ -1179,7 +1169,7 @@ def assign_session_bets(
 
     daily = resolve_daily_bets(pool, acfg)
     if strategy != 3:
-        pool = _evict_ws_if_daily_exhausted(cfg, pool, daily, acfg)
+        pool = _mark_daily_cap_if_exhausted(cfg, pool, daily, acfg)
         if not pool:
             return [], "hủy phiên — không còn acc WS sau lọc cap cược ngày", ""
 

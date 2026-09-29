@@ -175,12 +175,23 @@ def place_bet(
             pass
         bal = parse_balance(data.get("balance"))
         if bal is not None:
+            # Cập nhật session RAM trước — tránh persist sau đó đè DB bằng money cũ.
+            ui = session.get("user_info")
+            if not isinstance(ui, dict):
+                ui = {}
+                session["user_info"] = ui
+            ui["money"] = bal
             try:
                 from xoso66_ws_balance import sync_ws_balance_to_db
 
-                sync_ws_balance_to_db(aid, bal)
-            except Exception:
-                pass
+                # placeOrder là nguồn đúng sau cược — luôn ghi, kể cả khi DB đang
+                # thấp hơn (stale) và nick đang ∈ pending (chờ KQ).
+                sync_ws_balance_to_db(aid, bal, force=True)
+            except Exception as e:
+                print(
+                    f"[BET] {aid}: sync số dư sau placeOrder lỗi: {e}",
+                    flush=True,
+                )
     return BetResult(
         ok=ok,
         game_key=req.game_key,

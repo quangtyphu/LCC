@@ -39,6 +39,84 @@ class TestCfRateLimitCooldown(unittest.TestCase):
         self.assertIn("1015", cf_rate_limit_message(px))
 
 
+class TestLoginBlocked(unittest.TestCase):
+    def test_mark_and_remaining(self):
+        from xoso66_session import (
+            _clear_login_blocked,
+            _login_blocked_remaining,
+            _mark_login_blocked,
+        )
+
+        _clear_login_blocked("acc_test_block")
+        rem = _mark_login_blocked("acc_test_block", sec=120)
+        self.assertGreater(rem, 100)
+        self.assertGreater(_login_blocked_remaining("acc_test_block"), 100)
+        _clear_login_blocked("acc_test_block")
+        self.assertEqual(_login_blocked_remaining("acc_test_block"), 0.0)
+
+    def test_spam_msg_not_fatal_loi(self):
+        from xoso66_account_errors import is_fatal_system_error_msg
+
+        self.assertFalse(
+            is_fatal_system_error_msg(
+                "Thao tác trên hệ thống của bạn lặp lại quá thường xuyên"
+            )
+        )
+
+    @patch("xoso66_accounts_db.set_account_status")
+    @patch("xoso66_accounts_db.get_account")
+    def test_http_475_marks_loi(self, mock_get, mock_set):
+        from xoso66_accounts_db import STATUS_LOI
+        from xoso66_session import _clear_login_blocked, _mark_account_loi_http_475
+
+        mock_get.return_value = {"id": "acc475", "username": "u475", "status": "Đang Chơi"}
+        _clear_login_blocked("acc475")
+        _mark_account_loi_http_475({"id": "acc475", "username": "u475"}, "acc475", status=475)
+        mock_set.assert_called()
+        args = mock_set.call_args[0]
+        self.assertEqual(args[0], "acc475")
+        self.assertEqual(args[1], STATUS_LOI)
+
+
+class TestLoginCfBlocked(unittest.TestCase):
+    def test_detects_475_and_403(self):
+        from xoso66_session import is_login_cf_blocked
+
+        self.assertTrue(is_login_cf_blocked(475))
+        self.assertTrue(is_login_cf_blocked(403))
+        self.assertFalse(is_login_cf_blocked(200))
+        self.assertFalse(is_login_cf_blocked(None))
+
+
+class TestEnsureSessionTtlProbe(unittest.TestCase):
+    @patch("xoso66_session.persist_session")
+    @patch("xoso66_session.get_user_balance")
+    @patch("xoso66_session.load_sessions")
+    @patch("xoso66_proxy.ensure_proxy")
+    def test_ttl_expired_but_balance_ok_skips_login(
+        self, _ensure_proxy, mock_load, mock_bal, mock_persist
+    ):
+        session = {
+            "id": "acc1",
+            "proxy": "1.2.3.4:1:a:b",
+            "form_token": "ft",
+            "cookies": {"PHPSESSID": "abc"},
+            "headers": {"cf-auth-token": "tok"},
+            "session_login_at": 1.0,
+        }
+        mock_load.return_value = {"acc1": session}
+        mock_bal.return_value = {"ok": True, "balance": 99}
+
+        with patch("xoso66_session.login_account") as mock_login:
+            from xoso66_session import ensure_session
+
+            out = ensure_session("acc1")
+            self.assertEqual(out["form_token"], "ft")
+            mock_login.assert_not_called()
+            mock_persist.assert_called()
+            self.assertGreater(float(out.get("session_login_at") or 0), 1.0)
+
+
 class TestEnsureSessionLightProbe(unittest.TestCase):
     @patch("xoso66_session.persist_session")
     @patch("xoso66_session.get_user_balance")

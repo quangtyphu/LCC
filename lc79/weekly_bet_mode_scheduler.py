@@ -1,14 +1,16 @@
 """
 Chế độ Cược tuần: mỗi 60 giây (khi ENABLED=1) gọi CMS
-GET /api/users/lc79-playing-or-out, lọc Đang Chơi / Hết Tiền, sắp xếp total_week giảm dần,
-lấy user có THRESHOLD_MIN <= total_week < THRESHOLD (sàn/trần) → ghi PRIORITY_USERS_V2.
+GET /api/users/lc79-playing-or-out, lọc Đang Chơi / Hết Tiền,
+lấy user có THRESHOLD_MIN <= total_week < THRESHOLD (sàn/trần),
+sắp xếp total_week tăng dần (thấp nhất trước) → ghi PRIORITY_USERS_V2.
 
 Config WEEKLY_BET_MODE:
   ENABLED: 0 tắt, 1 bật (chiaTien_Acc ép strategy 6)
   THRESHOLD: trần cược tuần (exclusive — user đạt đúng ngưỡng không được chọn)
   THRESHOLD_MIN: sàn cược tuần (vd. 15_000_000 = 15tr)
-  USER_COUNT: 0 = lấy tất cả user trong khoảng; >0 = giới hạn tối đa
+  USER_COUNT: 0 = tối đa 10 user cược tuần thấp nhất trong nhóm; >0 = giới hạn tùy chỉnh
 
+Mỗi tick: nếu danh sách chọn đổi → cập nhật PRIORITY_USERS_V2 (log [CUOC-TUAN]).
 Khi mọi user trong PRIORITY_USERS_V2 có total_week > THRESHOLD → ENABLED=0, xóa V2.
 
 API Node.js nên trả JSON dạng:
@@ -30,6 +32,7 @@ API_BASE = "http://127.0.0.1:3000"
 FETCH_URL = f"{API_BASE}/api/users/lc79-playing-or-out"
 
 _ALLOWED_STATUSES = frozenset({"Đang Chơi", "Hết Tiền"})
+_DEFAULT_MAX_USERS = 10  # khi USER_COUNT=0: tối đa 10 user total_week thấp nhất
 _config_lock = threading.Lock()
 
 
@@ -96,9 +99,14 @@ def compute_weekly_v2_users(
     week_min: int,
     user_count: int,
 ) -> List[str]:
-    """Lọc status + week_min <= total_week < week_max, sort total_week giảm dần; user_count<=0 = không giới hạn."""
+    """Lọc status + week_min <= total_week < week_max, sort total_week tăng dần (thấp nhất trước).
+
+    user_count > 0 → giới hạn đúng số đó; user_count <= 0 → tối đa _DEFAULT_MAX_USERS (10).
+    Ví dụ nhóm 22 user trong khoảng → lấy 10 user có total_week thấp nhất.
+    """
     lo = max(0, int(week_min))
     hi = max(0, int(week_max))
+    cap = int(user_count) if user_count > 0 else _DEFAULT_MAX_USERS
     acc: Dict[str, int] = {}
     for row in rows:
         status = str(row.get("status") or "").strip()
@@ -112,11 +120,10 @@ def compute_weekly_v2_users(
             continue
         if u not in acc or tw > acc[u]:
             acc[u] = tw
-    ordered = sorted(acc.items(), key=lambda x: (-x[1], x[0]))
+    # Thấp nhất trước; cùng mức thì username để ổn định
+    ordered = sorted(acc.items(), key=lambda x: (x[1], x[0]))
     usernames = [u for u, _ in ordered]
-    if user_count > 0:
-        return usernames[:user_count]
-    return usernames
+    return usernames[:cap]
 
 
 def _normalize_v2_slots(lst: List[Any], nslots: int) -> List[str]:
@@ -225,11 +232,12 @@ def weekly_bet_mode_tick() -> None:
             return
 
         selected = compute_weekly_v2_users(rows, week_max, week_min, user_count)
+        cap = user_count if user_count > 0 else _DEFAULT_MAX_USERS
 
         v2_old = cfg.get("PRIORITY_USERS_V2")
         if not isinstance(v2_old, list):
             v2_old = []
-        slots = max(len(v2_old), len(selected), user_count if user_count > 0 else 0)
+        slots = max(len(v2_old), len(selected), cap)
         new_v2 = selected + [""] * (slots - len(selected))
         new_v2 = new_v2[:slots]
 
@@ -240,7 +248,7 @@ def weekly_bet_mode_tick() -> None:
         if save_config(cfg):
             lo = max(0, week_min)
             hi = max(0, week_max)
-            cap_label = f"{len(selected)}/{user_count}" if user_count > 0 else str(len(selected))
+            cap_label = f"{len(selected)}/{cap}"
             print(
                 f"[CUOC-TUAN] ✅ Đã cập nhật V2 ({cap_label} user, tuần [{lo:,} .. {hi:,})): "
                 f"{', '.join(selected) or '(trống)'}",

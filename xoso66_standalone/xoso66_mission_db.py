@@ -4,6 +4,7 @@ SQLite — snapshot nhiệm vụ từ mission/list (sync sau xoso66_daily_missio
 
 - Điểm danh mỗi ngày: mission_id 22, level_id 161 → daily_* + done_bet_money.
 - MINI GAME 7 ngày: mission_id 17, level_id 114–120 (ngày 1–7) → mini_dayN_* + ngày hiện tại.
+- Cửa MINI GAME (mission_list): chỉ 2 mốc bet_target 2.688.000 / 6.888.000 → cua1_* / cua2_*.
 
 status: 0 = chưa đủ ĐK, 1 = được nhận, 2 = đã nhận.
 """
@@ -57,9 +58,31 @@ CREATE TABLE IF NOT EXISTS account_missions (
     mini_day5_done_bet INTEGER NOT NULL DEFAULT 0,
     mini_day6_done_bet INTEGER NOT NULL DEFAULT 0,
     mini_day7_done_bet INTEGER NOT NULL DEFAULT 0,
+    cua1_bet_target INTEGER NOT NULL DEFAULT 2688000,
+    cua1_level_id INTEGER,
+    cua1_status INTEGER,
+    cua1_done_bet INTEGER NOT NULL DEFAULT 0,
+    cua2_bet_target INTEGER NOT NULL DEFAULT 6888000,
+    cua2_level_id INTEGER,
+    cua2_status INTEGER,
+    cua2_done_bet INTEGER NOT NULL DEFAULT 0,
+    cua_synced_day TEXT NOT NULL DEFAULT '',
     synced_at TEXT NOT NULL
 )
 """
+
+
+_CUA_MIGRATE_COLS: tuple[tuple[str, str], ...] = (
+    ("cua1_bet_target", "INTEGER NOT NULL DEFAULT 2688000"),
+    ("cua1_level_id", "INTEGER"),
+    ("cua1_status", "INTEGER"),
+    ("cua1_done_bet", "INTEGER NOT NULL DEFAULT 0"),
+    ("cua2_bet_target", "INTEGER NOT NULL DEFAULT 6888000"),
+    ("cua2_level_id", "INTEGER"),
+    ("cua2_status", "INTEGER"),
+    ("cua2_done_bet", "INTEGER NOT NULL DEFAULT 0"),
+    ("cua_synced_day", "TEXT NOT NULL DEFAULT ''"),
+)
 
 
 def _migrate_mission_columns(conn: sqlite3.Connection) -> None:
@@ -68,6 +91,10 @@ def _migrate_mission_columns(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE account_missions ADD COLUMN daily_synced_day TEXT NOT NULL DEFAULT ''"
         )
+        cols.add("daily_synced_day")
+    for name, decl in _CUA_MIGRATE_COLS:
+        if name not in cols:
+            conn.execute(f"ALTER TABLE account_missions ADD COLUMN {name} {decl}")
 
 
 def init_mission_table(conn: sqlite3.Connection | None = None) -> None:
@@ -137,12 +164,62 @@ def infer_mini_game_state(week_levels: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _cua_fields_from_task_levels(
+    task_levels: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Map Cửa 1/2 từ task levels → cột DB."""
+    from xoso66_task_mission_reward import (
+        TASK_CUA1_BET_TARGET_VND,
+        TASK_CUA2_BET_TARGET_VND,
+        extract_tracked_cua_doors,
+    )
+
+    doors = extract_tracked_cua_doors(task_levels)
+    c1 = doors.get("cua1") or {}
+    c2 = doors.get("cua2") or {}
+
+    def _lid(lv: dict[str, Any]) -> int | None:
+        raw = lv.get("level_id") if lv.get("level_id") is not None else lv.get("id")
+        if raw is None or raw == "":
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def _st(lv: dict[str, Any]) -> int | None:
+        if not lv:
+            return None
+        st = lv.get("status")
+        if st is None or st == "":
+            return None
+        try:
+            return int(st)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "cua1_bet_target": TASK_CUA1_BET_TARGET_VND,
+        "cua1_level_id": _lid(c1) if c1 else None,
+        "cua1_status": _st(c1),
+        "cua1_done_bet": int(c1.get("done_bet_money") or 0) if c1 else 0,
+        "cua2_bet_target": TASK_CUA2_BET_TARGET_VND,
+        "cua2_level_id": _lid(c2) if c2 else None,
+        "cua2_status": _st(c2),
+        "cua2_done_bet": int(c2.get("done_bet_money") or 0) if c2 else 0,
+        # Có task_levels (caller sync) → luôn stamp ngày VN.
+        "cua_synced_day": today_vn_str(),
+    }
+
+
 def build_mission_snapshot(
     username: str,
     account_id: str,
     levels: list[dict[str, Any]],
+    *,
+    task_levels: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Từ collect_tracked_levels → dict lưu DB."""
+    """Từ collect_tracked_levels (+ optional task Cửa) → dict lưu DB."""
     daily: dict[str, Any] = {}
     week: list[dict[str, Any]] = []
     for row in levels:
@@ -163,7 +240,7 @@ def build_mission_snapshot(
     def _bet(i: int) -> int:
         return dbets[i] if i < len(dbets) else 0
 
-    return {
+    snap = {
         "username": username.strip(),
         "account_id": str(account_id),
         "daily_mission_id": SIGN_ID_DAILY,
@@ -194,19 +271,40 @@ def build_mission_snapshot(
         "mini_day7_done_bet": _bet(6),
         "synced_at": _now_iso(),
     }
+    snap.update(_cua_fields_from_task_levels(task_levels))
+    return snap
 
 
 def upsert_mission_snapshot(
     username: str,
     account_id: str,
     levels: list[dict[str, Any]],
+    *,
+    task_levels: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     init_db()
-    snap = build_mission_snapshot(username, account_id, levels)
+    snap = build_mission_snapshot(
+        username, account_id, levels, task_levels=task_levels
+    )
     with db_conn() as conn:
         init_mission_table(conn)
-        conn.execute(
+        # Có task_levels (kể cả rỗng sau parse) → ghi cua_*; None = giữ cột cũ trên CONFLICT.
+        update_cua = task_levels is not None
+        cua_set = ""
+        if update_cua:
+            cua_set = """
+                cua1_bet_target=excluded.cua1_bet_target,
+                cua1_level_id=excluded.cua1_level_id,
+                cua1_status=excluded.cua1_status,
+                cua1_done_bet=excluded.cua1_done_bet,
+                cua2_bet_target=excluded.cua2_bet_target,
+                cua2_level_id=excluded.cua2_level_id,
+                cua2_status=excluded.cua2_status,
+                cua2_done_bet=excluded.cua2_done_bet,
+                cua_synced_day=excluded.cua_synced_day,
             """
+        conn.execute(
+            f"""
             INSERT INTO account_missions (
                 username, account_id,
                 daily_mission_id, daily_level_id, daily_status,
@@ -217,15 +315,21 @@ def upsert_mission_snapshot(
                 mini_day4_status, mini_day5_status, mini_day6_status, mini_day7_status,
                 mini_day1_done_bet, mini_day2_done_bet, mini_day3_done_bet,
                 mini_day4_done_bet, mini_day5_done_bet, mini_day6_done_bet, mini_day7_done_bet,
+                cua1_bet_target, cua1_level_id, cua1_status, cua1_done_bet,
+                cua2_bet_target, cua2_level_id, cua2_status, cua2_done_bet,
+                cua_synced_day,
                 synced_at
             ) VALUES (
                 ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?,
-                ?, ?,
-                ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?,
                 ?
             )
             ON CONFLICT(username) DO UPDATE SET
@@ -253,6 +357,7 @@ def upsert_mission_snapshot(
                 mini_day5_done_bet=excluded.mini_day5_done_bet,
                 mini_day6_done_bet=excluded.mini_day6_done_bet,
                 mini_day7_done_bet=excluded.mini_day7_done_bet,
+                {cua_set}
                 synced_at=excluded.synced_at
             """,
             (
@@ -284,6 +389,15 @@ def upsert_mission_snapshot(
                 snap["mini_day5_done_bet"],
                 snap["mini_day6_done_bet"],
                 snap["mini_day7_done_bet"],
+                snap["cua1_bet_target"],
+                snap["cua1_level_id"],
+                snap["cua1_status"],
+                snap["cua1_done_bet"],
+                snap["cua2_bet_target"],
+                snap["cua2_level_id"],
+                snap["cua2_status"],
+                snap["cua2_done_bet"],
+                snap["cua_synced_day"],
                 snap["synced_at"],
             ),
         )
@@ -355,9 +469,14 @@ def persist_mission_state(
     *,
     phase: str = "list",
     sync_accounts_daily_bet: bool | None = None,
+    task_levels: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Lưu account_missions; có thể ghi accounts.daily_bet_total từ done_bet_money (161).
+
+    task_levels: Cửa MINI GAME (mission_list) — chỉ sync 2 mốc 2688k/6888k.
+      None = không đụng cột cua_* (giữ giá trị cũ).
+      list (kể cả []) = ghi cua_* từ API.
 
     sync_accounts_daily_bet:
       None (mặc định): ghi accounts khi done_bet >= tổng cược ngày.
@@ -370,7 +489,9 @@ def persist_mission_state(
 
     from xoso66_daily_mission_check import is_daily_161_complete_sentinel
 
-    snap = upsert_mission_snapshot(username, account_id, levels)
+    snap = upsert_mission_snapshot(
+        username, account_id, levels, task_levels=task_levels
+    )
     daily_bet = int(snap.get("daily_done_bet_money") or 0)
     row = get_account(str(account_id).strip()) or {}
     db_total = int(daily_bet_today_vnd(row))
@@ -489,11 +610,45 @@ def _mini_day_badge(day: int, status: Any) -> dict[str, Any]:
     return {"day": day, "status": st, "label": "○", "css": "mini-pending"}
 
 
+def _cua_synced_today(snapshot: dict[str, Any]) -> bool:
+    day = str(snapshot.get("cua_synced_day") or "").strip()
+    if day:
+        return day == today_vn_str()
+    return False
+
+
+def _cua_effective_status(snapshot: dict[str, Any], key: str) -> int | None:
+    if not _cua_synced_today(snapshot):
+        return None
+    st = snapshot.get(key)
+    if st is None or st == "":
+        return None
+    try:
+        return int(st)
+    except (TypeError, ValueError):
+        return None
+
+
+def _nhiem_vu_cua_tier(snapshot: dict[str, Any]) -> int:
+    """0 = chưa nhận cửa | 1 = đã nhận cửa 1 | 2 = đã nhận cửa 2."""
+    if not _cua_synced_today(snapshot):
+        return 0
+    s2 = _cua_effective_status(snapshot, "cua2_status")
+    if s2 == 2:
+        return 2
+    s1 = _cua_effective_status(snapshot, "cua1_status")
+    if s1 == 2:
+        return 1
+    return 0
+
+
 def mission_cms_fields(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     """
     Trường gắn vào /api/accounts cho CMS:
     - daily_161_* : nhiệm vụ điểm danh mỗi ngày (level 161)
     - mini_week_* : MINI GAME 7 ngày
+    - cua1_* / cua2_* : Cửa MINI GAME 2.688k / 6.888k
+    - nhiem_vu_cua : 0/1/2 (ô CMS)
     """
     if not snapshot:
         return {
@@ -504,6 +659,17 @@ def mission_cms_fields(snapshot: dict[str, Any] | None) -> dict[str, Any]:
             "mini_current_day": 0,
             "mini_current_label": "—",
             "mini_week_days": [],
+            "cua1_bet_target": 2_688_000,
+            "cua1_status": None,
+            "cua1_label": "—",
+            "cua1_done_bet": 0,
+            "cua2_bet_target": 6_888_000,
+            "cua2_status": None,
+            "cua2_label": "—",
+            "cua2_done_bet": 0,
+            "cua_synced_day": None,
+            "cua_is_today": False,
+            "nhiem_vu_cua": 0,
         }
 
     st, done_bet = _daily_161_effective(snapshot)
@@ -533,6 +699,16 @@ def mission_cms_fields(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     synced_day = str(snapshot.get("daily_synced_day") or "").strip() or _iso_to_vn_day(
         snapshot.get("synced_at")
     )
+    cua1_st = _cua_effective_status(snapshot, "cua1_status")
+    cua2_st = _cua_effective_status(snapshot, "cua2_status")
+    cua_day = str(snapshot.get("cua_synced_day") or "").strip() or None
+    _cua_lab = {0: "Chưa đủ", 1: "Được nhận", 2: "Đã nhận"}
+
+    def _cua_label(stv: int | None) -> str:
+        if stv is None:
+            return "—"
+        return _cua_lab.get(stv, f"?({stv})")
+
     return {
         "mission_synced_at": snapshot.get("synced_at"),
         "daily_161_synced_day": synced_day or None,
@@ -543,6 +719,23 @@ def mission_cms_fields(snapshot: dict[str, Any] | None) -> dict[str, Any]:
         "mini_current_day": current_day,
         "mini_current_label": mini_label,
         "mini_week_days": badges,
+        "cua1_bet_target": int(snapshot.get("cua1_bet_target") or 2_688_000),
+        "cua1_level_id": snapshot.get("cua1_level_id"),
+        "cua1_status": cua1_st,
+        "cua1_label": _cua_label(cua1_st),
+        "cua1_done_bet": int(snapshot.get("cua1_done_bet") or 0)
+        if _cua_synced_today(snapshot)
+        else 0,
+        "cua2_bet_target": int(snapshot.get("cua2_bet_target") or 6_888_000),
+        "cua2_level_id": snapshot.get("cua2_level_id"),
+        "cua2_status": cua2_st,
+        "cua2_label": _cua_label(cua2_st),
+        "cua2_done_bet": int(snapshot.get("cua2_done_bet") or 0)
+        if _cua_synced_today(snapshot)
+        else 0,
+        "cua_synced_day": cua_day,
+        "cua_is_today": _cua_synced_today(snapshot),
+        "nhiem_vu_cua": _nhiem_vu_cua_tier(snapshot),
     }
 
 

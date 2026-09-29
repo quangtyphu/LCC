@@ -1,15 +1,17 @@
 """
 Chế độ Cược tháng: mỗi 60 giây (khi ENABLED=1) gọi CMS
 GET /api/users/lc79-playing-or-out + merge total_month từ /api/bet-totals,
-lọc Đang Chơi / Hết Tiền, sắp xếp total_month giảm dần,
-lấy user có THRESHOLD_MIN <= total_month < THRESHOLD (sàn/trần) → ghi PRIORITY_USERS_V2.
+lọc Đang Chơi / Hết Tiền,
+lấy user có THRESHOLD_MIN <= total_month < THRESHOLD (sàn/trần),
+sắp xếp total_month tăng dần (thấp nhất trước) → ghi PRIORITY_USERS_V2.
 
 Config MONTHLY_BET_MODE:
   ENABLED: 0 tắt, 1 bật (chiaTien_Acc ép strategy 13)
   THRESHOLD: trần cược tháng (exclusive — user đạt đúng ngưỡng không được chọn)
   THRESHOLD_MIN: sàn cược tháng (vd. 15_000_000 = 15tr)
-  USER_COUNT: 0 = lấy tất cả user trong khoảng; >0 = giới hạn tối đa
+  USER_COUNT: 0 = tối đa 10 user cược tháng thấp nhất trong nhóm; >0 = giới hạn tùy chỉnh
 
+Mỗi tick: nếu danh sách chọn đổi → cập nhật PRIORITY_USERS_V2 (log [CUOC-THANG]).
 Khi mọi user trong PRIORITY_USERS_V2 có total_month > THRESHOLD → ENABLED=0, xóa V2.
 """
 
@@ -28,6 +30,7 @@ STATUS_FETCH_URL = f"{API_BASE}/api/users/lc79-playing-or-out"
 BET_TOTALS_URL = f"{API_BASE}/api/bet-totals"
 
 _ALLOWED_STATUSES = frozenset({"Đang Chơi", "Hết Tiền"})
+_DEFAULT_MAX_USERS = 10  # khi USER_COUNT=0: tối đa 10 user total_month thấp nhất
 _config_lock = threading.Lock()
 
 
@@ -138,9 +141,14 @@ def compute_monthly_v2_users(
     month_min: int,
     user_count: int,
 ) -> List[str]:
-    """Lọc status + month_min <= total_month < month_max, sort total_month giảm dần; user_count<=0 = không giới hạn."""
+    """Lọc status + month_min <= total_month < month_max, sort total_month tăng dần (thấp nhất trước).
+
+    user_count > 0 → giới hạn đúng số đó; user_count <= 0 → tối đa _DEFAULT_MAX_USERS (10).
+    Ví dụ nhóm 22 user trong khoảng → lấy 10 user có total_month thấp nhất.
+    """
     lo = max(0, int(month_min))
     hi = max(0, int(month_max))
+    cap = int(user_count) if user_count > 0 else _DEFAULT_MAX_USERS
     acc: Dict[str, int] = {}
     for row in rows:
         status = str(row.get("status") or "").strip()
@@ -154,11 +162,10 @@ def compute_monthly_v2_users(
             continue
         if u not in acc or tm > acc[u]:
             acc[u] = tm
-    ordered = sorted(acc.items(), key=lambda x: (-x[1], x[0]))
+    # Thấp nhất trước; cùng mức thì username để ổn định
+    ordered = sorted(acc.items(), key=lambda x: (x[1], x[0]))
     usernames = [u for u, _ in ordered]
-    if user_count > 0:
-        return usernames[:user_count]
-    return usernames
+    return usernames[:cap]
 
 
 def _normalize_v2_slots(lst: List[Any], nslots: int) -> List[str]:
@@ -269,11 +276,12 @@ def monthly_bet_mode_tick() -> None:
             return
 
         selected = compute_monthly_v2_users(rows, month_max, month_min, user_count)
+        cap = user_count if user_count > 0 else _DEFAULT_MAX_USERS
 
         v2_old = cfg.get("PRIORITY_USERS_V2")
         if not isinstance(v2_old, list):
             v2_old = []
-        slots = max(len(v2_old), len(selected), user_count if user_count > 0 else 0)
+        slots = max(len(v2_old), len(selected), cap)
         new_v2 = selected + [""] * (slots - len(selected))
         new_v2 = new_v2[:slots]
 
@@ -284,7 +292,7 @@ def monthly_bet_mode_tick() -> None:
         if save_config(cfg):
             lo = max(0, month_min)
             hi = max(0, month_max)
-            cap_label = f"{len(selected)}/{user_count}" if user_count > 0 else str(len(selected))
+            cap_label = f"{len(selected)}/{cap}"
             print(
                 f"[CUOC-THANG] ✅ Đã cập nhật V2 ({cap_label} user, tháng [{lo:,} .. {hi:,})): "
                 f"{', '.join(selected) or '(trống)'}",

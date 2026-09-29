@@ -79,17 +79,35 @@ def is_daily_161_complete_sentinel(done_bet_money: int | float) -> bool:
 
 
 def needs_daily_161_bet_poll(
-    done_bet_money: int | float, daily_bet_total: int | float
+    done_bet_money: int | float,
+    daily_bet_total: int | float,
+    *,
+    bet_target: int | float = 0,
+    status: int | None = None,
 ) -> bool:
     """
-    Poll chờ mission 161 chỉ khi cả hai đều đúng:
-    done_bet < 888888 VÀ done_bet < tổng cược ngày.
+    Poll chỉ khi DB đủ mốc nhận nhưng done_bet site chưa đủ mốc đó.
+    Site đã đủ mốc (done >= target / status=1|2 / sentinel 888888) → không poll,
+    kể cả khi done < cược ngày DB (vd DB 900k, site 890k vẫn đủ nhận).
     """
     done = int(done_bet_money or 0)
     total = int(daily_bet_total or 0)
+    target = int(bet_target or 0)
     if total <= 0:
         return False
-    return done < DAILY_161_DONE_BET_COMPLETE and done < total
+    if is_daily_161_complete_sentinel(done):
+        return False
+    try:
+        st = int(status) if status is not None and status != "" else None
+    except (TypeError, ValueError):
+        st = None
+    if st in (REWARD_CLAIM_STATUS, 2):
+        return False
+    if target <= 0:
+        return False
+    if total < target:
+        return False
+    return done < target
 
 
 def is_mission_reward_rate_limit(msg: str) -> bool:
@@ -602,8 +620,12 @@ def process_username(
     levels = collect_tracked_levels(data)
 
     from xoso66_mission_db import format_db_save_line, persist_mission_state
+    from xoso66_task_mission_reward import collect_task_levels_from_data
 
-    mission_snap = persist_mission_state(u, aid, levels, phase="list")
+    task_levels = collect_task_levels_from_data(data)
+    mission_snap = persist_mission_state(
+        u, aid, levels, phase="list", task_levels=task_levels
+    )
     print(f"  [{u}] {format_db_save_line(mission_snap)}", flush=True)
 
     claimable = [x for x in levels if x.get("status") == REWARD_CLAIM_STATUS]
@@ -619,7 +641,10 @@ def process_username(
         if rep2.get("ok"):
             data = rep2.get("data")
             levels = collect_tracked_levels(data)
-            mission_snap = persist_mission_state(u, aid, levels, phase="after_claim")
+            task_levels = collect_task_levels_from_data(data)
+            mission_snap = persist_mission_state(
+                u, aid, levels, phase="after_claim", task_levels=task_levels
+            )
             print(f"  [{u}] {format_db_save_line(mission_snap)}", flush=True)
     elif claimable:
         print(f"  [{u}] {len(claimable)} mức status=1 (--check-only, bỏ qua reward)", flush=True)

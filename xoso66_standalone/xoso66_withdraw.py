@@ -255,6 +255,13 @@ def withdraw_for_account(
     from xoso66_deposit import get_form_token
 
     cards_resp = get_user_bank_list(session)
+    if not cards_resp.get("ok"):
+        detail = str(
+            cards_resp.get("msg")
+            or cards_resp.get("error")
+            or f"code={cards_resp.get('code')}"
+        )
+        raise RuntimeError(f"Không lấy được thẻ NH từ API: {detail}")
     if currency == CURRENCY_VND and not cards_resp.get("cards"):
         raise RuntimeError(
             "Không có thẻ NH — bind bank trước: python xoso66_bank_bind.py -a ... --list-linked"

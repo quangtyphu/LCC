@@ -147,8 +147,8 @@ def register_via_chrome_extension(
     payload = dict(plain)
     payload["_callback"] = callback
     b64 = b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
-    # Hash giữ payload khi site redirect /home/?… → /home (Vue history mode).
-    url = f"{default_base_url()}/home/#xoso66_reg={b64}"
+    # Hash #/? giữ payload; tránh #xoso66_reg=… bị Vue thành route 404.
+    url = f"{default_base_url()}/home/#/?xoso66_reg={b64}"
 
     meta: dict[str, Any] = {"method": "chrome_extension", "cdp": False, "callback_port": port}
     locked = profile_is_locked(profile_dir)

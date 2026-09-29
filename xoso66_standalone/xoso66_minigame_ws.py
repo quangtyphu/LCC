@@ -14,15 +14,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import ipaddress
 import json
 import os
 import random
+import socket
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timedelta
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import socks
@@ -37,12 +40,143 @@ if sys.platform.startswith("win"):
 WS_HOST = urlparse(
     os.environ.get("XOSO66_MINIGAME_WS_BASE", "wss://wss-minigame-viet.227290.com")
 ).netloc or "wss-minigame-viet.227290.com"
+_WS_TCP_HOST_CACHE: str | None = None
+_WS_TCP_HOST_CACHE_AT = 0.0
+_WS_TCP_HOST_CACHE_LOCK = threading.Lock()
+_WS_TCP_HOST_CACHE_SEC = 300.0
+# Domain parking của Above.com: TLS vẫn thành công nhưng trả HTML HTTP 200,
+# không phải WebSocket 101. Ngày 2026-09-25 A record bị trỏ nhầm vào đây,
+# trong khi AAAA vẫn trỏ Cloudflare và web qua IPv6 vẫn chơi được.
+_WS_PARKING_IPV4 = frozenset({"103.224.212.141"})
+_WS_CLOUDFLARE_FALLBACK_IPV4 = ("104.18.12.214", "104.18.13.214")
+_WS_BROKEN_A_RECORD_HOSTS = frozenset({"wss-minigame-viet.227290.com"})
 
 # game_id trong subscribe — lobby 0; jackpot: 9,17,18,19,2 (bỏ game 4 — không hũ)
 # Đủ 5 game: "0,9,[17,18,19,2]"
 DEFAULT_WS_SUBSCRIBE = os.environ.get("XOSO66_WS_SUBSCRIBE", "0,9,[17,18,19,2]")
 DEFAULT_WATCH_GAME_IDS = frozenset(DEFAULT_JACKPOT_GAME_IDS)
 WS_PING_INTERVAL_SEC = float(os.environ.get("XOSO66_WS_PING_INTERVAL", "20"))
+# 1 nick = 1 WS, subscribe mọi game hũ trên cùng socket (0 + 9,17,18,19,2).
+# Không nhận open_info (phiên) game nào trong khoảng này → token mới + subscribe lại.
+# Ping/hũ lobby vẫn tới thì idle 120s không bắt được socket chết kênh phiên.
+WS_OPEN_INFO_STALE_SEC = float(os.environ.get("XOSO66_WS_OPEN_INFO_STALE_SEC", "90"))
+# next_info snapshot lúc reconnect / queue đầy: còn ít hơn mức này thì không cược / không 5 việc.
+NEXT_INFO_SKIP_IF_END_LEFT_SEC = 2.0
+# Handshake SOCKS+TLS sau khi đã có token. Chờ hàng cửa không tính vào đây.
+WS_CONNECT_BUDGET_SEC = float(os.environ.get("XOSO66_WS_CONNECT_BUDGET_SEC", "20"))
+# getToken (HTTP+proxy) riêng — không chia chung 20s với TLS.
+WS_TOKEN_BUDGET_SEC = float(os.environ.get("XOSO66_WS_TOKEN_BUDGET_SEC", "45"))
+# Chờ semaphore mở WS — 40 nick / batch 4 không bị cắt 20s rồi cancel handshake.
+WS_CONNECT_SLOT_WAIT_SEC = float(os.environ.get("XOSO66_WS_CONNECT_SLOT_WAIT_SEC", "90"))
+SOCKS_CONNECT_TIMEOUT_SEC = float(os.environ.get("XOSO66_SOCKS_CONNECT_TIMEOUT_SEC", "8"))
+WS_SUBSCRIBE_TIMEOUT_SEC = float(os.environ.get("XOSO66_WS_SUBSCRIBE_TIMEOUT_SEC", "8"))
+
+_OPEN_INFO_RX: dict[int, float] = {}
+_OPEN_INFO_RX_LOCK = threading.Lock()
+_WS_INGRESS_HEALTH: dict[str, dict[str, float]] = {}
+_WS_INGRESS_HEALTH_LOCK = threading.Lock()
+_LAST_NEXT_INFO: dict[str, Any] = {}
+_LAST_NEXT_INFO_LOCK = threading.Lock()
+def note_claimed_next_info(next_info: dict[str, Any] | None) -> None:
+    """Ghi begin/end phiên đang chạy — spawn_cap / còn cửa, không chặn đóng-mở WS."""
+    if not isinstance(next_info, dict):
+        return
+    with _LAST_NEXT_INFO_LOCK:
+        _LAST_NEXT_INFO.clear()
+        _LAST_NEXT_INFO.update(next_info)
+
+
+def _copied_last_next_info() -> dict[str, Any] | None:
+    with _LAST_NEXT_INFO_LOCK:
+        return dict(_LAST_NEXT_INFO) if _LAST_NEXT_INFO else None
+
+
+def ws_socket_churn_blocked() -> tuple[bool, str]:
+    """Không còn cửa begin/end. Đóng/mở WS theo Đang Chơi + A, không theo đồng hồ phiên."""
+    return False, ""
+
+
+def current_round_still_open() -> bool:
+    left = next_info_end_left_sec(_copied_last_next_info())
+    return left is not None and left > 0
+
+
+def note_open_info_received(game_id: int, *, received_wall: float | None = None) -> None:
+    """Mốc raw open_info tới socket — không dùng giờ handler xử lý."""
+    gid = int(game_id or 0)
+    if gid <= 0:
+        return
+    with _OPEN_INFO_RX_LOCK:
+        _OPEN_INFO_RX[gid] = float(received_wall or time.time())
+
+
+def newest_open_info_rx() -> tuple[int | None, float | None]:
+    """(game_id, age_sec) của open_info mới nhất — mọi game trên mọi nick."""
+    with _OPEN_INFO_RX_LOCK:
+        if not _OPEN_INFO_RX:
+            return None, None
+        gid, ts = max(_OPEN_INFO_RX.items(), key=lambda kv: kv[1])
+    return int(gid), max(0.0, time.time() - ts)
+
+
+def clear_open_info_rx() -> None:
+    with _OPEN_INFO_RX_LOCK:
+        _OPEN_INFO_RX.clear()
+
+
+def format_ws_open_info_health(game_id: int | None = None) -> str:
+    """Nhãn health: open_info=12s | open_info=STALE 180s | open_info=chưa."""
+    _ = game_id
+    gid, age = newest_open_info_rx()
+    if gid is None or age is None:
+        return "open_info=chưa"
+    stale = WS_OPEN_INFO_STALE_SEC > 0 and age > WS_OPEN_INFO_STALE_SEC
+    tag = "STALE " if stale else ""
+    return f"open_info={tag}{age:.0f}s"
+
+
+def note_ws_ingress_health(
+    account_id: str,
+    router: "WsInboundRouter",
+    *,
+    received_wall: float | None = None,
+    queue_age_sec: float | None = None,
+) -> None:
+    aid = str(account_id or "").strip()
+    if not aid:
+        return
+    with _WS_INGRESS_HEALTH_LOCK:
+        row = _WS_INGRESS_HEALTH.setdefault(aid, {})
+        if received_wall is not None:
+            row["last_recv_wall"] = float(received_wall)
+        if queue_age_sec is not None:
+            row["last_queue_age_sec"] = max(0.0, float(queue_age_sec))
+            row["max_queue_age_sec"] = max(
+                float(row.get("max_queue_age_sec") or 0),
+                max(0.0, float(queue_age_sec)),
+            )
+        row["critical_depth"] = float(router.critical_depth())
+        row["bulk_depth"] = float(router.bulk_depth())
+        row["bulk_coalesced"] = float(router.bulk_coalesced)
+        row["critical_dropped"] = float(router.critical_dropped)
+
+
+def format_ws_ingress_health(account_id: str) -> str:
+    aid = str(account_id or "").strip()
+    with _WS_INGRESS_HEALTH_LOCK:
+        row = dict(_WS_INGRESS_HEALTH.get(aid) or {})
+    if not row:
+        return "ingress=chưa"
+    recv_age = max(0.0, time.time() - float(row.get("last_recv_wall") or time.time()))
+    return (
+        f"ingress_recv={recv_age:.0f}s "
+        f"q={int(row.get('critical_depth') or 0)}/"
+        f"{int(row.get('bulk_depth') or 0)} "
+        f"q_age={float(row.get('last_queue_age_sec') or 0):.3f}s "
+        f"q_max={float(row.get('max_queue_age_sec') or 0):.3f}s "
+        f"coal={int(row.get('bulk_coalesced') or 0)} "
+        f"dropC={int(row.get('critical_dropped') or 0)}"
+    )
 
 # Gợi ý nhận diện jackpot / pool trong payload JSON
 _JACKPOT_TYPE_HINTS = frozenset(
@@ -84,8 +218,155 @@ class JackpotState:
     jackpot_updates: int = 0
 
 
+@dataclass(frozen=True)
+class WsInboundItem:
+    """Một frame đã decode kèm đúng mốc nhận từ socket."""
+
+    obj: Any
+    received_mono: float
+    received_wall: float
+
+
+class WsInboundRouter:
+    """
+    Critical frame không đứng sau jackpot/game_info backlog.
+
+    Bulk frame được coalesce theo (type, game_id), chỉ giữ bản mới nhất.
+    """
+
+    _CRITICAL_TYPES = frozenset(
+        {
+            "g_open_info",
+            "open_info",
+            "balance",
+            "g_balance",
+            "logout",
+            "ping",
+            "heartbeat",
+            "heart",
+        }
+    )
+
+    def __init__(self, *, critical_maxsize: int = 64) -> None:
+        self._critical: asyncio.Queue[WsInboundItem] = asyncio.Queue(
+            maxsize=max(8, int(critical_maxsize))
+        )
+        self._bulk: dict[tuple[str, int], WsInboundItem] = {}
+        self._wake = asyncio.Event()
+        self._closed = False
+        self.bulk_coalesced = 0
+        self.critical_dropped = 0
+        self.max_critical_age_sec = 0.0
+
+    @staticmethod
+    def _type_gid(obj: Any) -> tuple[str, int]:
+        if not isinstance(obj, dict):
+            return "", 0
+        msg_type = str(
+            obj.get("type") or obj.get("cmd") or obj.get("action") or ""
+        ).lower()
+        data = obj.get("data") if isinstance(obj.get("data"), dict) else obj
+        try:
+            gid = int(data.get("game_id") or data.get("id") or 0)
+        except (TypeError, ValueError):
+            gid = 0
+        return msg_type, gid
+
+    @classmethod
+    def _is_critical(cls, obj: Any) -> bool:
+        if isinstance(obj, dict) and obj.get("_app_ping"):
+            return True
+        if _is_ping_payload(obj):
+            return True
+        msg_type, _gid = cls._type_gid(obj)
+        if msg_type in cls._CRITICAL_TYPES:
+            return True
+        if msg_type in ("g_game_info", "game_info"):
+            data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
+            return data.get("is_open") == 1
+        return False
+
+    def put_raw(self, raw: str | bytes) -> WsInboundItem:
+        item = WsInboundItem(
+            obj=_decode_message(raw),
+            received_mono=time.monotonic(),
+            received_wall=time.time(),
+        )
+        if self._is_critical(item.obj):
+            if self._critical.full():
+                # Critical rất ít; nếu consumer chết thì giữ frame mới nhất.
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    self._critical.get_nowait()
+                self.critical_dropped += 1
+            self._critical.put_nowait(item)
+        else:
+            key = self._type_gid(item.obj)
+            if key in self._bulk:
+                self.bulk_coalesced += 1
+            self._bulk[key] = item
+        self._wake.set()
+        return item
+
+    def close(self) -> None:
+        self._closed = True
+        self._wake.set()
+
+    def critical_depth(self) -> int:
+        return self._critical.qsize()
+
+    def bulk_depth(self) -> int:
+        return len(self._bulk)
+
+    async def get(self) -> WsInboundItem | None:
+        while True:
+            with contextlib.suppress(asyncio.QueueEmpty):
+                item = self._critical.get_nowait()
+                age = max(0.0, time.monotonic() - item.received_mono)
+                self.max_critical_age_sec = max(self.max_critical_age_sec, age)
+                return item
+            if self._bulk:
+                _key, item = self._bulk.popitem()
+                return item
+            if self._closed:
+                return None
+            self._wake.clear()
+            if not self._critical.empty() or self._bulk or self._closed:
+                continue
+            await self._wake.wait()
+
+
 _ROUND_START_HANDLERS: list[Any] = []
 _ROUND_RESULT_HANDLERS: list[Any] = []
+_RESULT_LOG_KEYS: set[str] = set()
+_RESULT_LOG_LOCK = threading.Lock()
+_START_CLAIM_KEYS: set[str] = set()
+_START_CLAIM_LOCK = threading.Lock()
+
+
+def _note_issue_once(store: set[str], lock: threading.Lock, game_id: int, issue: str) -> bool:
+    issue_s = str(issue or "").strip()
+    if not issue_s:
+        return False
+    key = f"{int(game_id)}:{issue_s}"
+    with lock:
+        if key in store:
+            return False
+        store.add(key)
+        if len(store) > 200:
+            old = list(store)[:100]
+            for item in old:
+                store.discard(item)
+        return True
+
+
+def note_round_result_logged(game_id: int, issue: str) -> bool:
+    """True nếu lần đầu in KQ issue này — tránh in trùng watch + settlement."""
+    return _note_issue_once(_RESULT_LOG_KEYS, _RESULT_LOG_LOCK, game_id, issue)
+
+
+def note_round_start_claimed(game_id: int, issue: str) -> bool:
+    """True nếu lần đầu claim phiên mới — mọi coordinator / socket dùng chung."""
+    return _note_issue_once(_START_CLAIM_KEYS, _START_CLAIM_LOCK, game_id, issue)
 
 _ROUND_OPEN_LOCK = threading.Lock()
 _ROUND_OPEN_MONO: dict[tuple[int, str], float] = {}
@@ -186,15 +467,47 @@ class WsBroadcastCoordinator:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._seen: set[str] = set()
+        self._seen_order: deque[str] = deque()
         self._reporter: dict[str, str] = {}
+        self._latest_issue: dict[tuple[str, int], str] = {}
 
     def _claim(self, key: str, reporter: str = "") -> bool:
         with self._lock:
             if key in self._seen:
                 return False
             self._seen.add(key)
+            self._seen_order.append(key)
             if reporter:
                 self._reporter[key] = reporter
+            while len(self._seen_order) > 2000:
+                old = self._seen_order.popleft()
+                self._seen.discard(old)
+                self._reporter.pop(old, None)
+            return True
+
+    def _claim_issue(
+        self, kind: str, game_id: int, issue: str, reporter: str = ""
+    ) -> bool:
+        issue_s = str(issue or "").strip()
+        if not issue_s:
+            return False
+        gid = int(game_id)
+        key = f"{kind}:{gid}:{issue_s}"
+        order_key = (kind, gid)
+        with self._lock:
+            latest = self._latest_issue.get(order_key)
+            if latest is not None and issue_s <= latest:
+                return False
+            self._seen.add(key)
+            self._seen_order.append(key)
+            if latest is None or issue_s > latest:
+                self._latest_issue[order_key] = issue_s
+            if reporter:
+                self._reporter[key] = reporter
+            while len(self._seen_order) > 2000:
+                old = self._seen_order.popleft()
+                self._seen.discard(old)
+                self._reporter.pop(old, None)
             return True
 
     def reporter_of(self, key: str) -> str:
@@ -205,16 +518,10 @@ class WsBroadcastCoordinator:
         return self._claim(f"j:{int(game_id)}:{money}", reporter)
 
     def claim_round_start(self, game_id: int, issue: str, *, reporter: str = "") -> bool:
-        issue = str(issue or "").strip()
-        if not issue:
-            return False
-        return self._claim(f"s:{int(game_id)}:{issue}", reporter)
+        return self._claim_issue("s", game_id, issue, reporter)
 
     def claim_round_result(self, game_id: int, issue: str, *, reporter: str = "") -> bool:
-        issue = str(issue or "").strip()
-        if not issue:
-            return False
-        return self._claim(f"r:{int(game_id)}:{issue}", reporter)
+        return self._claim_issue("r", game_id, issue, reporter)
 
 @dataclass
 class MultiGameWatchState:
@@ -224,6 +531,7 @@ class MultiGameWatchState:
     labels: dict[int, str] = field(default_factory=dict)
     last_issue: dict[int, str] = field(default_factory=dict)
     last_open: dict[int, str] = field(default_factory=dict)
+    last_open_info_at: dict[int, float] = field(default_factory=dict)
     last_jackpot: dict[int, str] = field(default_factory=dict)
     msg_count: int = 0
     jackpot_store: Any = None
@@ -232,6 +540,7 @@ class MultiGameWatchState:
     log_game_info: bool = False
     broadcast: WsBroadcastCoordinator | None = None
     focus_game_id: int | None = None
+    full_watch: bool = True
 
 
 def parse_watch_game_ids(spec: str) -> frozenset[int]:
@@ -289,17 +598,21 @@ def _watch_gid(data: dict[str, Any]) -> int:
     return int(data.get("game_id") or data.get("id") or 0)
 
 
-def _suppress_ws_watch_console() -> bool:
-    """Ẩn KẾT QUẢ WS khi auto_bet tự in settlement (assign_bets_enabled)."""
+def listener_covering_rounds() -> bool:
+    """Listener còn sống và đã connect — player không tranh claim phiên."""
     try:
-        from xoso66_config_util import load_config
+        from xoso66_minigame_ws_worker import listener_is_covering_rounds
 
-        ab = load_config().get("auto_bet")
-        if not isinstance(ab, dict) or not ab.get("enabled"):
-            return False
-        return bool(ab.get("assign_bets_enabled", False))
+        return bool(listener_is_covering_rounds())
     except Exception:
         return False
+
+
+def _should_claim_round_events(state: MultiGameWatchState) -> bool:
+    """Listener claim chính; player chỉ backup khi listener không còn phủ phiên."""
+    if state.full_watch:
+        return True
+    return not listener_covering_rounds()
 
 
 def _refresh_focus_game(state: MultiGameWatchState) -> int | None:
@@ -328,8 +641,7 @@ def _should_log_watch_game_focus(
     gid: int, state: MultiGameWatchState, *, kind: str = "result"
 ) -> bool:
     """Chỉ game đang chơi (auto_bet) hoặc hũ cao nhất."""
-    if kind == "result" and _suppress_ws_watch_console():
-        return False
+    del kind
     fid = _focus_game_id_for_log(state)
     if fid is None:
         return False
@@ -349,20 +661,17 @@ def _should_log_watch_game_result(gid: int, state: MultiGameWatchState) -> bool:
 def _emit_round_result_log(gid: int, data: dict[str, Any], state: MultiGameWatchState) -> None:
     if not _should_log_watch_game_result(gid, state):
         return
-    from xoso66_round_log import normalize_winning_side, winning_side_label
-
-    res = data.get("open_result") or {}
-    side = res.get("name") or res.get("result") or "?"
-    nums = data.get("open_numbers") or res.get("open_numbers") or ""
     issue = str(data.get("issue") or "").strip()
-    wside = normalize_winning_side(data)
-    wlabel = winning_side_label(wside) if wside else str(side)
-    name = _game_display_name(gid, state)
-    nums_s = f" ({nums})" if nums else ""
-    issue_s = f" issue={issue}" if issue else ""
-    print(
-        f"KẾT QUẢ PHIÊN - {name} - {wlabel}{nums_s}{issue_s}",
-        flush=True,
+    if not note_round_result_logged(gid, issue):
+        return
+    from xoso66_round_log import log_round_result_header
+    from xoso66_ws_balance import open_data_to_dices, resolve_winning_side
+
+    winning = resolve_winning_side(data)
+    log_round_result_header(
+        issue=issue,
+        winning_side=winning,
+        dices=open_data_to_dices(data) if winning else None,
     )
 
 
@@ -408,7 +717,13 @@ def _emit_round_start_log(
         from xoso66_round_log import assign_bet_console_enabled
 
         if assign_bet_console_enabled():
-            return
+            handlers_ok = False
+            with contextlib.suppress(Exception):
+                from xoso66_auto_bet import auto_bet_handlers_ready
+
+                handlers_ok = bool(auto_bet_handlers_ready())
+            if handlers_ok:
+                return
     except Exception:
         pass
     from xoso66_round_log import log_round_start_line
@@ -438,6 +753,7 @@ def _emit_round_start_log(
         jackpot_vnd=jp_money,
         issue=issue,
         min_jackpot_vnd=min_jp if min_jp > 0 else None,
+        game_id=int(gid),
     )
 
 
@@ -496,8 +812,111 @@ def _print_watch_jackpot(data: dict[str, Any], state: MultiGameWatchState) -> bo
     return True
 
 
+def parse_minigame_wall_time(value: Any) -> datetime | None:
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def next_info_begin_age_sec(next_info: dict[str, Any] | None) -> float | None:
+    if not isinstance(next_info, dict):
+        return None
+    begin = parse_minigame_wall_time(next_info.get("begin_time"))
+    if begin is None:
+        return None
+    return (datetime.now() - begin).total_seconds()
+
+
+def next_info_end_left_sec(next_info: dict[str, Any] | None) -> float | None:
+    if not isinstance(next_info, dict):
+        return None
+    end = parse_minigame_wall_time(next_info.get("end_time"))
+    if end is None:
+        return None
+    return (end - datetime.now()).total_seconds()
+
+
+def next_info_too_late_to_act(next_info: dict[str, Any] | None) -> bool:
+    """Snapshot reconnect / queue đầy: phiên đã hết hoặc còn < 2s — đừng cược."""
+    left = next_info_end_left_sec(next_info)
+    return left is not None and left < NEXT_INFO_SKIP_IF_END_LEFT_SEC
+
+
+def ws_pool_resync_delay_sec(
+    next_info: dict[str, Any] | None, gw: dict[str, Any] | None = None
+) -> float | None:
+    """
+    Giây từ now tới lúc chạy việc 1–5. None = bỏ issue này.
+    Neo begin+18s (sau cửa cược); sát end thì bỏ.
+    """
+    gw = gw if isinstance(gw, dict) else {}
+    try:
+        after_begin = max(0.0, float(gw.get("ws_pool_resync_after_begin_sec") or 18))
+    except (TypeError, ValueError):
+        after_begin = 18.0
+    try:
+        min_before_end = max(0.0, float(gw.get("ws_pool_resync_min_before_end_sec") or 8))
+    except (TypeError, ValueError):
+        min_before_end = 8.0
+    try:
+        fallback = max(0.0, float(gw.get("ws_pool_resync_delay_after_round_sec") or 2))
+    except (TypeError, ValueError):
+        fallback = 2.0
+    now = datetime.now()
+    begin = parse_minigame_wall_time((next_info or {}).get("begin_time"))
+    end = parse_minigame_wall_time((next_info or {}).get("end_time"))
+    if begin is None:
+        return fallback
+    target = begin + timedelta(seconds=after_begin)
+    if end is not None:
+        latest = end - timedelta(seconds=min_before_end)
+        if now >= latest:
+            return None
+        if target > latest:
+            target = latest
+    delay = (target - now).total_seconds()
+    if delay < 0:
+        return 0.0
+    return delay
+
+
+def _run_handlers_bg(
+    name: str,
+    handlers: list[Any],
+    *args: Any,
+    log_prefix: str = "",
+    **kwargs: Any,
+) -> None:
+    """Chạy callback phiên ngoài vòng recv — tránh kẹt 12 socket chung 1 loop."""
+    snapshot = list(handlers)
+    if not snapshot:
+        return
+
+    def _run() -> None:
+        for fn in snapshot:
+            try:
+                fn(*args, **kwargs)
+            except TypeError:
+                try:
+                    fn(*args)
+                except Exception as e:
+                    print(f"{log_prefix}[AUTO] {name}: {e}", flush=True)
+            except Exception as e:
+                print(f"{log_prefix}[AUTO] {name}: {e}", flush=True)
+
+    threading.Thread(target=_run, name=name, daemon=True).start()
+
+
 def _print_watch_phiên_mới_from_next(
-    gid: int, nxt: dict[str, Any], state: MultiGameWatchState
+    gid: int,
+    nxt: dict[str, Any],
+    state: MultiGameWatchState,
+    *,
+    received_mono: float | None = None,
 ) -> bool:
     """Phiên mới = next_info trong open_info (~30s/phiên), không dùng game_info đổi issue."""
     issue = str(nxt.get("issue") or "")
@@ -509,19 +928,45 @@ def _print_watch_phiên_mới_from_next(
         run_handlers = state.broadcast.claim_round_start(
             gid, issue, reporter=state.ws_account
         )
+    if run_handlers and next_info_too_late_to_act(nxt):
+        age = next_info_begin_age_sec(nxt)
+        left = next_info_end_left_sec(nxt)
+        age_s = f"{age:.1f}s sau begin" if age is not None else "không rõ begin"
+        if left is None:
+            left_s = "không rõ end"
+        elif left >= 0:
+            left_s = f"còn end {left:.1f}s"
+        else:
+            left_s = f"end hết {abs(left):.1f}s"
+        print(
+            f"{state.log_prefix}bỏ phiên {issue} — next_info trễ ({age_s}, {left_s}) "
+            f"— không cược / không việc status",
+            flush=True,
+        )
+        run_handlers = False
+    if run_handlers and not note_round_start_claimed(gid, issue):
+        run_handlers = False
     if run_handlers:
+        note_claimed_next_info(nxt)
         reporter = state.ws_account or (
             state.broadcast.reporter_of(f"s:{gid}:{issue}") if state.broadcast else ""
         )
         nxt_payload = dict(nxt)
         nxt_payload["_claimed_at_mono"] = time.monotonic()
-        for handler in _ROUND_START_HANDLERS:
-            try:
-                handler(gid, issue, nxt_payload, reporter=reporter)
-            except TypeError:
-                handler(gid, issue, nxt_payload)
-            except Exception as e:
-                print(f"{state.log_prefix}[AUTO] round handler: {e}", flush=True)
+        if received_mono is not None:
+            nxt_payload["_ws_received_at_mono"] = float(received_mono)
+            nxt_payload["_ws_queue_delay_sec"] = max(
+                0.0, time.monotonic() - float(received_mono)
+            )
+        _run_handlers_bg(
+            f"ws-round-start-{issue}",
+            _ROUND_START_HANDLERS,
+            gid,
+            issue,
+            nxt_payload,
+            reporter=reporter,
+            log_prefix=state.log_prefix,
+        )
 
     did_log = False
     if run_handlers and _should_log_watch_game(gid, state):
@@ -530,13 +975,24 @@ def _print_watch_phiên_mới_from_next(
     return run_handlers or did_log
 
 
-def _print_watch_open_info(data: dict[str, Any], state: MultiGameWatchState) -> bool:
+def _print_watch_open_info(
+    data: dict[str, Any],
+    state: MultiGameWatchState,
+    *,
+    received_mono: float | None = None,
+    received_wall: float | None = None,
+) -> bool:
     gid = _watch_gid(data)
     if gid not in state.watch_ids:
         return False
+    now = float(received_wall or time.time())
+    state.last_open_info_at[gid] = now
+    note_open_info_received(gid, received_wall=now)
+    can_claim = _should_claim_round_events(state)
     issue = str(data.get("issue") or "?")
+    # KQ trước next_info — phiên mới không được gỡ C/issue cũ trước khi in kết quả.
     did_result = False
-    if state.last_open.get(gid) != issue:
+    if can_claim and state.last_open.get(gid) != issue:
         state.last_open[gid] = issue
         run_handlers = True
         if state.broadcast is not None:
@@ -549,19 +1005,23 @@ def _print_watch_open_info(data: dict[str, Any], state: MultiGameWatchState) -> 
                 if state.broadcast
                 else ""
             )
-            for handler in _ROUND_RESULT_HANDLERS:
-                try:
-                    handler(gid, issue, dict(data), reporter=reporter)
-                except TypeError:
-                    handler(gid, issue, dict(data))
-                except Exception as e:
-                    print(f"{state.log_prefix}[AUTO] result handler: {e}", flush=True)
             _emit_round_result_log(gid, data, state)
+            _run_handlers_bg(
+                f"ws-round-result-{issue}",
+                _ROUND_RESULT_HANDLERS,
+                gid,
+                issue,
+                dict(data),
+                reporter=reporter,
+                log_prefix=state.log_prefix,
+            )
             did_result = True
-    nxt = data.get("next_info")
     did_new = False
-    if isinstance(nxt, dict):
-        did_new = _print_watch_phiên_mới_from_next(gid, nxt, state)
+    nxt = data.get("next_info")
+    if can_claim and isinstance(nxt, dict):
+        did_new = _print_watch_phiên_mới_from_next(
+            gid, nxt, state, received_mono=received_mono
+        )
     return did_result or did_new
 
 
@@ -605,7 +1065,12 @@ def _print_watch_game_info(data: dict[str, Any], state: MultiGameWatchState) -> 
 
 
 def handle_game_watch_message(
-    obj: Any, state: MultiGameWatchState, *, debug_ws: bool = False
+    obj: Any,
+    state: MultiGameWatchState,
+    *,
+    debug_ws: bool = False,
+    received_mono: float | None = None,
+    received_wall: float | None = None,
 ) -> bool:
     """In sự kiện phiên/jackpot; trả True nếu đã xử lý. Raise ConnectionError nếu logout."""
     if not isinstance(obj, dict):
@@ -618,6 +1083,8 @@ def handle_game_watch_message(
         raise ConnectionError(str(obj.get("msg") or "logout"))
 
     if t == "jackpot_money":
+        if not state.full_watch:
+            return True
         data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
         return _print_watch_jackpot(data, state)
 
@@ -631,7 +1098,12 @@ def handle_game_watch_message(
                 f"{json.dumps(data, ensure_ascii=False)[:300]}",
                 flush=True,
             )
-        return _print_watch_open_info(data, state)
+        return _print_watch_open_info(
+            data,
+            state,
+            received_mono=received_mono,
+            received_wall=received_wall,
+        )
 
     if t in ("g_game_info", "game_info"):
         data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
@@ -654,6 +1126,8 @@ def handle_game_watch_message(
             on_ws_balance_message(state.ws_account, bal)
         return True
 
+    if not state.full_watch:
+        return False
     parsed = _parse_jackpot_money_message(obj)
     if parsed and _print_watch_jackpot(
         {"game_id": parsed.get("game_id"), "money": parsed.get("jackpot")},
@@ -694,6 +1168,15 @@ def _clear_ws_token_cache(session: dict) -> None:
     mg = get_minigame(session)
     for key in ("ws_token", "ws_token_issued_at", "ws_url"):
         mg.pop(key, None)
+
+
+def _reset_watch_round_dedup(watch: MultiGameWatchState | None) -> None:
+    """Socket mới phải nhận lại snapshot open_info — không giữ last_issue của socket cũ."""
+    if watch is None:
+        return
+    watch.last_issue.clear()
+    watch.last_open.clear()
+    watch.last_open_info_at.clear()
 
 
 def _cached_ws_token_if_ok(session: dict) -> str | None:
@@ -836,6 +1319,15 @@ def _ws_reconnect_flags_after_logout(msg: str | None) -> tuple[bool, bool]:
     return False, True
 
 
+def _flags_after_subscribe_fail(err: str | None) -> tuple[bool, bool]:
+    """
+    Subscribe fail: (need_minigame_refresh, need_ws_refresh).
+    ConnectionClosed / no close frame = ws_token cũ — chỉ getToken.
+    verification/logout = refresh full user-token.
+    """
+    return _ws_reconnect_flags_after_logout(err)
+
+
 async def _full_refresh_minigame_after_ws_logout(
     session: dict,
     account_id: str,
@@ -886,13 +1378,97 @@ async def _full_refresh_minigame_after_ws_logout(
     return False
 
 
-def _build_socks(proxy_str: str) -> tuple[socks.socksocket, str, int]:
+def _cloudflare_ipv4_from_ipv6(address: str) -> str | None:
+    """Cloudflare AAAA 2606:4700::6812:dd6 → edge IPv4 104.18.13.214."""
+    try:
+        ip6 = ipaddress.IPv6Address(address)
+    except ipaddress.AddressValueError:
+        return None
+    if ip6 not in ipaddress.IPv6Network("2606:4700::/96"):
+        return None
+    ip4 = ipaddress.IPv4Address(int(ip6) & 0xFFFFFFFF)
+    return str(ip4) if ip4.is_global else None
+
+
+def _choose_ws_tcp_host(addresses: list[str]) -> str:
+    """
+    SOCKS5 remote DNS chỉ lấy A record. Nếu A bị trỏ sang domain parking nhưng
+    AAAA vẫn là Cloudflare, dùng IPv4 edge nhúng trong AAAA; URI/SNI vẫn WS_HOST.
+    """
+    forced = (os.environ.get("XOSO66_WS_CONNECT_HOST") or "").strip()
+    # Không cho biến môi trường cũ ép ngược về hostname/A parking đang hỏng.
+    if (
+        forced
+        and forced.lower() != WS_HOST.lower()
+        and forced not in _WS_PARKING_IPV4
+    ):
+        return forced
+    mapped_ipv4 = [
+        mapped
+        for address in addresses
+        if (mapped := _cloudflare_ipv4_from_ipv6(address))
+    ]
+    # Domain này có A-record parking không ổn định. Kể cả một lần resolve chỉ
+    # thấy AAAA hoặc trả kết quả thiếu, tuyệt đối không đưa hostname cho SOCKS
+    # remote-DNS vì nó sẽ lại lấy A parking.
+    if WS_HOST.lower() in _WS_BROKEN_A_RECORD_HOSTS:
+        return mapped_ipv4[0] if mapped_ipv4 else _WS_CLOUDFLARE_FALLBACK_IPV4[0]
+    ipv4 = {x for x in addresses if ":" not in x}
+    if not (ipv4 & _WS_PARKING_IPV4):
+        return WS_HOST
+    if mapped_ipv4:
+        return mapped_ipv4[0]
+    # DNS đôi lúc chỉ trả A parking, không trả AAAA. Tuyệt đối không quay lại
+    # hostname hỏng; dùng edge đã kiểm chứng để WS mới vẫn mở được.
+    return _WS_CLOUDFLARE_FALLBACK_IPV4[0]
+
+
+def _resolve_ws_tcp_host() -> str:
+    global _WS_TCP_HOST_CACHE, _WS_TCP_HOST_CACHE_AT
+    now = time.time()
+    with _WS_TCP_HOST_CACHE_LOCK:
+        if (
+            _WS_TCP_HOST_CACHE
+            and now - _WS_TCP_HOST_CACHE_AT < _WS_TCP_HOST_CACHE_SEC
+        ):
+            return _WS_TCP_HOST_CACHE
+    addresses: list[str] = []
+    try:
+        for row in socket.getaddrinfo(WS_HOST, 443, type=socket.SOCK_STREAM):
+            address = str(row[4][0] or "").strip()
+            if address and address not in addresses:
+                addresses.append(address)
+    except OSError:
+        pass
+    target = _choose_ws_tcp_host(addresses)
+    # Resolver tạm lỗi/rỗng sau khi cache hết hạn: giữ edge tốt trước đó thay
+    # vì để SOCKS remote-DNS phân giải hostname về domain parking.
+    with _WS_TCP_HOST_CACHE_LOCK:
+        previous = _WS_TCP_HOST_CACHE
+    if not addresses and previous and previous.lower() != WS_HOST.lower():
+        target = previous
+    with _WS_TCP_HOST_CACHE_LOCK:
+        changed = target != _WS_TCP_HOST_CACHE
+        _WS_TCP_HOST_CACHE = target
+        _WS_TCP_HOST_CACHE_AT = now
+    if changed and target != WS_HOST:
+        print(
+            f"[WS-DNS] {WS_HOST} A record đang vào domain parking; "
+            f"kết nối Cloudflare edge {target} (SNI giữ nguyên)",
+            flush=True,
+        )
+    return target
+
+
+def _build_socks(
+    proxy_str: str, *, timeout: float = SOCKS_CONNECT_TIMEOUT_SEC
+) -> tuple[socks.socksocket, str, int]:
     from xoso66_proxy import parse_proxy
 
     host, port, user, pwd = parse_proxy(proxy_str)
     sock = socks.socksocket()
     sock.set_proxy(socks.SOCKS5, host, port, True, user, pwd)
-    sock.setblocking(False)
+    sock.settimeout(max(1.0, float(timeout)))
     return sock, host, port
 
 
@@ -1037,6 +1613,51 @@ async def ws_ping_loop(
             await ws.send(build_ws_client_message("ping", game_id=gid))
         except Exception:
             break
+
+
+async def _abort_ws_session(
+    *,
+    ws: Any = None,
+    sock: Any = None,
+    reader_task: asyncio.Task | None = None,
+    ping_stop: asyncio.Event | None = None,
+    ping_task: asyncio.Task | None = None,
+    close_timeout: float = 2.0,
+    tag: str = "",
+) -> None:
+    """
+    Đóng TCP/WS trước để recv/ping thoát.
+    Không cancel ws.recv() trước (Windows SOCKS → kẹt / WinError 10038).
+    Mọi await đều có timeout — idle reconnect không được đứng im.
+    """
+    if ping_stop is not None:
+        ping_stop.set()
+    if ping_task is not None and not ping_task.done():
+        ping_task.cancel()
+    if ws is not None:
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await asyncio.wait_for(ws.close(), timeout=close_timeout)
+    elif sock is not None:
+        fd = -1
+        with contextlib.suppress(Exception):
+            fd = int(sock.fileno())
+        print(
+            f"[WS-DIAG] abort sock.close fd={fd} (ws=None) "
+            f"tag={tag or '-'}",
+            flush=True,
+        )
+        with contextlib.suppress(Exception):
+            sock.close()
+    if reader_task is not None and not reader_task.done():
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(reader_task), timeout=close_timeout)
+        if not reader_task.done():
+            reader_task.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.wait_for(reader_task, timeout=1.0)
+    if ping_task is not None and not ping_task.done():
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await asyncio.wait_for(ping_task, timeout=1.0)
 
 
 def _decode_message(raw: str | bytes) -> Any:
@@ -1197,22 +1818,163 @@ def format_jackpot_table(state: JackpotState) -> str:
     return "\n".join(lines)
 
 
-_ws_connect_sem: asyncio.Semaphore | None = None
-_ws_connect_sem_limit = 0
+_ws_connect_states: dict[int, dict[str, Any]] = {}
+_ws_connect_states_lock = threading.Lock()
 
 
-async def _with_ws_connect_limit(coro):
-    """Giới hạn số connect WS đồng thời (tránh 56 proxy cùng lúc)."""
-    global _ws_connect_sem, _ws_connect_sem_limit
+def reset_ws_connect_limit() -> None:
+    """Soft-restart — bỏ gate của mọi event loop cũ."""
+    with _ws_connect_states_lock:
+        _ws_connect_states.clear()
+
+
+async def _ensure_ws_connect_sem() -> asyncio.Semaphore:
+    """Một Semaphore riêng cho từng loop (listener loop tách pool loop)."""
     from xoso66_config_util import load_config
     from xoso66_ws_pool import ws_connect_batch_size
 
-    limit = ws_connect_batch_size(load_config())
-    if _ws_connect_sem is None or _ws_connect_sem_limit != limit:
-        _ws_connect_sem = asyncio.Semaphore(limit)
-        _ws_connect_sem_limit = limit
-    async with _ws_connect_sem:
+    loop = asyncio.get_running_loop()
+    loop_id = id(loop)
+    with _ws_connect_states_lock:
+        state = _ws_connect_states.get(loop_id)
+        if state is None:
+            state = {
+                "lock": asyncio.Lock(),
+                "sem": None,
+                "limit": 0,
+            }
+            _ws_connect_states[loop_id] = state
+    async with state["lock"]:
+        limit = ws_connect_batch_size(load_config())
+        if state["sem"] is None or int(state["limit"]) != limit:
+            state["sem"] = asyncio.Semaphore(limit)
+            state["limit"] = limit
+        return state["sem"]
+
+
+class _WsConnectSlot:
+    """Giữ gate lúc SOCKS + TLS handshake (nhả trước subscribe)."""
+
+    def __init__(self, timeout: float | None = None) -> None:
+        self._sem: asyncio.Semaphore | None = None
+        self._timeout = timeout
+
+    async def __aenter__(self) -> "_WsConnectSlot":
+        try:
+            sem = await _ensure_ws_connect_sem()
+            await self._acquire(sem)
+        except RuntimeError as e:
+            msg = str(e).lower()
+            if "different event loop" in msg or "is bound to" in msg:
+                reset_ws_connect_limit()
+                sem = await _ensure_ws_connect_sem()
+                await self._acquire(sem)
+            else:
+                raise
+        self._sem = sem
+        return self
+
+    async def _acquire(self, sem: asyncio.Semaphore) -> None:
+        wait = self._timeout
+        if wait is not None and wait > 0:
+            await asyncio.wait_for(sem.acquire(), timeout=wait)
+        else:
+            await sem.acquire()
+
+    async def __aexit__(self, *exc: object) -> None:
+        if self._sem is not None:
+            self._sem.release()
+            self._sem = None
+
+
+def ws_connect_slot(timeout: float | None = None) -> _WsConnectSlot:
+    return _WsConnectSlot(timeout=timeout)
+
+
+def ws_reconnect_interval_sec(*, game_watch: bool = True) -> float:
+    return WS_CONNECT_BUDGET_SEC if game_watch else 5.0
+
+
+async def _sleep_until_reconnect(
+    started_at: float,
+    *,
+    interval_sec: float,
+    is_stopping,
+    min_sleep_sec: float = 2.0,
+    jitter_sec: float = 1.5,
+) -> None:
+    """Ngủ đến mốc started+interval; tối thiểu min_sleep+jitter (không retry 0s)."""
+    extra = random.uniform(0.0, max(0.0, float(jitter_sec))) if jitter_sec else 0.0
+    until = max(
+        float(started_at) + float(interval_sec),
+        time.time() + max(0.0, float(min_sleep_sec)) + extra,
+    )
+    while not is_stopping():
+        remain = until - time.time()
+        if remain <= 0:
+            return
+        await asyncio.sleep(min(1.0, remain))
+
+
+async def _with_ws_connect_limit(coro):
+    """Giới hạn connect đồng thời — giữ API cũ (chỉ wrap 1 coro)."""
+    async with ws_connect_slot():
         return await coro
+
+
+async def _socks_tcp_connect(
+    proxy_str: str, *, timeout: float = SOCKS_CONNECT_TIMEOUT_SEC
+):
+    """SOCKS TCP tới WS host — trong gate, có timeout (không treo)."""
+    sock, _ph, _pp = _build_socks(proxy_str, timeout=timeout)
+    connect_host = await asyncio.to_thread(_resolve_ws_tcp_host)
+    try:
+        await asyncio.to_thread(sock.connect, (connect_host, 443))
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            sock.close()
+        raise ConnectionError(
+            f"SOCKS connect {connect_host}:443 "
+            f"(WS host {WS_HOST}) failed: {e}"
+        ) from e
+    except BaseException:
+        with contextlib.suppress(Exception):
+            sock.close()
+        raise
+    with contextlib.suppress(Exception):
+        sock.settimeout(None)
+    return sock
+
+
+async def _ws_handshake(
+    ws_url: str,
+    sock,
+    *,
+    origin: str = MINIGAME_BASE,
+    open_timeout: float = 10.0,
+):
+    """TLS/WSS handshake trên sock đã connect — đoạn nhạy Windows, nằm trong gate."""
+    import websockets
+
+    # websockets.connect(sock=...) nhận ownership ngay khi gọi — handshake fail
+    # mà sock.close() lại → WinError 10038 lan Proactor/event loop.
+    try:
+        ws = await websockets.connect(
+            ws_url,
+            sock=sock,
+            ssl=True,
+            ping_interval=None,
+            ping_timeout=None,
+            open_timeout=max(1.0, float(open_timeout)),
+            close_timeout=5,
+            origin=origin,
+            user_agent_header=os.environ.get("XOSO66_WS_UA", DEFAULT_UA),
+            max_size=2**22,
+        )
+    except Exception:
+        # Không sock.close() — sock đã/ có thể thuộc websockets (tránh 10038).
+        raise
+    return ws, None
 
 
 async def _connect_ws(
@@ -1223,36 +1985,15 @@ async def _connect_ws(
     ping_interval: float = 25.0,
     ping_timeout: float = 20.0,
 ):
-    import websockets
-
-    sock, _ph, _pp = _build_socks(proxy_str)
-    try:
-        # Không block event loop khi SOCKS/proxy chậm — tránh đơ cả cụm WS.
-        await asyncio.to_thread(sock.connect, (WS_HOST, 443))
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            sock.close()
-        raise ConnectionError(f"SOCKS connect {WS_HOST}:443 failed: {e}") from e
-
-    try:
-        # Chỉ dùng ping JSON app (ws_ping_loop); tránh ping kép gây đứt socket.
-        ws = await websockets.connect(
-            ws_url,
-            sock=sock,
-            ssl=True,
-            ping_interval=None,
-            ping_timeout=None,
-            close_timeout=5,
-            origin=origin,
-            user_agent_header=os.environ.get("XOSO66_WS_UA", DEFAULT_UA),
-            max_size=2**22,
+    """Tương thích cũ: SOCKS + handshake trong gate."""
+    _ = ping_interval, ping_timeout
+    async with ws_connect_slot(timeout=WS_CONNECT_SLOT_WAIT_SEC):
+        sock = await _socks_tcp_connect(
+            proxy_str, timeout=SOCKS_CONNECT_TIMEOUT_SEC
         )
-    except Exception:
-        with contextlib.suppress(Exception):
-            sock.close()
-        raise
-    # websockets đã nhận ownership sock — không đóng sock lần nữa (WinError 10038).
-    return ws, None
+        return await _ws_handshake(
+            ws_url, sock, origin=origin, open_timeout=10.0
+        )
 
 
 async def listen_minigame_ws(
@@ -1265,6 +2006,9 @@ async def listen_minigame_ws(
     ws_token_override: str | None = None,
     verbose: bool = True,
     game_watch: bool = True,
+    watch_rounds: bool | None = None,
+    focus_backup_game_id: int | None = None,
+    focus_game_id_provider: Callable[[], int] | None = None,
     watch_game_ids: frozenset[int] | None = None,
     subscribe_spec: str | None = None,
     ping_game_id: int | None = None,
@@ -1290,8 +2034,14 @@ async def listen_minigame_ws(
     if not subscribe_plan:
         subscribe_plan = [0, primary_gid]
     watch_ids = watch_game_ids if watch_game_ids is not None else frozenset(DEFAULT_WATCH_GAME_IDS)
-    multi_watch = bool(game_watch and len(watch_ids) > 1)
-    solo_watch_gid = next(iter(watch_ids)) if game_watch and len(watch_ids) == 1 else None
+    full_watch = bool(watch_rounds) if watch_rounds is not None else bool(game_watch)
+    backup_gid = int(focus_backup_game_id or 0)
+    current_backup_gid = backup_gid
+    if not full_watch and backup_gid > 0:
+        watch_ids = frozenset({backup_gid})
+    do_watch = full_watch or backup_gid > 0
+    multi_watch = bool(do_watch and len(watch_ids) > 1)
+    solo_watch_gid = next(iter(watch_ids)) if do_watch and len(watch_ids) == 1 else None
     ping_gid: int | list[int]
     if ping_game_id is not None:
         if isinstance(ping_game_id, (list, tuple, frozenset, set)):
@@ -1342,8 +2092,9 @@ async def listen_minigame_ws(
             log_prefix=log_prefix,
             log_game_info=log_game_info,
             broadcast=broadcast_coordinator,
+            full_watch=full_watch,
         )
-        if game_watch
+        if do_watch
         else None
     )
     if watch is not None and jp_store is not None:
@@ -1363,7 +2114,11 @@ async def listen_minigame_ws(
                     f"log phiên khi có game ≥ {min_jp:,.0f}đ"
                 )
     deadline = time.time() + duration_sec if duration_sec > 0 else None
-    reconnect_delay = 5.0 if game_watch else 3.0
+    reconnect_interval = ws_reconnect_interval_sec(game_watch=game_watch)
+    reconnect_delay = reconnect_interval
+    reconnect_base = reconnect_interval
+    reconnect_max = reconnect_interval
+    reconnect_step = 0.0
     manual_ws_token = bool(ws_token_override)
     need_ws_refresh = False
     need_minigame_refresh = False
@@ -1371,26 +2126,35 @@ async def listen_minigame_ws(
     verify_fail_streak = 0
     had_live_ws = False
     transport_fail_streak = 0
-    # Lần mở đầu: lấy ws_token mới (getToken) — cache chết → verification failed hàng loạt.
-    # Sau khi đã live 1 lần: tin cache; verification → refresh như cũ.
-    force_fresh_tokens = True
-    _ = refresh_before_connect
+    subscribe_closed_streak = 0
+    quick_retry = False
+    # Spawn thường: dùng cache. Force chỉ khi verification / refresh_before_connect.
+    force_fresh_tokens = bool(refresh_before_connect)
 
     from xoso66_shutdown import stopping
 
     while True:
+        quick_retry = False
         if stopping():
             break
         if deadline and time.time() >= deadline:
             break
 
-        with contextlib.suppress(Exception):
-            from xoso66_minigame_ws_worker import note_ws_task_activity
-
-            note_ws_task_activity(aid)
+        if not full_watch and focus_game_id_provider is not None:
+            with contextlib.suppress(Exception):
+                fresh_gid = int(focus_game_id_provider() or 0)
+                if fresh_gid > 0:
+                    current_backup_gid = fresh_gid
+                    subscribe_plan = [0, fresh_gid]
+                    if watch is not None:
+                        watch.watch_ids = frozenset({fresh_gid})
 
         if need_minigame_refresh:
             need_minigame_refresh = False
+            with contextlib.suppress(Exception):
+                from xoso66_minigame_ws_worker import note_ws_task_activity
+
+                note_ws_task_activity(aid)
             refreshed = await _full_refresh_minigame_after_ws_logout(
                 session,
                 aid,
@@ -1416,7 +2180,26 @@ async def listen_minigame_ws(
                 if not refreshed:
                     need_ws_refresh = True
 
+        connect_started_at = time.time()
+        slot_wait_s = 0.0
+        token_s = 0.0
+        io_t0 = 0.0
+        with contextlib.suppress(Exception):
+            from xoso66_minigame_ws_worker import note_ws_task_activity
+
+            note_ws_task_activity(aid)
+        if game_watch:
+            print(f"[WS] [{username}] connect…", flush=True)
+
+        ws_url = None
+        ws = None
+        sock = None
+        ping_stop = asyncio.Event()
+        ping_task: asyncio.Task | None = None
+        got_slot = False
+        token: str | None = None
         try:
+            # Token ngoài cửa handshake — getToken 45s không chặn nick khác SOCKS/TLS.
             if ws_token_override and manual_ws_token:
                 token = ws_token_override.strip()
                 mg = get_minigame(session)
@@ -1433,60 +2216,138 @@ async def listen_minigame_ws(
                             f"🔐 [{username}] đang lấy lại ws_token…",
                             flush=True,
                         )
-                    # Chỉ fetch khi không có cache — không ping user-token trước.
-                    token = await asyncio.to_thread(
-                        get_ws_token,
-                        session,
-                        aid,
-                        game_key=game_key,
-                        force_refresh=bool(need_ws_refresh or force_fresh_tokens),
+                    t_tok = time.time()
+                    token = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            get_ws_token,
+                            session,
+                            aid,
+                            game_key=game_key,
+                            force_refresh=bool(
+                                need_ws_refresh or force_fresh_tokens
+                            ),
+                        ),
+                        timeout=WS_TOKEN_BUDGET_SEC,
                     )
+                    token_s = time.time() - t_tok
                 need_ws_refresh = False
                 manual_ws_token = False
                 ws_token_override = None
-        except Exception as e:
-            need_ws_refresh = True
-            from xoso66_proxy import maybe_report_proxy_dead_from_exception
+            ws_url = ws_url_from_token(token)
+            if game_watch:
+                print(
+                    f"[WS-DIAG] [{username}] token-ok "
+                    f"get={token_s:.1f}s "
+                    f"{'cache' if token_s <= 0.0 else 'fetch'} "
+                    f"force={force_fresh_tokens}",
+                    flush=True,
+                )
 
-            maybe_report_proxy_dead_from_exception(
-                aid,
-                e,
-                proxy_str=proxy_str,
-                source="ws_token",
-            )
-            print(f"[WS] [{username}] ws_token failed: {e}", flush=True)
-            # Pool mode (duration=0): luôn sleep rồi thử lại — không raise thoát task.
-            await asyncio.sleep(max(1.0, float(reconnect_delay)))
-            continue
-
-        ws_url = ws_url_from_token(token)
-
-        ws = None
-        sock = None
-        ping_stop = asyncio.Event()
-        ping_task: asyncio.Task | None = None
-        try:
-            ws, sock = await _with_ws_connect_limit(_connect_ws(ws_url, proxy_str))
+            token_ready_at = time.time()
+            async with ws_connect_slot(timeout=WS_CONNECT_SLOT_WAIT_SEC):
+                got_slot = True
+                io_t0 = time.time()
+                slot_wait_s = io_t0 - token_ready_at
+                if game_watch:
+                    print(
+                        f"[WS-DIAG] [{username}] got-slot "
+                        f"wait={slot_wait_s:.1f}s force={force_fresh_tokens}",
+                        flush=True,
+                    )
+                sock = await _socks_tcp_connect(
+                    proxy_str,
+                    timeout=SOCKS_CONNECT_TIMEOUT_SEC,
+                )
+                try:
+                    ws, sock = await _ws_handshake(
+                        ws_url,
+                        sock,
+                        open_timeout=8.0,
+                    )
+                except Exception as e:
+                    print(
+                        f"[WS-DIAG] [{username}] handshake fail "
+                        f"slot={got_slot} sock={'yes' if sock else 'no'} "
+                        f"slot_wait={slot_wait_s:.1f}s token={token_s:.1f}s "
+                        f"{type(e).__name__}: {e}",
+                        flush=True,
+                    )
+                    raise
             ping_task = asyncio.create_task(
                 ws_ping_loop(ws, ping_gid, stop=ping_stop)
             )
+            subscribe_ok = False
+            subscribe_err = ""
             try:
-                await ws_send_subscribes(
-                    ws,
-                    subscribe_plan,
-                    verbose=verbose,
-                    individual=subscribe_individual,
+                await asyncio.wait_for(
+                    ws_send_subscribes(
+                        ws,
+                        subscribe_plan,
+                        verbose=verbose,
+                        individual=subscribe_individual,
+                    ),
+                    timeout=max(1.0, WS_SUBSCRIBE_TIMEOUT_SEC),
                 )
+                subscribe_ok = True
+                subscribe_closed_streak = 0
             except Exception as e:
-                print(f"[WS] subscribe failed: {e}", flush=True)
-                _clear_ws_token_cache(session)
-                need_ws_refresh = True
-                force_fresh_tokens = True
+                subscribe_err = f"{type(e).__name__}: {e}".strip()
+                print(
+                    f"[WS] [{username}] subscribe failed: {subscribe_err or '(empty)'} "
+                    f"[WS-DIAG] ws={'yes' if ws else 'no'} "
+                    f"slot_wait={slot_wait_s:.1f}s token={token_s:.1f}s",
+                    flush=True,
+                )
+                err_l = subscribe_err.lower()
+                closed_race = (
+                    "no close frame" in err_l or "connectionclosed" in err_l
+                )
+                if closed_race and subscribe_closed_streak < 1:
+                    subscribe_closed_streak += 1
+                    quick_retry = True
+                    if game_watch:
+                        print(
+                            f"[WS-DIAG] [{username}] subscribe-fail → "
+                            f"giữ token, mở lại ngay",
+                            flush=True,
+                        )
+                else:
+                    _clear_ws_token_cache(session)
+                    full, ws_only = _flags_after_subscribe_fail(subscribe_err)
+                    need_minigame_refresh = bool(full)
+                    need_ws_refresh = bool(ws_only or not full)
+                    force_fresh_tokens = True
+                    if game_watch:
+                        path = "full-refresh" if full else "getToken"
+                        print(
+                            f"[WS-DIAG] [{username}] subscribe-fail → {path}",
+                            flush=True,
+                        )
+            if not subscribe_ok:
+                ping_stop.set()
+                if ping_task is not None:
+                    ping_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await ping_task
+                    ping_task = None
+                if ws is not None:
+                    with contextlib.suppress(Exception):
+                        await ws.close()
+                    ws = None
+                raise ConnectionError(
+                    f"subscribe failed: {subscribe_err or 'unknown'}"
+                )
             if game_watch:
                 from xoso66_round_log import log_ws_connected
-                from xoso66_ws_pool import register_ws_connected
 
-                register_ws_connected(aid, conn_gen=conn_gen)
+                with contextlib.suppress(Exception):
+                    from xoso66_ws_pool import register_ws_connected
+
+                    register_ws_connected(aid, conn_gen=conn_gen)
+                with contextlib.suppress(Exception):
+                    from xoso66_minigame_ws_worker import mark_ws_prune_connected
+
+                    mark_ws_prune_connected(aid)
                 first_live = not had_live_ws
                 if first_live:
                     log_ws_connected(username, account_id=aid)
@@ -1503,8 +2364,14 @@ async def listen_minigame_ws(
                         ),
                         name=f"ws-wd-{aid}",
                     )
+                else:
+                    print(
+                        f"[WS] [{username}] reconnect OK — subscribe lại",
+                        flush=True,
+                    )
                 had_live_ws = True
                 transport_fail_streak = 0
+                reconnect_delay = reconnect_base
                 force_fresh_tokens = False
                 verify_fail_streak = 0
             if verbose and not game_watch:
@@ -1513,21 +2380,63 @@ async def listen_minigame_ws(
                     flush=True,
                 )
 
-            # Reader riêng: KHÔNG hủy ws.recv() (Windows selector + SOCKS → WinError 10038).
-            inbound: asyncio.Queue = asyncio.Queue(maxsize=256)
+            # Reader riêng: critical frame không đứng sau jackpot/game_info backlog.
+            inbound = WsInboundRouter(critical_maxsize=64)
             last_msg_at = time.time()
+            socket_opened_at = last_msg_at
             idle_reconnect_sec = 120.0
+            open_info_stale_sec = max(0.0, float(WS_OPEN_INFO_STALE_SEC or 0))
+            stale_reconnect = False
+            next_focus_check_mono = time.monotonic() + 2.0
 
             async def _ws_reader() -> None:
+                nonlocal last_msg_at
                 try:
                     while True:
                         msg = await ws.recv()
-                        await inbound.put(msg)
+                        item = inbound.put_raw(msg)
+                        # Idle health tính lúc raw frame tới, không phải lúc handler chạy.
+                        last_msg_at = item.received_wall
+                        note_ws_ingress_health(
+                            aid,
+                            inbound,
+                            received_wall=item.received_wall,
+                        )
+                        if isinstance(item.obj, dict) and str(
+                            item.obj.get("type") or ""
+                        ).lower() in ("g_open_info", "open_info"):
+                            raw_data = (
+                                item.obj.get("data")
+                                if isinstance(item.obj.get("data"), dict)
+                                else {}
+                            )
+                            note_open_info_received(
+                                _watch_gid(raw_data),
+                                received_wall=item.received_wall,
+                            )
                 except Exception:
                     pass
                 finally:
-                    with contextlib.suppress(Exception):
-                        await inbound.put(None)
+                    inbound.close()
+
+            def _open_info_stale_reason() -> str:
+                """Chỉ listener full: hết open_info = chết kênh phiên.
+
+                Player subscribe 0+focus — thường không có open_info định kỳ.
+                Đừng reconnect 90s rồi tranh claim snapshot.
+                """
+                if (
+                    watch is None
+                    or open_info_stale_sec <= 0
+                    or not watch.full_watch
+                ):
+                    return ""
+                newest = max(watch.last_open_info_at.values(), default=0.0)
+                ref = newest or socket_opened_at
+                age = time.time() - ref
+                if age > open_info_stale_sec:
+                    return f"không open_info {age:.0f}s"
+                return ""
 
             reader_task = asyncio.create_task(
                 _ws_reader(), name=f"ws-reader-{aid}"
@@ -1538,27 +2447,75 @@ async def listen_minigame_ws(
                         break
                     if deadline and time.time() >= deadline:
                         break
+                    if (
+                        not full_watch
+                        and focus_game_id_provider is not None
+                        and time.monotonic() >= next_focus_check_mono
+                    ):
+                        next_focus_check_mono = time.monotonic() + 2.0
+                        try:
+                            new_gid = int(focus_game_id_provider() or 0)
+                        except Exception:
+                            new_gid = 0
+                        if new_gid > 0 and new_gid != current_backup_gid:
+                            # Không tạo gap: subscribe game mới trước, rồi bỏ game cũ.
+                            await ws.send(
+                                build_ws_client_message(
+                                    "subscribe", game_id=new_gid
+                                )
+                            )
+                            if current_backup_gid > 0:
+                                await ws.send(
+                                    build_ws_client_message(
+                                        "unsubscribe",
+                                        game_id=current_backup_gid,
+                                    )
+                                )
+                            current_backup_gid = new_gid
+                            if watch is not None:
+                                watch.watch_ids = frozenset({new_gid})
+                    stale_why = _open_info_stale_reason()
+                    if stale_why:
+                        if verbose or game_watch:
+                            print(
+                                f"[WS] [{username}] {stale_why} "
+                                f"— reconnect (token mới)",
+                                flush=True,
+                            )
+                        stale_reconnect = True
+                        break
                     if time.time() - last_msg_at > idle_reconnect_sec:
                         if verbose or game_watch:
                             print(
                                 f"[WS] [{username}] idle {idle_reconnect_sec:.0f}s "
-                                f"— reconnect",
+                                f"— reconnect (token mới)",
                                 flush=True,
                             )
+                        stale_reconnect = True
                         break
                     try:
-                        raw = await asyncio.wait_for(inbound.get(), timeout=0.2)
+                        item = await asyncio.wait_for(inbound.get(), timeout=0.2)
                     except asyncio.TimeoutError:
                         continue
-                    if raw is None:
+                    if item is None:
                         break
-                    last_msg_at = time.time()
 
+                    note_ws_ingress_health(
+                        aid,
+                        inbound,
+                        queue_age_sec=max(
+                            0.0, time.monotonic() - item.received_mono
+                        ),
+                    )
                     state.msg_count += 1
-                    obj = _decode_message(raw)
+                    obj = item.obj
 
                     if watch is not None and handle_game_watch_message(
-                        obj, watch, debug_ws=debug_ws
+                        obj,
+                        watch,
+                        debug_ws=debug_ws,
+                        received_mono=item.received_mono,
+                        received_wall=item.received_wall,
                     ):
                         continue
 
@@ -1594,6 +2551,17 @@ async def listen_minigame_ws(
                         break
 
                     if watch is not None:
+                        continue
+
+                    # Pool keep-alive: ping/logout only — không parse hũ/phiên.
+                    if watch_rounds is False:
+                        if isinstance(obj, dict) and obj.get("_app_ping"):
+                            await ws.send("pong")
+                            continue
+                        if _is_ping_payload(obj):
+                            reply = _pong_reply(obj)
+                            if reply:
+                                await ws.send(reply)
                         continue
 
                     if isinstance(obj, dict) and str(obj.get("type") or "").lower() in (
@@ -1646,21 +2614,84 @@ async def listen_minigame_ws(
                     elif verbose and state.msg_count == 16:
                         print("[WS] (suppress raw log — jackpot only)", flush=True)
             finally:
-                reader_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await reader_task
+                # Đóng socket TRƯỚC — cancel recv() trên SOCKS chết sẽ kẹt mãi
+                # (idle log xong không reconnect, health connect=1 / open_info STALE).
+                await _abort_ws_session(
+                    ws=ws,
+                    sock=sock,
+                    reader_task=reader_task,
+                    ping_stop=ping_stop,
+                    ping_task=ping_task,
+                    tag=username,
+                )
+                ws = None
+                sock = None
+                ping_task = None
+            if stale_reconnect:
+                # Socket còn ping/hũ nhưng kênh phiên chết, hoặc idle 120s:
+                # cache ws_token cũ không subscribe lại được.
+                need_ws_refresh = True
+                force_fresh_tokens = True
+                _clear_ws_token_cache(session)
+                _reset_watch_round_dedup(watch)
+                reconnect_delay = min(float(reconnect_delay or 3.0), 3.0)
+                with contextlib.suppress(Exception):
+                    from xoso66_ws_pool import unregister_ws_connected
+
+                    unregister_ws_connected(aid, conn_gen=conn_gen)
 
         except asyncio.CancelledError:
+            print(
+                f"[WS-DIAG] [{username}] cancelled "
+                f"slot={got_slot} token={'yes' if token else 'no'} "
+                f"ws={'yes' if ws else 'no'} "
+                f"slot_wait={slot_wait_s:.1f}s token_get={token_s:.1f}s",
+                flush=True,
+            )
             raise
+        except TimeoutError as e:
+            io_elapsed = (time.time() - io_t0) if io_t0 else 0.0
+            if token is None:
+                need_ws_refresh = True
+                tok_err = str(e).strip() or "getToken quá hạn"
+                print(
+                    f"[WS] [{username}] ws_token failed: {tok_err} "
+                    f"[WS-DIAG] slot_wait={slot_wait_s:.1f}s "
+                    f"io={io_elapsed:.1f}s force={force_fresh_tokens} "
+                    f"budget={WS_TOKEN_BUDGET_SEC:.0f}s",
+                    flush=True,
+                )
+            elif not got_slot:
+                print(
+                    f"[WS] [{username}] chờ cửa mở WS quá "
+                    f"{WS_CONNECT_SLOT_WAIT_SEC:.0f}s — thử lại "
+                    f"[WS-DIAG] queued={time.time() - connect_started_at:.1f}s",
+                    flush=True,
+                )
+            else:
+                msg = str(e).strip() or "handshake/subscribe quá hạn"
+                print(
+                    f"[WS] [{username}] mất kết nối: {msg} — reconnect sau "
+                    f"{reconnect_interval}s "
+                    f"[WS-DIAG] slot_wait={slot_wait_s:.1f}s "
+                    f"token={token_s:.1f}s io={io_elapsed:.1f}s",
+                    flush=True,
+                )
         except (ConnectionResetError, OSError) as e:
             # WinError 10038/995: nuốt tại nick — không lan pool (LC79).
             winerr = getattr(e, "winerror", None)
             if winerr in (995, 10038):
-                reconnect_delay = 2.0
+                reconnect_delay = min(
+                    reconnect_max, reconnect_delay + reconnect_step
+                )
+                if reconnect_delay < reconnect_base:
+                    reconnect_delay = reconnect_base
                 if game_watch:
                     print(
                         f"[WS] [{username}] socket {winerr} — chỉ nick này, "
-                        f"reconnect {reconnect_delay:.0f}s",
+                        f"reconnect {reconnect_delay:.0f}s "
+                        f"[WS-DIAG] slot={got_slot} token={'yes' if token else 'no'} "
+                        f"ws={'yes' if ws else 'no'} {e}",
                         flush=True,
                     )
             else:
@@ -1690,8 +2721,9 @@ async def listen_minigame_ws(
                 if "verification" in err_s.lower():
                     need_minigame_refresh = True
                     need_ws_refresh = False
+                err_show = str(e).strip() or type(e).__name__
                 print(
-                    f"Mất kết nối: {e} — đóng WS, reconnect sau {reconnect_delay}s",
+                    f"[WS] [{username}] mất kết nối: {err_show} — reconnect sau {reconnect_interval}s",
                     flush=True,
                 )
         except ConnectionError as e:
@@ -1721,14 +2753,34 @@ async def listen_minigame_ws(
             if "verification" in err_s.lower():
                 need_minigame_refresh = True
                 need_ws_refresh = False
+            err_show = str(e).strip() or type(e).__name__
+            wait_s = 2.0 if quick_retry else reconnect_interval
             print(
-                f"Mất kết nối: {e} — đóng WS, reconnect sau {reconnect_delay}s",
+                f"[WS] [{username}] mất kết nối: {err_show} — reconnect sau {wait_s:.0f}s",
                 flush=True,
             )
-            # Không break outer while — fallthrough finally → sleep → mở lại.
+            # Không break outer while — fallthrough finally → sleep.
         except Exception as e:
-            err_s = str(e).lower()
-            if _is_transport_ws_error(err_s):
+            if token is None:
+                err_tok = str(e).lower()
+                if "user-token" in err_tok or "user_token" in err_tok:
+                    need_minigame_refresh = True
+                    force_fresh_tokens = True
+                need_ws_refresh = True
+                from xoso66_proxy import maybe_report_proxy_dead_from_exception
+
+                maybe_report_proxy_dead_from_exception(
+                    aid,
+                    e,
+                    proxy_str=proxy_str,
+                    source="ws_token",
+                )
+                tok_err = str(e).strip() or type(e).__name__
+                print(
+                    f"[WS] [{username}] ws_token failed: {tok_err}",
+                    flush=True,
+                )
+            elif _is_transport_ws_error(str(e).lower()):
                 from xoso66_proxy import maybe_report_proxy_dead_from_exception
 
                 # Handshake timeout ≠ proxy chết (maybe_* tự bỏ qua).
@@ -1739,51 +2791,77 @@ async def listen_minigame_ws(
                     source="WS transport",
                 )
                 transport_fail_streak += 1
-                # Reconnect nhanh — không backoff dài / không ban 600s.
-                if "opening handshake" in err_s or "timed out" in err_s:
-                    reconnect_delay = 2.0
-                else:
-                    reconnect_delay = min(12.0, 2.0 + float(transport_fail_streak))
+                # LC79-style: backoff 20→60s — không reconnect 2–5s (stampede gate).
+                reconnect_delay = min(
+                    reconnect_max,
+                    max(reconnect_base, reconnect_delay + reconnect_step),
+                )
+                if transport_fail_streak >= 5:
+                    reconnect_delay = reconnect_max
                 print(
-                    f"[WS] Error: {e} — reconnect in {reconnect_delay:.0f}s",
+                    f"[WS] [{username}] Error: {e} — reconnect in {reconnect_interval:.0f}s",
                     flush=True,
                 )
             else:
+                err_s = str(e).lower()
                 if _ws_logout_needs_full_refresh(err_s):
                     need_minigame_refresh = True
-                elif "ws_token" in err_s or "user-token" in err_s:
+                elif "user-token" in err_s or "user_token" in err_s:
+                    need_minigame_refresh = True
+                    force_fresh_tokens = True
                     need_ws_refresh = True
-                print(f"[WS] Error: {e} — reconnect in {reconnect_delay}s", flush=True)
+                elif "ws_token" in err_s:
+                    need_ws_refresh = True
+                print(
+                    f"[WS] [{username}] Error: {e} — reconnect in {reconnect_interval}s",
+                    flush=True,
+                )
             # Không break outer while — fallthrough finally → sleep → mở lại.
         finally:
             if game_watch:
-                from xoso66_ws_pool import unregister_ws_connected
+                # Chỉ bỏ khỏi «đã connect» — task còn vòng reconnect in-task (LC79-style).
+                with contextlib.suppress(Exception):
+                    from xoso66_ws_pool import unregister_ws_connected
 
-                unregister_ws_connected(aid, conn_gen=conn_gen)
-            ping_stop.set()
-            if ping_task is not None:
-                ping_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await ping_task
-            if ws is not None:
+                    unregister_ws_connected(aid, conn_gen=conn_gen)
                 with contextlib.suppress(Exception):
-                    await ws.close()
-                # sock đã thuộc websockets — không sock.close() (tránh WinError 10038 lan loop).
-            elif sock is not None:
-                with contextlib.suppress(Exception):
-                    sock.close()
+                    from xoso66_minigame_ws_worker import mark_ws_prune_unconnected
+
+                    mark_ws_prune_unconnected(aid)
+            await _abort_ws_session(
+                ws=ws,
+                sock=sock,
+                reader_task=None,
+                ping_stop=ping_stop,
+                ping_task=ping_task,
+                tag=username,
+            )
+            ws = None
+            sock = None
+            ping_task = None
 
         if deadline and time.time() >= deadline:
             break
         if stopping():
             break
         if duration_sec <= 0:
+            # Nick mới / subscribe đụng stampede: mở lại 2s, không chờ 20s.
+            sleep_iv = reconnect_interval
+            if quick_retry or (
+                not had_live_ws and not need_minigame_refresh
+            ):
+                sleep_iv = 2.0
+            remain = sleep_iv - (time.time() - connect_started_at)
             if not had_live_ws:
-                print(f"[WS] Closed — reconnect in {reconnect_delay}s", flush=True)
-            for _ in range(int(reconnect_delay)):
-                if stopping():
-                    break
-                await asyncio.sleep(1)
+                print(
+                    f"[WS] [{username}] Closed — reconnect in {max(0.0, remain):.0f}s",
+                    flush=True,
+                )
+            await _sleep_until_reconnect(
+                connect_started_at,
+                interval_sec=sleep_iv,
+                is_stopping=stopping,
+            )
         else:
             break
 
