@@ -91,6 +91,18 @@ def _auto_bet_cfg(cfg: dict) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def auto_bet_may_place_bets(cfg: dict | None = None) -> bool:
+    """auto_bet.enabled và không nằm trong quiet_hours (giờ VN)."""
+    if cfg is None:
+        cfg = load_config()
+    acfg = _auto_bet_cfg(cfg)
+    if not acfg.get("enabled"):
+        return False
+    from xoso66_time_util import auto_bet_in_quiet_hours
+
+    return not auto_bet_in_quiet_hours(acfg)
+
+
 def assign_bets_enabled(cfg: dict | None = None) -> bool:
     """Gán acc + in kế hoạch cược + HTTP (place_orders). Tắt = chỉ chọn game + chờ BẮT ĐẦU PHIÊN."""
     if cfg is None:
@@ -1352,6 +1364,9 @@ class AutoBetController:
         acfg = _auto_bet_cfg(cfg)
         plan_deadline = float(acfg.get("plan_deadline_sec") or 10)
 
+        if not auto_bet_may_place_bets(cfg):
+            return
+
         with self._lock:
             target = self._active_game_id
             jackpot = self._active_jackpot
@@ -1381,6 +1396,9 @@ class AutoBetController:
         if assign_delay > 0 and not _sleep_until(t0 + assign_delay):
             return
         timing["assign_delay"] = time.monotonic() - t_delay0
+
+        if not auto_bet_may_place_bets(cfg):
+            return
 
         with self._lock:
             jp_header = float(self._active_jackpot or 0)
@@ -1812,6 +1830,22 @@ class AutoBetController:
         if not should_bet:
             if skip_reason == "below_min_jackpot" and assign_bets_enabled(cfg):
                 self._log_watch_round_start(int(game_id), issue_s, cfg=cfg)
+            return
+
+        if not auto_bet_may_place_bets(cfg):
+            from xoso66_time_util import auto_bet_in_quiet_hours, format_auto_bet_quiet_hours
+
+            if auto_bet_in_quiet_hours(acfg) and assign_bets_enabled(cfg):
+                qh_label = format_auto_bet_quiet_hours(acfg) or "quiet_hours"
+                gate_key = (int(game_id), issue_s, "quiet")
+                with self._lock:
+                    if self._last_gate_log_key != gate_key:
+                        self._last_gate_log_key = gate_key
+                        print(
+                            f"[AUTO-BET] Khung im lặng {qh_label} — bỏ đặt cược "
+                            f"issue={issue_s}",
+                            flush=True,
+                        )
             return
 
         if not assign_bets_enabled(cfg):

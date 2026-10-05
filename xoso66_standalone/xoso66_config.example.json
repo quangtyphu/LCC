@@ -21,6 +21,11 @@
   },
   "auto_bet": {
     "enabled": true,
+    "quiet_hours": {
+      "enabled": false,
+      "start_hour": 2,
+      "end_hour": 8
+    },
     "side_total_by_jackpot_enabled": 1,
     "min_jackpot_vnd": 2000000000,
     "jackpot_side_step_vnd": 500000000,

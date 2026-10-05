@@ -115,6 +115,17 @@ def log_startup_services(cfg: dict) -> None:
         flush=True,
     )
     if ab_on:
+        from xoso66_time_util import auto_bet_in_quiet_hours, format_auto_bet_quiet_hours
+
+        qh = format_auto_bet_quiet_hours(ab)
+        if qh:
+            active = auto_bet_in_quiet_hours(ab)
+            print(
+                f"[MAIN]     quiet_hours = {qh}  "
+                f"({'đang im — không đặt cược' if active else 'ngoài khung — cược bình thường'})",
+                flush=True,
+            )
+    if ab_on:
         print(
             f"[MAIN]     assign_bets_enabled = {assign_on}  "
             f"(false = chỉ BẮT ĐẦU PHIÊN, chưa gán acc)",
