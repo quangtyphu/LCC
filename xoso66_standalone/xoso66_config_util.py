@@ -27,9 +27,10 @@ Chỉnh trong JSON:
   auto_bet.daily_bet_cap_vnd  (895000 ≈ điểm danh; 2695000 ≈ Cửa 1 mini game — chỉ dừng cược/Đủ ngày; claim khi chuyển Đủ ngày, nâng cap không reclaim)
   auto_bet.daily_bet_cap_raise_enabled  (true = hết room cap → nâng daily_bet_cap_vnd; false = chuyển assign_strategy=2, không nâng cap)
   auto_bet.daily_bet_cap_raise_vnd  (mốc nâng khi raise_enabled=true; mặc định 2695000; không đổi assign_strategy)
-  daily_bet_cap_reset  (00:05 VN → ghi lại daily_bet_cap_vnd = value_vnd; mặc định 895000)
+  daily_bet_cap_reset  (00:05 VN → ghi daily_bet_cap_vnd, min_jackpot_vnd, side_total_low_vnd, auto_bet.enabled)
+  daily_bet_cap_reset.auto_bet_enabled  (true = reset cũng bật auto_bet.enabled; mặc định true)
   auto_bet.assign_strategy  (1, 2 hoặc 3 — STRATEGY_LABELS; 3 = 2 acc chênh số dư nhỏ nhất, cùng mức Tài/Xỉu)
-  auto_bet.assign_match_mode  (0 = khớp lệnh nào cược lệnh đó, pool Tài+Xỉu chung; 1 = khớp hết mới cược)
+  auto_bet.assign_match_mode  (0 = cược phần gán được, không cân Tài/Xỉu; 1 = khớp hết mức + cân tổng 2 bên)
   auto_bet.consolidate_min_withdraw_vnd  (strategy 3: dừng cược + hẹn rút khi số dư > mức này; mặc định 300k)
   auto_bet.consolidate_no_deposit  (strategy 3: true = không nạp mọi acc; mặc định true)
   auto_bet.consolidate_pair_max_gap_vnd  (strategy 3: chênh tối đa giữa floor bet_step của 2 acc liền kề; 0 = floor phải bằng nhau)
@@ -160,6 +161,9 @@ USER_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("daily_bet_cap_reset", "hour"),
     ("daily_bet_cap_reset", "minute"),
     ("daily_bet_cap_reset", "value_vnd"),
+    ("daily_bet_cap_reset", "min_jackpot_vnd"),
+    ("daily_bet_cap_reset", "side_total_low_vnd"),
+    ("daily_bet_cap_reset", "auto_bet_enabled"),
     ("auto_bet", "assign_strategy"),
     ("auto_bet", "assign_match_mode"),
     ("auto_bet", "bet_place_after_sec"),
@@ -346,6 +350,9 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "hour": 0,
         "minute": 5,
         "value_vnd": 895_000,
+        "min_jackpot_vnd": 2_000_000_000,
+        "side_total_low_vnd": 50_000,
+        "auto_bet_enabled": True,
         "worker_tick_sec": 30,
     },
     "auto_mission_reward": {

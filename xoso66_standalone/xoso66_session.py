@@ -20,13 +20,20 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import threading
 from typing import Any, Callable
 
 import requests
 
-from xoso66_sessions_io import load_sessions, merge_account, save_sessions, use_db
+from xoso66_sessions_io import (
+    apply_session_merge,
+    load_sessions,
+    merge_account,
+    save_sessions,
+    use_db,
+)
 
 from xoso66_game_domain import default_base_url, resolve_base_url
 BASE_URL = default_base_url()  # legacy; prefer resolve_base_url(session)
@@ -85,6 +92,16 @@ LOGIN_CF_BACKOFF_SEC = int(os.environ.get("XOSO66_LOGIN_CF_BACKOFF_SEC", "180"))
 LOGIN_SPAM_BACKOFF_SEC = int(os.environ.get("XOSO66_LOGIN_SPAM_BACKOFF_SEC", "300"))
 # Chỉ 1 login HTTP/PW tại một thời điểm — tránh 16 WS mở → 16 login song song → 475.
 LOGIN_GLOBAL_CONCURRENCY = max(1, int(os.environ.get("XOSO66_LOGIN_GLOBAL_CONCURRENCY", "1")))
+# HTTP 475 → login Chrome UI (xoso66_chrome_manual_login). Tắt: XOSO66_CF475_CHROME_UI=0
+CF475_CHROME_UI_ENABLED = os.environ.get("XOSO66_CF475_CHROME_UI", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+CF475_CHROME_UI_TIMEOUT_SEC = int(
+    os.environ.get("XOSO66_CF475_CHROME_UI_TIMEOUT_SEC", "180")
+)
+_CHROME_UI_RECOVER_LOCK = threading.Lock()
 _LOGIN_ATTEMPT_LAST: dict[str, float] = {}
 _LOGIN_BLOCKED_UNTIL: dict[str, float] = {}
 _LOGIN_ATTEMPT_LOCK = threading.Lock()
@@ -192,9 +209,72 @@ def _mark_account_loi_http_475(
     _mark_login_blocked(aid, sec=LOGIN_CF_BACKOFF_SEC)
 
 
-def _raise_login_cf_475(session: dict, account_id: str = "", *, status: int = 475) -> None:
-    """HTTP 475 sau getBalance fail — đánh Lỗi rồi raise."""
-    _mark_account_loi_http_475(session, account_id, status=status)
+def _try_recover_login_cf_475_via_chrome_ui(
+    session: dict, account_id: str = "", *, status: int = 475
+) -> dict | None:
+    """
+    Đánh Lỗi rồi thử login qua Chrome UI (giống xoso66_chrome_manual_login.py).
+    Trả dict login OK hoặc None.
+    """
+    from xoso66_accounts_db import username_for_log
+
+    aid = str(account_id or _account_id_from_session(session) or "").strip()
+    if not aid:
+        return None
+    _mark_account_loi_http_475(session, aid, status=status)
+    if not CF475_CHROME_UI_ENABLED:
+        return None
+    u = username_for_log(aid, session)
+    print(
+        f"[LOGIN] {u}: HTTP {status} CF — thử Chrome UI login "
+        f"(timeout={CF475_CHROME_UI_TIMEOUT_SEC}s)…",
+        flush=True,
+    )
+    try:
+        from xoso66_chrome_ext_login import login_account_via_extension
+
+        with _CHROME_UI_RECOVER_LOCK:
+            out = login_account_via_extension(
+                aid, timeout_sec=CF475_CHROME_UI_TIMEOUT_SEC
+            )
+    except Exception as exc:
+        print(f"[LOGIN] {u}: Chrome UI login exception — {exc}", flush=True)
+        return None
+    if not out.get("ok"):
+        err = out.get("msg") or out.get("error") or out
+        print(f"[LOGIN] {u}: Chrome UI login fail — {err}", flush=True)
+        return None
+    fresh = load_sessions().get(aid) or {}
+    if fresh:
+        apply_session_merge(session, fresh)
+    bootstrap_prelogin(session)
+    _clear_login_blocked(aid)
+    print(
+        f"[LOGIN] {u}: Chrome UI login OK — balance={out.get('balance')} "
+        f"status={out.get('status')}",
+        flush=True,
+    )
+    user_data = {}
+    if isinstance(session.get("user_info"), dict):
+        user_data = session["user_info"]
+    return {
+        "cookies": session.get("cookies"),
+        "form_token": session.get("form_token"),
+        "headers": session.get("headers"),
+        "user_info": user_data,
+        "login_raw": {"code": 1, "msg": "chrome_ui_login", "method": out.get("method")},
+    }
+
+
+def _handle_login_cf_block(
+    session: dict, account_id: str = "", *, status: int = 475
+) -> dict:
+    """HTTP 475/403 — đánh Lỗi, thử Chrome UI; OK → dict login, không → raise."""
+    recovered = _try_recover_login_cf_475_via_chrome_ui(
+        session, account_id, status=status
+    )
+    if recovered is not None:
+        return recovered
     raise RuntimeError(
         f"Login HTTP {status} (Cloudflare chặn POST /user/login) — đã đánh Lỗi"
     )
@@ -354,20 +434,71 @@ def _merge_any_response_cookies(session: dict, resp: Any) -> None:
         merge_session_cookies(session, incoming, allow_identity=True)
 
 
+def _parse_encrypted_post_response(
+    session: dict,
+    *,
+    status: int,
+    text: str,
+    aes_key: str,
+    resp_headers: dict,
+    req_headers: dict | None = None,
+) -> Any:
+    """Giải body POST encrypt — JSON thường, v2 pack, hoặc AES (giống post_encrypted)."""
+    from xoso66_deposit import apply_response_tokens, decrypt_deposit_body
+    from xoso66_secure_headers import (
+        CRYPTO_VERSION_HEADER,
+        CRYPTO_VERSION_V2,
+        unpack_v2_ciphertext,
+    )
+
+    if resp_headers:
+        apply_response_tokens(session, resp_headers)
+    if status != 200 or not text:
+        return None
+    raw: Any = text
+    if isinstance(raw, str) and raw.startswith('"') and raw.endswith('"'):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = raw[1:-1]
+    if not raw:
+        return None
+    try:
+        if str(raw).lstrip().startswith(("{", "[")):
+            return json.loads(raw) if isinstance(raw, str) else raw
+        body = str(raw)
+        response_version = (
+            resp_headers.get(CRYPTO_VERSION_HEADER)
+            or resp_headers.get(CRYPTO_VERSION_HEADER.title())
+            or (req_headers or {}).get(CRYPTO_VERSION_HEADER)
+        )
+        if response_version == CRYPTO_VERSION_V2:
+            body = unpack_v2_ciphertext(body)
+        return decrypt_deposit_body(session, body, aes_key, resp_headers)
+    except Exception as e:
+        preview = str(raw)[:200]
+        return {"_decrypt_error": str(e), "_cipher_preview": preview}
+
+
 def _decrypt_encrypted_http_body(
     session: dict, resp: Any, aes_key: str, *, text: str | None = None
 ) -> Any:
-    from xoso66_deposit import decrypt_deposit_body
+    return _parse_encrypted_post_response(
+        session,
+        status=int(getattr(resp, "status_code", 0) or 0),
+        text=text if text is not None else (getattr(resp, "text", None) or ""),
+        aes_key=aes_key,
+        resp_headers=dict(getattr(resp, "headers", {}) or {}),
+    )
 
-    raw = text if text is not None else (resp.text or "")
-    if raw.startswith('"') and raw.endswith('"'):
-        raw = raw[1:-1]
-    if resp.status_code == 200 and raw:
-        try:
-            return decrypt_deposit_body(session, raw, aes_key, dict(resp.headers))
-        except Exception as e:
-            return {"_decrypt_error": str(e), "_cipher_preview": raw[:200]}
-    return None
+
+def _login_response_is_crypto_glitch(body: Any) -> bool:
+    if not isinstance(body, dict):
+        return False
+    if body.get("_decrypt_error"):
+        return True
+    err = str(body.get("_decrypt_error") or "").lower()
+    return "padding" in err or "decrypt" in err
 
 
 def _login_use_cffi() -> bool:
@@ -449,13 +580,14 @@ def _login_via_playwright(session: dict, plain: dict) -> tuple[int, Any, dict]:
         apply_response_tokens(session, resp_headers)
     decrypted: Any = None
     if status == 200 and text:
-        from xoso66_deposit import decrypt_deposit_body
-
-        raw = text[1:-1] if text.startswith('"') and text.endswith('"') else text
-        try:
-            decrypted = decrypt_deposit_body(session, raw, aes_key, resp_headers)
-        except Exception as e:
-            decrypted = {"_decrypt_error": str(e), "_cipher_preview": raw[:200]}
+        decrypted = _parse_encrypted_post_response(
+            session,
+            status=status,
+            text=text,
+            aes_key=aes_key,
+            resp_headers=resp_headers,
+            req_headers=headers,
+        )
     return status, decrypted, resp_headers
 
 
@@ -532,12 +664,14 @@ def post_login_encrypted(
     force_cffi=True: chỉ curl_cffi (sau refresh CF).
     """
     from xoso66_deposit import (
+        DEFAULT_UA,
         build_request_headers,
         crypto_available,
         encrypt_deposit_body,
         get_form_token,
     )
     from xoso66_proxy import build_proxies, ensure_proxy
+    from xoso66_secure_headers import generate_secure_headers, pack_v2_ciphertext
 
     if not crypto_available():
         raise RuntimeError("pip install pycryptodome")
@@ -546,6 +680,12 @@ def post_login_encrypted(
     encrypted_body, cek_k, aes_key = encrypt_deposit_body(session, plain)
     headers = build_request_headers(session, cek_k=cek_k, form_token=form_token)
     url = f"{resolve_base_url(session)}{path}"
+    headers.update(
+        generate_secure_headers(
+            url,
+            str(session.get("user_agent") or DEFAULT_UA),
+        )
+    )
 
     if force_cffi or _login_use_cffi():
         try:
@@ -554,14 +694,21 @@ def post_login_encrypted(
             ensure_proxy(session)
             r = cffi_requests.post(
                 url,
-                data=encrypted_body,
+                data=pack_v2_ciphertext(encrypted_body),
                 headers=headers,
                 cookies=session.get("cookies") or {},
                 proxies=build_proxies(session["proxy"]),
                 impersonate=os.environ.get("XOSO66_CF_IMPERSONATE", "chrome120"),
                 timeout=45,
             )
-            decrypted = _decrypt_encrypted_http_body(session, r, aes_key)
+            decrypted = _parse_encrypted_post_response(
+                session,
+                status=r.status_code,
+                text=r.text or "",
+                aes_key=aes_key,
+                resp_headers=dict(r.headers),
+                req_headers=headers,
+            )
             _merge_any_response_cookies(session, r)
             return r.status_code, decrypted, dict(r.headers)
         except ImportError:
@@ -739,6 +886,132 @@ def refresh_cloudflare(session: dict, *, prefer_playwright: bool = False) -> dic
     return _refresh(session, prefer_playwright=prefer_playwright)
 
 
+def _json_dict_from_preview(preview: str) -> dict[str, Any] | None:
+    m = re.search(r"\{.*\}", preview or "", re.DOTALL)
+    if not m:
+        return None
+    try:
+        parsed = json.loads(m.group())
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _login_fail_message(
+    body: Any,
+    *,
+    http_status: int = 200,
+    had_captcha: bool = False,
+    transport: str = "",
+    step: str = "",
+) -> str:
+    """Mô tả lỗi login — tránh chỉ «Login thất bại code=None» khi thiếu msg."""
+    parts: list[str] = []
+    if step:
+        parts.append(step)
+    if transport:
+        parts.append(transport)
+    if http_status not in (0, 200):
+        parts.append(f"HTTP {http_status}")
+
+    if not isinstance(body, dict):
+        if body is None:
+            parts.append("response trống / không giải mã được")
+        else:
+            parts.append(f"body={body!r}"[:220])
+        if had_captcha:
+            parts.append("đã gửi captcha")
+        return " — ".join(parts) if parts else "Login thất bại"
+
+    decrypt_err = body.get("_decrypt_error")
+    if decrypt_err:
+        parts.append(f"giải mã response: {decrypt_err}")
+        preview = str(body.get("_cipher_preview") or "")
+        pl = preview.lower()
+        if "cloudflare" in pl or "<html" in pl or "<!doctype" in pl:
+            parts.append("server trả HTML/CF (không phải JSON API)")
+        elif preview:
+            inner = _json_dict_from_preview(preview)
+            if inner:
+                im = str(inner.get("msg") or inner.get("message") or "").strip()
+                ic = inner.get("code")
+                if im:
+                    parts.append(im)
+                elif ic is not None:
+                    parts.append(f"code={ic}")
+            else:
+                parts.append(f"preview={preview[:100]!r}")
+
+    msg = str(body.get("msg") or body.get("message") or "").strip()
+    code = body.get("code")
+    if msg and msg not in parts:
+        parts.append(msg)
+    if code is not None and not decrypt_err and not any(str(code) in p for p in parts):
+        if not msg:
+            parts.append(f"code={code}")
+    if decrypt_err and code is None:
+        inner = _json_dict_from_preview(str(body.get("_cipher_preview") or ""))
+        if inner:
+            im = str(inner.get("msg") or inner.get("message") or "").strip()
+            if im and im not in parts:
+                parts.append(f"server: {im}")
+            ic = inner.get("code")
+            if ic is not None and not any(str(ic) in p for p in parts):
+                parts.append(f"code={ic}")
+    if not decrypt_err and not msg and code is None:
+        keys = [k for k in body if not str(k).startswith("_")]
+        if not keys and not body:
+            parts.append("JSON rỗng")
+        elif keys:
+            snippet = json.dumps({k: body[k] for k in keys[:6]}, ensure_ascii=False)
+            parts.append(f"fields {snippet[:180]}")
+
+    if had_captcha:
+        parts.append("đã gửi captcha")
+    out = " — ".join(p for p in parts if p)
+    return out or "Login thất bại (server không trả msg/code)"
+
+
+def _log_login_fail(
+    session: dict,
+    username: str,
+    body: Any,
+    *,
+    http_status: int = 200,
+    had_captcha: bool = False,
+    transport: str = "",
+    step: str = "",
+) -> str:
+    from xoso66_proxy import proxy_log_label
+
+    fail_msg = _login_fail_message(
+        body,
+        http_status=http_status,
+        had_captcha=had_captcha,
+        transport=transport,
+        step=step,
+    )
+    proxy_str = str(session.get("proxy") or "").strip()
+    px = proxy_log_label(proxy_str) if proxy_str else "no-proxy"
+    print(
+        f"[LOGIN] {username} thất bại ({px}): {fail_msg}",
+        flush=True,
+    )
+    if isinstance(body, dict) and body:
+        extra = {
+            k: body[k]
+            for k in body
+            if not str(k).startswith("_") and k not in ("msg", "message", "code", "data")
+        }
+        if extra:
+            print(
+                f"[LOGIN] {username} body extra: "
+                f"{json.dumps(extra, ensure_ascii=False)[:400]}",
+                flush=True,
+            )
+    return fail_msg
+
+
 def is_login_cf_blocked(status: int | None) -> bool:
     """True nếu HTTP status là Cloudflare chặn POST login (475/403)."""
     try:
@@ -841,7 +1114,7 @@ def _login_account_locked(
       1) POST không captcha (ô captcha chưa hiện) → thường code 1011 + ảnh
       2) Capsolver giải → POST 1 lần có captcha
       3) Sai captcha tối đa thêm 1 lần (không refresh CF giữa chừng)
-    HTTP 475 → đánh Lỗi ngay (không spam retry → «lặp lại quá thường xuyên»).
+    HTTP 475 → đánh Lỗi + thử Chrome UI login (mặc định bật); fail → raise.
     """
     from xoso66_cf import (
         CfRateLimitError,
@@ -891,8 +1164,11 @@ def _login_account_locked(
     code: Any = None
     msg = ""
     status = 0
+    last_transport = "HTTP"
 
     def _post(captcha: str, *, use_playwright: bool) -> tuple[int, Any]:
+        nonlocal last_transport
+        last_transport = "Playwright" if use_playwright else "HTTP"
         plain = prepare_login_payload(
             username,
             password,
@@ -954,11 +1230,27 @@ def _login_account_locked(
     # --- Bước 1: không captcha (web: bấm Đăng nhập khi chưa hiện ô) ---
     status, data = _post("", use_playwright=False)
     if is_login_cf_blocked(status):
-        _raise_login_cf_475(session, aid, status=int(status))
+        return _handle_login_cf_block(session, aid, status=int(status))
     if status not in (0, 200):
-        raise RuntimeError(f"Login HTTP {status}")
+        fail_msg = _log_login_fail(
+            session,
+            username,
+            data,
+            http_status=status,
+            transport=last_transport,
+            step="bước 1 không captcha",
+        )
+        raise RuntimeError(fail_msg or f"Login HTTP {status}")
     if not isinstance(data, dict):
-        raise RuntimeError(f"Login response lỗi: {data!r}")
+        fail_msg = _log_login_fail(
+            session,
+            username,
+            data,
+            http_status=status,
+            transport=last_transport,
+            step="bước 1 không captcha",
+        )
+        raise RuntimeError(fail_msg)
     code = data.get("code")
     msg = str(data.get("msg") or "")
     if code == LOGIN_CODE_2FA:
@@ -971,10 +1263,18 @@ def _login_account_locked(
         )
 
     if not is_wrong_captcha_response(code, msg) or not captcha_enabled():
-        from xoso66_account_errors import maybe_mark_account_loi_from_session
+        fail_msg = _log_login_fail(
+            session,
+            username,
+            data,
+            http_status=status,
+            transport=last_transport,
+            step="bước 1 không captcha",
+        )
+        if not _login_response_is_crypto_glitch(data):
+            from xoso66_account_errors import maybe_mark_account_loi_from_session
 
-        fail_msg = msg or f"Login thất bại code={code}"
-        maybe_mark_account_loi_from_session(session, fail_msg, source="login")
+            maybe_mark_account_loi_from_session(session, fail_msg, source="login")
         raise RuntimeError(fail_msg)
 
     # --- Bước 2+: có captcha (web: hiện ô → nhập → Đăng nhập) ---
@@ -992,11 +1292,29 @@ def _login_account_locked(
             )
             status, data = _post(captcha_text, use_playwright=True)
         if is_login_cf_blocked(status):
-            _raise_login_cf_475(session, aid, status=int(status))
+            return _handle_login_cf_block(session, aid, status=int(status))
         if status not in (0, 200):
-            raise RuntimeError(f"Login HTTP {status}")
+            fail_msg = _log_login_fail(
+                session,
+                username,
+                data,
+                http_status=status,
+                had_captcha=bool(captcha_text),
+                transport=last_transport,
+                step="gửi captcha",
+            )
+            raise RuntimeError(fail_msg or f"Login HTTP {status}")
         if not isinstance(data, dict):
-            raise RuntimeError(f"Login response lỗi: {data!r}")
+            fail_msg = _log_login_fail(
+                session,
+                username,
+                data,
+                http_status=status,
+                had_captcha=bool(captcha_text),
+                transport=last_transport,
+                step="gửi captcha",
+            )
+            raise RuntimeError(fail_msg)
         code = data.get("code")
         msg = str(data.get("msg") or "")
         if code == LOGIN_CODE_2FA:
@@ -1015,14 +1333,23 @@ def _login_account_locked(
                 flush=True,
             )
 
-    fail_msg = msg or f"Login thất bại code={code}"
+    fail_msg = _log_login_fail(
+        session,
+        username,
+        data,
+        http_status=status,
+        had_captcha=bool(captcha_text),
+        transport=last_transport,
+        step="sau captcha",
+    )
     if _is_site_login_spam_msg(fail_msg):
         _raise_login_blocked(
             aid, f"Site rate-limit login: {fail_msg}", sec=LOGIN_SPAM_BACKOFF_SEC
         )
-    from xoso66_account_errors import maybe_mark_account_loi_from_session
+    if not _login_response_is_crypto_glitch(data):
+        from xoso66_account_errors import maybe_mark_account_loi_from_session
 
-    maybe_mark_account_loi_from_session(session, fail_msg, source="login")
+        maybe_mark_account_loi_from_session(session, fail_msg, source="login")
     raise RuntimeError(fail_msg)
 
 
@@ -1031,6 +1358,12 @@ def get_user_balance(session: dict, *, refresh: bool = True) -> dict[str, Any]:
     from xoso66_cf import is_cloudflare_rate_limited, mark_cf_rate_limited
     from xoso66_deposit import apply_response_tokens, build_common_headers, get_form_token
 
+    if not str(session.get("form_token") or "").strip():
+        if (session.get("cookies") or {}).get("PHPSESSID"):
+            try:
+                bootstrap_prelogin(session)
+            except Exception:
+                pass
     if not str(session.get("form_token") or "").strip():
         out = {"ok": False, "reason": "thiếu form_token"}
         _log_getbalance_http_result(session, out)
@@ -1565,7 +1898,7 @@ def ensure_session(
                 f"Login cooldown ~{int(cooldown_rem)}s — getBalance vẫn fail"
             )
         _mark_login_attempt(account_id)
-        merge_account(acc, login_account(acc))
+        apply_session_merge(acc, login_account(acc))
         _mark_session_logged_in(acc)
         _clear_login_blocked(account_id)
 
@@ -1587,6 +1920,14 @@ def ensure_session(
         if not is_cf_rate_limited(acc):
             refresh_cloudflare(acc, prefer_playwright=True)
         _try_login()
+
+    fresh = load_sessions().get(account_id) or {}
+    if fresh:
+        apply_session_merge(acc, fresh)
+    try:
+        bootstrap_prelogin(acc)
+    except Exception:
+        pass
 
     persist_session(account_id, acc)
     if not session_is_valid(acc):

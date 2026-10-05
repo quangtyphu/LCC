@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Đặt lại auto_bet.daily_bet_cap_vnd hàng ngày (giờ VN).
+Đặt lại auto_bet hàng ngày (giờ VN): daily_bet_cap_vnd, min_jackpot_vnd, side_total_low_vnd,
+và bật auto_bet.enabled (mặc định true dù đang false).
 
-Mặc định: 00:05 → 895000 (mốc điểm danh). Trong ngày có thể nâng cap
-(VD 2695000 Cửa 1 mini game); sau nửa đêm scheduler kéo về lại.
+Mặc định: 00:05 → cap 895000 (mốc điểm danh), min_jackpot 2 tỷ, side_total_low 50k.
+Trong ngày có thể nâng cap/ngưỡng hũ; sau nửa đêm scheduler kéo về lại.
 """
 
 from __future__ import annotations
@@ -21,7 +22,10 @@ from xoso66_time_util import now_vn, today_vn_str
 
 _RUN_LOCK = threading.Lock()
 _STATE_FILE = Path(cms_game_data_dir()) / "daily_bet_cap_reset_state.json"
-_CONFIG_PATH = ("auto_bet", "daily_bet_cap_vnd")
+_CAP_PATH = ("auto_bet", "daily_bet_cap_vnd")
+_MIN_JP_PATH = ("auto_bet", "min_jackpot_vnd")
+_SIDE_LOW_PATH = ("auto_bet", "side_total_low_vnd")
+_ENABLED_PATH = ("auto_bet", "enabled")
 
 
 def _cfg() -> dict[str, Any]:
@@ -43,6 +47,18 @@ def _schedule_minute() -> int:
 
 def _target_cap_vnd() -> int:
     return int(_cfg().get("value_vnd", 895_000))
+
+
+def _target_min_jackpot_vnd() -> int:
+    return int(_cfg().get("min_jackpot_vnd", 2_000_000_000))
+
+
+def _target_side_total_low_vnd() -> int:
+    return int(_cfg().get("side_total_low_vnd", 50_000))
+
+
+def _target_auto_bet_enabled() -> bool:
+    return bool(_cfg().get("auto_bet_enabled", True))
 
 
 def _worker_tick_sec() -> float:
@@ -71,7 +87,12 @@ def reset_ran_today_vn() -> bool:
     return str(st.get("vn_day") or "") == day and bool(st.get("reset_ran"))
 
 
-def _mark_reset_done(cap_vnd: int) -> None:
+def _mark_reset_done(
+    cap_vnd: int,
+    *,
+    min_jackpot_vnd: int,
+    side_total_low_vnd: int,
+) -> None:
     from datetime import datetime, timezone
 
     _save_state(
@@ -79,9 +100,36 @@ def _mark_reset_done(cap_vnd: int) -> None:
             "vn_day": today_vn_str(),
             "reset_ran": True,
             "cap_vnd": int(cap_vnd),
+            "min_jackpot_vnd": int(min_jackpot_vnd),
+            "side_total_low_vnd": int(side_total_low_vnd),
             "done_at": datetime.now(timezone.utc).isoformat(),
         }
     )
+
+
+def _auto_bet_int(ab: dict[str, Any] | None, key: str) -> int | None:
+    if not isinstance(ab, dict) or ab.get(key) is None:
+        return None
+    try:
+        return int(ab.get(key))
+    except (TypeError, ValueError):
+        return None
+
+
+def _auto_bet_at_daily_targets(ab: dict[str, Any] | None) -> bool:
+    targets = (
+        ("daily_bet_cap_vnd", _target_cap_vnd()),
+        ("min_jackpot_vnd", _target_min_jackpot_vnd()),
+        ("side_total_low_vnd", _target_side_total_low_vnd()),
+    )
+    for key, target in targets:
+        prev = _auto_bet_int(ab, key)
+        if prev is None or prev != target:
+            return False
+    if _target_auto_bet_enabled():
+        if not isinstance(ab, dict) or not bool(ab.get("enabled")):
+            return False
+    return True
 
 
 def _due_for_daily_reset() -> bool:
@@ -98,7 +146,7 @@ def _due_for_daily_reset() -> bool:
 
 
 def run_daily_bet_cap_reset(*, reason: str = "scheduled") -> bool:
-    """Ghi daily_bet_cap_vnd về value_vnd. False nếu đã chạy hôm nay / busy / lỗi ghi."""
+    """Ghi cap / min_jackpot / side_total_low về mốc daily_bet_cap_reset. False nếu đã chạy hôm nay / busy / lỗi ghi."""
     if not _RUN_LOCK.acquire(blocking=False):
         print("[CAP-RESET] Đang chạy reset khác — bỏ qua", flush=True)
         return False
@@ -106,32 +154,57 @@ def run_daily_bet_cap_reset(*, reason: str = "scheduled") -> bool:
         if reset_ran_today_vn():
             return False
         cap = _target_cap_vnd()
+        min_jp = _target_min_jackpot_vnd()
+        side_low = _target_side_total_low_vnd()
         ab = load_config().get("auto_bet")
-        prev = None
-        if isinstance(ab, dict) and ab.get("daily_bet_cap_vnd") is not None:
-            try:
-                prev = int(ab.get("daily_bet_cap_vnd"))
-            except (TypeError, ValueError):
-                prev = None
-        if prev is not None and prev == cap:
-            _mark_reset_done(cap)
+        ab_dict = ab if isinstance(ab, dict) else None
+        if _auto_bet_at_daily_targets(ab_dict):
+            _mark_reset_done(
+                cap,
+                min_jackpot_vnd=min_jp,
+                side_total_low_vnd=side_low,
+            )
             print(
-                f"[CAP-RESET] Cap đã = {cap:,} — đánh dấu đã reset ({reason})",
+                f"[CAP-RESET] Cap/min_jackpot/side_total_low đã đúng mốc — "
+                f"đánh dấu đã reset ({reason})",
                 flush=True,
             )
             return True
-        if not save_user_config_value(_CONFIG_PATH, cap):
+        writes: list[tuple[tuple[str, ...], int, int | None]] = [
+            (_CAP_PATH, cap, _auto_bet_int(ab_dict, "daily_bet_cap_vnd")),
+            (_MIN_JP_PATH, min_jp, _auto_bet_int(ab_dict, "min_jackpot_vnd")),
+            (_SIDE_LOW_PATH, side_low, _auto_bet_int(ab_dict, "side_total_low_vnd")),
+        ]
+        changed: list[str] = []
+        for path, target, prev in writes:
+            if prev is not None and prev == target:
+                continue
+            if not save_user_config_value(path, target):
+                label = ".".join(path)
+                print(
+                    f"[CAP-RESET] Không ghi được {label}={target:,}",
+                    flush=True,
+                )
+                return False
+            prev_s = f"{prev:,}" if prev is not None else "?"
+            changed.append(f"{path[-1]} {prev_s} → {target:,}")
+        if _target_auto_bet_enabled():
+            prev_on = bool(ab_dict.get("enabled")) if isinstance(ab_dict, dict) else False
+            if not prev_on:
+                if not save_user_config_value(_ENABLED_PATH, True):
+                    print("[CAP-RESET] Không ghi được auto_bet.enabled=true", flush=True)
+                    return False
+                changed.append("enabled false → true")
+        _mark_reset_done(
+            cap,
+            min_jackpot_vnd=min_jp,
+            side_total_low_vnd=side_low,
+        )
+        if changed:
             print(
-                f"[CAP-RESET] Không ghi được daily_bet_cap_vnd={cap:,}",
+                f"[CAP-RESET] {', '.join(changed)} ({reason})",
                 flush=True,
             )
-            return False
-        _mark_reset_done(cap)
-        prev_s = f"{prev:,}" if prev is not None else "?"
-        print(
-            f"[CAP-RESET] daily_bet_cap_vnd {prev_s} → {cap:,} ({reason})",
-            flush=True,
-        )
         return True
     except Exception as e:
         print(f"[CAP-RESET] Lỗi: {e}", flush=True)
@@ -147,7 +220,13 @@ def worker_daily_bet_cap_reset_loop(*, quiet: bool = False) -> None:
     if not quiet:
         print(
             f"[CAP-RESET] Worker: {_schedule_hour():02d}:{_schedule_minute():02d} "
-            f"giờ VN → daily_bet_cap_vnd={_target_cap_vnd():,}",
+            f"giờ VN → cap={_target_cap_vnd():,}, min_jackpot={_target_min_jackpot_vnd():,}, "
+            f"side_total_low={_target_side_total_low_vnd():,}"
+            + (
+                ", auto_bet.enabled=true"
+                if _target_auto_bet_enabled()
+                else ""
+            ),
             flush=True,
         )
     while not stopping():

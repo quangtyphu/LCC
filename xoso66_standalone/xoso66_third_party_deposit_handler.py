@@ -41,7 +41,11 @@ if str(_DIR) not in sys.path:
 if str(_LC79_REPO) not in sys.path:
     sys.path.insert(0, str(_LC79_REPO))
 
-from deposit_callback_routing import resolve_callback_game
+from deposit_callback_routing import (
+    from_banking_game_deposit_order_id,
+    resolve_callback_game,
+    to_banking_game_deposit_order_id,
+)
 
 
 def _assert_msbapi_login_before_send(username: str = "", account_id: str = "") -> dict[str, Any] | None:
@@ -483,8 +487,9 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict[st
     if isinstance(qr_base64, str) and qr_base64 and not qr_base64.startswith("data:image"):
         qr_base64 = f"data:image/png;base64,{qr_base64.lstrip()}"
 
+    banking_oid = to_banking_game_deposit_order_id(order_id)
     payload: dict[str, Any] = {
-        "orderId": str(order_id),
+        "orderId": banking_oid,
         "qrBase64": qr_base64,
         "username": username,
         "amount": amount,
@@ -846,7 +851,9 @@ def _run_poll_after_third_party(order_id: int) -> None:
 @app.route("/callback", methods=["POST"])
 def receive_callback() -> Any:
     data = request.json or {}
-    order_id = data.get("order_id") or data.get("orderId")
+    order_id = from_banking_game_deposit_order_id(
+        data.get("order_id") or data.get("orderId")
+    )
     status_raw = data.get("status")
     status = _normalize_callback_status(status_raw)
     username = data.get("username", "")

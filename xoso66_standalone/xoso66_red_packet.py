@@ -68,9 +68,129 @@ RED_PACKET_LOAD_WAIT_SEC = 3.0
 RED_PACKET_POPUP_WAIT_SEC = 12.0
 RED_PACKET_AFTER_OPEN_SEC = 6.0
 RED_PACKET_HTTP_FALLBACK = True
+# Site chặn grab PC (code 1060) — API cần x-device android + UA mobile.
+RED_PACKET_CLIENT_PROFILE = "android"
+# Batch 21h: grab API trước (mở bao server-side), Playwright UI chỉ khi HTTP fail.
+RED_PACKET_HTTP_FIRST = True
 # Retry khi goto/timeout/Playwright lỗi — dọn browser trước mỗi lần thử lại
 RED_PACKET_CLAIM_RETRY_MAX = 3
 RED_PACKET_CLAIM_RETRY_DELAY_SEC = 5.0
+
+_CLIENT_UA_PC = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+_CLIENT_UA_ANDROID = (
+    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+)
+_CLIENT_UA_IPHONE = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1"
+)
+
+# Tên profile → header/UA (giả app khi site chặn web PC).
+CLIENT_PROFILES: dict[str, dict[str, str]] = {
+    "pc": {
+        "x_device": "pc",
+        "x_app_platform": "undefined",
+        "user_agent": _CLIENT_UA_PC,
+        "playwright_mobile": "0",
+    },
+    "android": {
+        "x_device": "android",
+        "x_app_platform": "android",
+        "user_agent": _CLIENT_UA_ANDROID,
+        "playwright_mobile": "1",
+    },
+    "android_app": {
+        "x_device": "android",
+        "x_app_platform": "app",
+        "user_agent": _CLIENT_UA_ANDROID,
+        "playwright_mobile": "1",
+    },
+    "ios": {
+        "x_device": "ios",
+        "x_app_platform": "ios",
+        "user_agent": _CLIENT_UA_IPHONE,
+        "playwright_mobile": "1",
+    },
+    "h5": {
+        "x_device": "h5",
+        "x_app_platform": "android",
+        "user_agent": _CLIENT_UA_ANDROID,
+        "playwright_mobile": "1",
+    },
+    "mobile_1-1": {
+        "x_device": "1-1",
+        "x_app_platform": "android",
+        "user_agent": _CLIENT_UA_ANDROID,
+        "playwright_mobile": "1",
+    },
+}
+
+
+def apply_client_profile(session: dict, profile: str | None) -> dict[str, str] | None:
+    """Gắn x-device / UA lên session (API + Playwright). Trả meta profile."""
+    name = str(profile or "").strip().lower()
+    if not name or name in ("pc", "pc_baseline"):
+        return CLIENT_PROFILES.get("pc")
+    if name == "android_chrome":
+        name = "android"
+    meta = CLIENT_PROFILES.get(name)
+    if not meta:
+        return None
+    session["user_agent"] = meta["user_agent"]
+    session["x_device"] = meta["x_device"]
+    session["x_app_platform"] = meta["x_app_platform"]
+    hdr = dict(session.get("headers") or {})
+    hdr["x-device"] = meta["x_device"]
+    hdr["x-app-platform"] = meta["x_app_platform"]
+    session["headers"] = hdr
+    return meta
+
+
+def _client_init_script(meta: dict[str, str]) -> str:
+    xd = meta.get("x_device") or "android"
+    xp = meta.get("x_app_platform") or "android"
+    ua = meta.get("user_agent") or _CLIENT_UA_ANDROID
+    ua_js = json.dumps(ua)
+    xd_js = json.dumps(xd)
+    xp_js = json.dumps(xp)
+    return f"""
+(() => {{
+  const UA = {ua_js};
+  const XD = {xd_js};
+  const XP = {xp_js};
+  try {{
+    Object.defineProperty(navigator, 'userAgent', {{ get: () => UA }});
+    Object.defineProperty(navigator, 'platform', {{
+      get: () => (XD === 'ios' ? 'iPhone' : 'Linux armv8l'),
+    }});
+    Object.defineProperty(navigator, 'maxTouchPoints', {{ get: () => 5 }});
+  }} catch (e) {{}}
+  const patchStore = () => {{
+    const app = document.querySelector('#app');
+    const vm = app && app.__vue__;
+    const st = vm && vm.$store && vm.$store.state;
+    if (!st) return false;
+    if (st.app && typeof st.app === 'object') {{
+      st.app.device = XD;
+      st.app.platform = XP;
+      if (st.app.baseInfo && typeof st.app.baseInfo === 'object') {{
+        st.app.baseInfo.device = XD;
+        st.app.baseInfo.platform = XP;
+      }}
+    }}
+    return true;
+  }};
+  patchStore();
+  let n = 0;
+  const t = setInterval(() => {{
+    if (patchStore() || ++n > 40) clearInterval(t);
+  }}, 250);
+}})();
+"""
 
 
 @dataclass
@@ -341,6 +461,50 @@ def _vue_grab_packet(page: Any, packet_id: int | str) -> dict[str, Any]:
     return out
 
 
+def red_packet_http_first_enabled() -> bool:
+    """Ưu tiên POST grabredpacket (android) — auto_red_packet.http_first trong config."""
+    if not RED_PACKET_HTTP_FIRST or not RED_PACKET_HTTP_FALLBACK:
+        return False
+    try:
+        from xoso66_config_util import load_config
+
+        raw = load_config().get("auto_red_packet")
+        if isinstance(raw, dict) and "http_first" in raw:
+            return bool(raw.get("http_first"))
+    except Exception:
+        pass
+    return True
+
+
+def attempt_http_red_packet_claim(session: dict) -> dict[str, Any]:
+    """
+    Nhận lì xì qua API (session đã apply_client_profile android).
+    Không cần bấm 「Mở bao」 trên web.
+    """
+    info = fetch_red_packet_info(session)
+    pid = info.get("packet_id")
+    if not pid:
+        return {
+            "no_packet": True,
+            "packet_id": None,
+            "info": info,
+            "grab": {
+                "ok": False,
+                "code": info.get("code"),
+                "msg": info.get("msg") or "khong co bao li xi",
+                "via": "http_info",
+            },
+        }
+    grab = grab_red_packet(session, pid)
+    grab["via"] = "http"
+    return {
+        "no_packet": False,
+        "packet_id": pid,
+        "info": info,
+        "grab": grab,
+    }
+
+
 def red_packet_cfg(_cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """Cấu hình lì xì cố định trong code (không dùng config file)."""
     return {
@@ -351,6 +515,7 @@ def red_packet_cfg(_cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         "popup_wait_sec": RED_PACKET_POPUP_WAIT_SEC,
         "after_open_sec": RED_PACKET_AFTER_OPEN_SEC,
         "http_fallback": RED_PACKET_HTTP_FALLBACK,
+        "http_first": red_packet_http_first_enabled(),
     }
 
 
@@ -489,9 +654,50 @@ def try_claim_red_packet_on_home_page(
         _log_red_packet(user, "bo qua — da nhan thanh cong hom nay (VN)")
         return result
 
+    apply_client_profile(session, RED_PACKET_CLIENT_PROFILE)
     t = timings_from_red_packet_cfg(rp_cfg)
     last_grab: dict[str, Any] = {}
     last_info: dict[str, Any] = {}
+    http_first_tried = False
+
+    bal_before = get_user_balance(session, refresh=True).get("balance")
+    result["balance_before"] = bal_before
+
+    if rp_cfg.get("http_first") and rp_cfg.get("http_fallback"):
+        http_first_tried = True
+        _log_red_packet(user, "HTTP-first: getredpacketinfo + grabredpacket (android)")
+        http_try = attempt_http_red_packet_claim(session)
+        grab = http_try["grab"]
+        if grab.get("ok"):
+            bal_after = get_user_balance(session, refresh=True).get("balance")
+            result["balance_after"] = bal_after
+            result["grab"] = grab
+            result["claimed"] = True
+            result["amount_received"] = amount_received(
+                {**result, "grab": grab, "balance_before": bal_before, "balance_after": bal_after}
+            )
+            result["msg"] = grab.get("msg")
+            _log_red_packet(
+                user,
+                f"NHAN DUOC (HTTP-first) +{result['amount_received']:,} VND | "
+                f"{bal_before} -> {bal_after}",
+            )
+            if persist and aid:
+                persist_session(aid, session)
+                _save_claim_log(aid, result)
+            return result
+        if http_try.get("no_packet"):
+            result["grab"] = grab
+            result["msg"] = grab.get("msg")
+            _log_red_packet(user, f"HTTP-first: khong co bao | {grab.get('msg')}")
+            if persist and aid:
+                persist_session(aid, session)
+                _save_claim_log(aid, result)
+            return result
+        _log_red_packet(
+            user,
+            f"HTTP-first chua OK code={grab.get('code')} msg={grab.get('msg')!r} — thu UI",
+        )
 
     def on_response(response: Any) -> None:
         nonlocal last_grab, last_info
@@ -521,8 +727,9 @@ def try_claim_red_packet_on_home_page(
 
     page.on("response", on_response)
 
-    bal_before = get_user_balance(session, refresh=True).get("balance")
-    result["balance_before"] = bal_before
+    if not http_first_tried:
+        bal_before = get_user_balance(session, refresh=True).get("balance")
+        result["balance_before"] = bal_before
     _log_red_packet(user, f"bat dau tren /home/ (balance={bal_before})")
 
     try:
@@ -585,22 +792,18 @@ def try_claim_red_packet_on_home_page(
             if grab_vue.get("ok"):
                 grab = grab_vue
                 ui_ok = True
-    if not ui_ok and rp_cfg.get("http_fallback"):
+    if not ui_ok and rp_cfg.get("http_fallback") and not http_first_tried:
         _log_red_packet(user, "UI/Vue chua OK — thu HTTP getredpacketinfo + grabredpacket")
-        info = fetch_red_packet_info(session)
-        pid = info.get("packet_id")
-        if pid:
-            _log_red_packet(user, f"HTTP grab rid/id={pid}")
-            grab_http = grab_red_packet(session, pid)
-            grab_http["via"] = "http"
-            _log_red_packet(
-                user,
-                f"HTTP grab code={grab_http.get('code')} msg={grab_http.get('msg')} "
-                f"payload={grab_http.get('payload')}",
-            )
-            if grab_http.get("ok"):
-                grab = grab_http
-        else:
+        http_try = attempt_http_red_packet_claim(session)
+        grab_http = http_try["grab"]
+        _log_red_packet(
+            user,
+            f"HTTP grab code={grab_http.get('code')} msg={grab_http.get('msg')} "
+            f"payload={grab_http.get('payload')}",
+        )
+        if grab_http.get("ok"):
+            grab = grab_http
+        elif http_try.get("no_packet"):
             _log_red_packet(user, "HTTP getredpacketinfo — khong co list[].id (khong co bao?)")
 
     bal_after = get_user_balance(session, refresh=True).get("balance")
@@ -736,6 +939,7 @@ def claim_red_packet(
     headless: bool = True,
     persist: bool = True,
     verbose: bool = True,
+    client_profile: str | None = None,
 ) -> dict[str, Any]:
     """
     Flow hoàn chỉnh trong một phiên browser:
@@ -758,6 +962,8 @@ def claim_red_packet(
 
     if session is None:
         session = ensure_session(account_id)
+    prof = client_profile if client_profile is not None else RED_PACKET_CLIENT_PROFILE
+    client_meta = apply_client_profile(session, prof)
     user = (session.get("user_info") or {}).get("username") or session.get("username")
     proxy_str = ensure_proxy(session)
 
@@ -766,6 +972,7 @@ def claim_red_packet(
         "username": user,
         "proxy": proxy_log_label(proxy_str),
         "log_path": str(log_path),
+        "client_profile": prof,
         "steps": [],
     }
     bal_before = get_user_balance(session, refresh=True).get("balance")
@@ -797,8 +1004,60 @@ def claim_red_packet(
 
     host = site_host(session)
     px = playwright_proxy(proxy_str)
+    http_first_attempted = False
 
-    _say(f"\n=== {account_id} ({user}) | login, KHONG getredpacketinfo truoc ===")
+    def _finish_claim(grab: dict[str, Any], *, no_packet: bool = False) -> dict[str, Any]:
+        if persist:
+            persist_session(account_id, session)
+        bal_after = get_user_balance(session, refresh=True).get("balance")
+        result["balance_after"] = bal_after
+        result["grab"] = grab
+        result["no_packet"] = no_packet
+        b0 = _to_int_money(bal_before)
+        b1 = _to_int_money(bal_after)
+        balance_up = b0 is not None and b1 is not None and b1 > b0
+        result["ok"] = bool(grab.get("ok")) or balance_up
+        result["claimed"] = result["ok"]
+        result["amount_received"] = amount_received(result)
+        result["msg"] = grab.get("msg")
+        if no_packet and not result["claimed"]:
+            result["msg"] = result.get("msg") or "khong co bao li xi"
+        if persist:
+            _save_claim_log(account_id, result)
+        _say(
+            f"\nKet qua: claimed={result['claimed']} | "
+            f"balance {bal_before} -> {bal_after} | +{result['amount_received']} VND | "
+            f"grab code={grab.get('code')} via={grab.get('via')} msg={grab.get('msg')}"
+            + (" | no_packet" if no_packet else "")
+        )
+        _say(f"Log: {log_path}")
+        return result
+
+    if red_packet_http_first_enabled() and RED_PACKET_HTTP_FALLBACK:
+        http_first_attempted = True
+        _say(f"\n=== {account_id} ({user}) | HTTP-first android (profile={prof}) ===")
+        _say(f"proxy={result['proxy']} balance={bal_before}")
+        http_try = attempt_http_red_packet_claim(session)
+        _step(
+            "http_first_info",
+            {
+                "packet_id": http_try.get("packet_id"),
+                "ok": (http_try.get("info") or {}).get("ok"),
+                "msg": (http_try.get("info") or {}).get("msg"),
+            },
+        )
+        _step("http_first_grab", http_try["grab"])
+        grab0 = http_try["grab"]
+        if grab0.get("ok"):
+            return _finish_claim(grab0)
+        if http_try.get("no_packet"):
+            return _finish_claim(grab0, no_packet=True)
+        _say(
+            f"[HTTP-first] chua nhan code={grab0.get('code')} msg={grab0.get('msg')!r} "
+            f"— fallback Playwright UI"
+        )
+
+    _say(f"\n=== {account_id} ({user}) | Playwright /home/ (UI mo bao) ===")
     _say(f"proxy={result['proxy']} balance={bal_before}")
 
     _playwright_thread_setup()
@@ -818,10 +1077,28 @@ def claim_red_packet(
             except Exception:
                 browser = p.chromium.launch(headless=headless, proxy=px)
 
-            ctx_kw: dict[str, Any] = {"viewport": {"width": 1400, "height": 900}}
-            if session.get("user_agent"):
-                ctx_kw["user_agent"] = session["user_agent"]
+            if client_meta and client_meta.get("playwright_mobile") == "1":
+                ctx_kw = {
+                    "viewport": {"width": 412, "height": 915},
+                    "is_mobile": True,
+                    "has_touch": True,
+                    "device_scale_factor": 2.625,
+                    "user_agent": client_meta["user_agent"],
+                }
+            else:
+                ctx_kw = {"viewport": {"width": 1400, "height": 900}}
+                if session.get("user_agent"):
+                    ctx_kw["user_agent"] = session["user_agent"]
+            extra_hdr: dict[str, str] = {
+                "x-lang": "vi",
+                "x-theme": "dark",
+                "x-device": str(session.get("x_device") or "pc"),
+                "x-app-platform": str(session.get("x_app_platform") or "undefined"),
+            }
+            ctx_kw["extra_http_headers"] = extra_hdr
             context = browser.new_context(**ctx_kw)
+            if client_meta and client_meta.get("playwright_mobile") == "1":
+                context.add_init_script(_client_init_script(client_meta))
             cookies = [
                 {"name": str(n), "value": str(v), "domain": host, "path": "/"}
                 for n, v in (session.get("cookies") or {}).items()
@@ -965,77 +1242,61 @@ def claim_red_packet(
 
     no_packet = False
     if not ui_ok:
-        _say("[7] UI/Vue chua OK — GET getredpacketinfo + POST grabredpacket (HTTP)...")
-        pid = result.get("packet_id")
-        if pid:
-            _say(f"[7] dung packet_id={pid} (da co tu getredpacketinfo truoc)")
-            info = {"ok": True, "packet_id": pid, "reused": True}
-        else:
-            time.sleep(t.after_info_sec)
-            info = fetch_red_packet_info(session)
-            _step("getredpacketinfo", info)
-            result["packet_id"] = info.get("packet_id") or result.get("packet_id")
-            pid = info.get("packet_id")
-        if pid:
-            grab_http = grab_red_packet(session, pid)
-            grab_http["via"] = "http"
-            _step("grabredpacket", grab_http)
-            if grab_http.get("ok"):
-                grab = grab_http
-            else:
-                # HTTP hay lỗi 1057 dù list còn bao — giữ soft-fail để batch retry UI.
-                grab = {
-                    "ok": False,
-                    "code": grab_http.get("code"),
-                    "msg": grab_http.get("msg"),
-                    "via": "http",
-                    "packet_id": pid,
-                    "raw": grab_http,
-                    "still_available": True,
-                }
-                result["still_available"] = True
-        else:
-            no_packet = True
+        if http_first_attempted:
+            _say("[7] UI/Vue chua OK — da thu HTTP-first truoc do, khong lap lai grab HTTP")
             grab = {
                 "ok": False,
-                "code": info.get("code"),
-                "msg": info.get("msg") or "khong co bao li xi",
-                "via": "http_info",
-                "raw": info,
+                "code": grab.get("code") if isinstance(grab, dict) else None,
+                "msg": (grab.get("msg") if isinstance(grab, dict) else None)
+                or "HTTP-first va UI deu chua nhan",
+                "via": "http+ui",
+                "still_available": True,
             }
-            _step("no_packet", {"packet_id": None, "info_ok": info.get("ok")})
+            result["still_available"] = True
+        else:
+            _say("[7] UI/Vue chua OK — GET getredpacketinfo + POST grabredpacket (HTTP)...")
+            pid = result.get("packet_id")
+            if pid:
+                _say(f"[7] dung packet_id={pid} (da co tu getredpacketinfo truoc)")
+                info = {"ok": True, "packet_id": pid, "reused": True}
+            else:
+                time.sleep(t.after_info_sec)
+                info = fetch_red_packet_info(session)
+                _step("getredpacketinfo", info)
+                result["packet_id"] = info.get("packet_id") or result.get("packet_id")
+                pid = info.get("packet_id")
+            if pid:
+                grab_http = grab_red_packet(session, pid)
+                grab_http["via"] = "http"
+                _step("grabredpacket", grab_http)
+                if grab_http.get("ok"):
+                    grab = grab_http
+                else:
+                    grab = {
+                        "ok": False,
+                        "code": grab_http.get("code"),
+                        "msg": grab_http.get("msg"),
+                        "via": "http",
+                        "packet_id": pid,
+                        "raw": grab_http,
+                        "still_available": True,
+                    }
+                    result["still_available"] = True
+            else:
+                no_packet = True
+                grab = {
+                    "ok": False,
+                    "code": info.get("code"),
+                    "msg": info.get("msg") or "khong co bao li xi",
+                    "via": "http_info",
+                    "raw": info,
+                }
+                _step("no_packet", {"packet_id": None, "info_ok": info.get("ok")})
 
     if persist:
         persist_session(account_id, session)
 
-    bal_after = get_user_balance(session, refresh=True).get("balance")
-    result["balance_after"] = bal_after
-    result["grab"] = grab
-    result["no_packet"] = no_packet
-    b0 = _to_int_money(bal_before)
-    b1 = _to_int_money(bal_after)
-    balance_up = b0 is not None and b1 is not None and b1 > b0
-    result["ok"] = bool(grab.get("ok")) or balance_up
-    result["claimed"] = result["ok"]
-    result["amount_received"] = amount_received(result)
-    result["msg"] = grab.get("msg")
-    if no_packet and not result["claimed"]:
-        result["msg"] = result.get("msg") or "khong co bao li xi"
-    elif grab.get("still_available") and not result["claimed"]:
-        result["msg"] = result.get("msg") or "con bao nhung grab fail (thu lai UI)"
-
-    if persist:
-        _save_claim_log(account_id, result)
-
-    _say(
-        f"\nKet qua: claimed={result['claimed']} | "
-        f"balance {bal_before} -> {bal_after} | +{result['amount_received']} VND | "
-        f"grab code={grab.get('code')} via={grab.get('via')} msg={grab.get('msg')}"
-        + (" | no_packet" if no_packet else "")
-        + (" | still_available" if result.get("still_available") else "")
-    )
-    _say(f"Log: {log_path}")
-    return result
+    return _finish_claim(grab, no_packet=no_packet)
 
 
 def _retry_wait_sec(err: str, default: float) -> float:

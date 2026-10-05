@@ -2,9 +2,10 @@
 """
 Gán acc + số tiền Tài/Xỉu theo chiến lược + trần cược ngày.
 
-Chiến lược 1: 1) acc tổng cược ngày cao nhất đủ điều kiện → mức lớn nhất vừa cap/số dư;
-  2) mọi mức Tài+Xỉu còn lại duyệt to → nhỏ, gán random acc còn lại (không gán hết
-  một bên trước — tránh phí acc 80k vào mức nhỏ rồi mức 70k không còn ai).
+Chiến lược 1: 1) PRIORITY_USERS rồi acc tổng cược ngày cao nhất → mức lớn nhất vừa;
+  2) mọi mức Tài+Xỉu còn lại to → nhỏ: ưu tiên khớp 10k/20k với số dư trong band
+  (10k→10k–19.999đ, 20k→20k–29.999đ); mức <10k ưu tiên acc còn lại <10k sau cược;
+  không khớp → random.
   Acc đầu bảng hết room vẫn đánh phiên bằng acc khác; daily >= cap-step → ngắt WS.
 Chiến lược 2: acc cược ngày thấp → cao (bằng nhau: balance cao trước); mỗi acc một lệnh —
   trong mức còn lại duyệt to → nhỏ, khớp mức đầu tiên vừa cap + số dư; sang acc kế tiếp.
@@ -70,7 +71,7 @@ def _max_bet_per_user_vnd(acfg: dict) -> int:
 
 
 STRATEGY_LABELS: dict[int, str] = {
-    1: "cược ngày cao → mức lớn nhất vừa; rồi mọi mức Tài+Xỉu to→nhỏ random; đủ cap đổi WS",
+    1: "PRIORITY → cược ngày cao mức lớn; còn lại 10k/20k khớp band số dư, <10k ưu tiên, else random",
     2: "cược ngày thấp→cao (bằng nhau: balance cao trước); mỗi acc 1 mức còn lại (to→nhỏ)",
     3: "1 cặp/phiên — duyệt số dư cao→thấp, ghép liền kề floor gap≤XXX, cùng mức Tài/Xỉu (dồn tiền)",
 }
@@ -186,8 +187,8 @@ def assign_match_mode(acfg: dict | None = None) -> int:
 
 
 ASSIGN_MATCH_MODE_LABELS: dict[int, str] = {
-    0: "khớp được lệnh nào thì cược (Tài/Xỉu chung pool, không bắt đủ 2 bên)",
-    1: "phải khớp hết mức mới cược",
+    0: "khớp được lệnh nào thì cược (không cân Tài/Xỉu, không hủy phiên vì dư mức)",
+    1: "phải khớp hết mức mới cược (cân tổng Tài/Xỉu)",
 }
 
 
@@ -349,6 +350,41 @@ def _priority_users_from_cfg(cfg: dict) -> list[str]:
     """Đọc PRIORITY_USERS từ config gốc hoặc auto_bet."""
     lst = cfg.get("PRIORITY_USERS") or cfg.get("auto_bet", {}).get("PRIORITY_USERS") or []
     return [str(u).strip() for u in lst if str(u).strip()]
+
+
+def _balance_in_amount_band(balance: float, amount_vnd: int) -> bool:
+    """10k lệnh ↔ số dư 10k–19.999đ; 20k lệnh ↔ 20k–29.999đ."""
+    amt = int(amount_vnd)
+    bal = float(balance)
+    if amt == 10_000:
+        return 10_000 <= bal < 20_000
+    if amt == 20_000:
+        return 20_000 <= bal < 30_000
+    return False
+
+
+def _pick_strategy1_remaining_candidate(
+    candidates: list[dict[str, Any]],
+    amount_vnd: int,
+) -> dict[str, Any]:
+    """
+    Mức còn lại chiến lược 1 (sau PRIORITY + slot lớn): 10k/20k ưu tiên acc trong band;
+    mức <10k ưu tiên acc còn số dư <10k sau cược; còn lại random.
+    """
+    amt = int(amount_vnd)
+    if amt in (10_000, 20_000):
+        band = [r for r in candidates if _balance_in_amount_band(_balance_vnd(r), amt)]
+        if band:
+            return random.choice(band)
+    if 0 < amt < 10_000:
+        tight = [
+            r
+            for r in candidates
+            if _balance_vnd(r) - amt < 10_000
+        ]
+        if tight:
+            return random.choice(tight)
+    return random.choice(candidates)
 
 
 def _pick_candidate(
@@ -638,7 +674,7 @@ def _assign_orders_large_to_small(
 ) -> tuple[list[BetSlot], str, str]:
     """
     Duyệt mức (amount, side) từ to → nhỏ; mỗi mức gán 1 acc chưa dùng.
-    Strategy 1: random trong candidates (PRIORITY_USERS trước nếu có).
+    Strategy 1: PRIORITY_USERS trước; còn lại band 10k/20k, mức <10k, else random.
     """
     slots: list[BetSlot] = []
     skipped: list[tuple[int, str]] = []
@@ -681,7 +717,7 @@ def _assign_orders_large_to_small(
                 )
         if chosen is None:
             if strategy == 1:
-                chosen = random.choice(candidates)
+                chosen = _pick_strategy1_remaining_candidate(candidates, amount_vnd)
             else:
                 chosen = _pick_candidate(candidates, strategy=strategy, daily=daily)
         aid = str(chosen["id"])
@@ -996,14 +1032,15 @@ def _assign_by_strategy(
     Chiến lược 1 (full): 1) user cược ngày cao nhất đủ điều kiện → mức lớn nhất vừa;
     2) mọi mức Tài+Xỉu còn lại duyệt to → nhỏ, random acc còn lại (không gán hết
     một bên trước). Mỗi acc tối đa 1 lệnh/phiên.
-    assign_match_mode=0 hoặc chiến lược 2: gộp mức Tài+Xỉu, không bắt phải có cả hai bên.
+    Chiến lược 2: gộp mức Tài+Xỉu, mỗi acc một lệnh (to→nhỏ trong mức còn lại).
+    assign_match_mode=0: không bắt khớp hết mức / cân tổng Tài-Xỉu (vẫn theo assign_strategy).
     Nếu có PRIORITY_USERS: thử acc đó trước cho slot mức lớn; không khớp → fallback
     như không có priority (acc cược ngày cao nhất), giống LC79 chiaTien_Acc strategy 1.
     """
     if strategy == 3:
         return [], "strategy 3 dùng _assign_strategy_3_pair riêng", ""
 
-    if strategy == 2 or match_mode == 0:
+    if strategy == 2:
         return _assign_strategy_2(
             pool,
             daily,

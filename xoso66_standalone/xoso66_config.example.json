@@ -1,10 +1,10 @@
 {
   "_note": "Chỉ các key dưới đây đọc từ file. Còn lại: xoso66_config_util.py → HARDCODED_CONFIG. Proxy: DEFAULT_PROXY trong file đó hoặc env XOSO66_DEFAULT_PROXY.",
   "_assign_strategy": "1 = cược ngày cao (còn cap) → slot lớn nhất; 2 = acc cược ngày thấp→cao, mỗi acc 1 mức còn lại (to→nhỏ); 3 = 1 cặp/phiên — 2 acc chênh số dư nhỏ nhất, cùng mức Tài/Xỉu",
-  "_assign_match_mode": "0 = khớp được lệnh nào thì cược; 1 = phải khớp hết mức Tài/Xỉu mới cược (hủy phiên nếu dư). Strategy 3 bỏ qua — chỉ cần cặp cân.",
+  "_assign_match_mode": "0 = cược phần gán được (không cân Tài/Xỉu); 1 = khớp hết mức + cân tổng 2 bên (hủy phiên nếu dư). Vẫn theo assign_strategy. Strategy 3 bỏ qua — chỉ cần cặp cân.",
   "_consolidate": "strategy 3: consolidate_min_withdraw_vnd (300k), consolidate_no_deposit (true = không nạp), consolidate_pair_max_gap_vnd (chênh floor 10k liền kề ≤ XXX; 0 = floor bằng nhau), consolidate_withdraw_delay_sec (420=7p), consolidate_min_ws_balance_vnd (sàn mở WS, mặc định 50k)",
   "_daily_bet_cap": "895000 ≈ điểm danh 888k; 2695000 ≈ Cửa 1 Nhiệm vụ MINI GAME (target 2688000). Cap chỉ dừng cược; claim theo daily thật. Hết acc còn room cap: daily_bet_cap_raise_enabled=true → nâng daily_bet_cap_vnd = raise_vnd (không đổi assign_strategy); false → assign_strategy=2 (không nâng cap). Đủ ngày còn room vào WS qua fill.",
-  "_daily_bet_cap_reset": "00:05 giờ VN mỗi ngày ghi auto_bet.daily_bet_cap_vnd = value_vnd (mặc định 895000). Tắt: enabled=false.",
+  "_daily_bet_cap_reset": "00:05 giờ VN: ghi auto_bet.daily_bet_cap_vnd=value_vnd (895000), min_jackpot_vnd (2 tỷ), side_total_low_vnd (50k), auto_bet.enabled=true (auto_bet_enabled). Tắt scheduler: enabled=false.",
   "auto_deposit": {
     "amount_vnd": 1000000,
     "deposit_channel_id": 220,
@@ -59,7 +59,10 @@
     "enabled": true,
     "hour": 0,
     "minute": 5,
-    "value_vnd": 895000
+    "value_vnd": 895000,
+    "min_jackpot_vnd": 2000000000,
+    "side_total_low_vnd": 50000,
+    "auto_bet_enabled": true
   },
   "game_domains": {
     "default_base_url": "https://hnwp57e0.whskxk5.com",

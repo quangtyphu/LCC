@@ -13,6 +13,28 @@ from __future__ import annotations
 
 from typing import Any
 
+# Lỗi login/phiên không tự hết — đánh Lỗi ngay (không chờ hết poll).
+_FATAL_SESSION_MARKERS: tuple[str, ...] = (
+    "login thất bại",
+    "login that bai",
+    "sessioninvaliderror",
+    "http 475",
+    "cloudflare chặn post /user/login",
+    "đã đánh lỗi",
+)
+
+# Poll auto-mission: cooldown/backoff — thử lại; hết poll mà vẫn vậy → Lỗi.
+_TRANSIENT_SESSION_MARKERS: tuple[str, ...] = (
+    "login cooldown",
+    "login backoff",
+    "sau login + refresh cf vẫn không getbalance",
+    "getbalance vẫn fail",
+    "getbalance thất bại",
+    "giải mã response",
+    "incorrect padding",
+    "decrypt",
+)
+
 # Chỉ lỗi thật sự cần gỡ acc khỏi pool. Rate-limit tạm không nằm đây.
 _FATAL_MSG_MARKERS: tuple[str, ...] = ()
 
@@ -21,9 +43,77 @@ def is_fatal_system_error_msg(msg: str) -> bool:
     m = str(msg or "").strip().lower()
     if not m:
         return False
+    if any(marker in m for marker in _FATAL_SESSION_MARKERS):
+        return True
     if not _FATAL_MSG_MARKERS:
         return False
     return any(marker in m for marker in _FATAL_MSG_MARKERS)
+
+
+def is_transient_session_error(msg: str) -> bool:
+    m = str(msg or "").strip().lower()
+    if not m:
+        return False
+    return any(marker in m for marker in _TRANSIENT_SESSION_MARKERS)
+
+
+def is_session_recovery_error(msg: str) -> bool:
+    """Phiên/getBalance/login — auto-mission poll; hết poll mà vẫn lỗi → Lỗi."""
+    m = str(msg or "").strip().lower()
+    if not m:
+        return False
+    if is_fatal_system_error_msg(m) or is_transient_session_error(m):
+        return True
+    needles = (
+        "thông tin phiên không hợp lệ",
+        "thong tin phien khong hop le",
+        "phiên không hợp lệ",
+        "phien khong hop le",
+        "session/login",
+        "chưa đăng nhập",
+        "chua dang nhap",
+    )
+    return any(x in m for x in needles)
+
+
+def account_loi_for_unresolved_session(
+    account_id: str,
+    msg: str,
+    *,
+    source: str = "",
+) -> bool:
+    """
+    Hết poll / không cứu được phiên → status «Lỗi», xóa hàng đợi auto-mission.
+    """
+    if not is_session_recovery_error(msg):
+        return False
+    from xoso66_accounts_db import (
+        STATUS_LOI,
+        get_account,
+        set_account_status,
+        username_for_log,
+    )
+
+    aid = _resolve_account_id(account_id)
+    if not aid:
+        return False
+    row = get_account(aid) or {}
+    u = username_for_log(aid, row)
+    short_msg = str(msg).strip()[:320]
+    reason = f"{source}: {short_msg}" if source else short_msg
+    if str(row.get("status") or "").strip() != STATUS_LOI:
+        set_account_status(aid, STATUS_LOI, reason=reason)
+    else:
+        print(
+            f"[ACCOUNT] {u}: phiên/login (đã Lỗi) — {short_msg}",
+            flush=True,
+        )
+    _cancel_mission_queue(aid)
+    print(
+        f"[AUTO-MISSION] {u}: hết poll / không login được — → Lỗi ({short_msg})",
+        flush=True,
+    )
+    return True
 
 
 def _resolve_account_id(account_id: str = "", session: dict[str, Any] | None = None) -> str:
@@ -81,7 +171,7 @@ def maybe_mark_account_loi(
 
     row = get_account(aid) or {}
     u = username_for_log(aid, row)
-    short_msg = str(msg).strip()[:160]
+    short_msg = str(msg).strip()[:320]
     reason = f"{source}: {short_msg}" if source else short_msg
 
     if str(row.get("status") or "").strip() != STATUS_LOI:

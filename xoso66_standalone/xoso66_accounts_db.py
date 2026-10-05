@@ -49,6 +49,9 @@ SENSITIVE_KEYS = frozenset({"password", "fund_password"})
 
 # Tránh lost-update: 56 luồng startup ghi session_json cùng lúc → đọc DB cũ ghi đè token.
 _ACCOUNT_WRITE_LOCK = threading.Lock()
+# init_db() từng chạy full migration mỗi lần đọc acc → kẹt SQLite khi nhiều luồng phiên mới.
+_DB_INIT_LOCK = threading.Lock()
+_DB_INITIALIZED = False
 
 
 def _now_iso() -> str:
@@ -260,7 +263,7 @@ def _migrate_accounts_schema(conn: sqlite3.Connection) -> None:
         _migrate_minigame_daily_bets_to_accounts(conn)
 
 
-def init_db() -> None:
+def _init_db_impl() -> None:
     with db_conn() as conn:
         conn.execute(
             """
@@ -311,6 +314,18 @@ def init_db() -> None:
         from xoso66_auto_mission_reward import init_mission_claim_queue
 
         init_mission_claim_queue(conn)
+
+
+def init_db() -> None:
+    """Migration + bảng phụ — một lần mỗi process (các lần sau no-op)."""
+    global _DB_INITIALIZED
+    if _DB_INITIALIZED:
+        return
+    with _DB_INIT_LOCK:
+        if _DB_INITIALIZED:
+            return
+        _init_db_impl()
+        _DB_INITIALIZED = True
 
 
 def next_account_id() -> str:

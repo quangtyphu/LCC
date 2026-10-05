@@ -12,6 +12,8 @@ import requests
 
 GameTarget = Literal["lc79", "xoso66", "unknown"]
 
+BANKING_GAME_DEPOSIT_ORDER_PREFIX = "nap_"
+
 _NODE_DEFAULT = "http://127.0.0.1:3000"
 NODE_SERVER_URL = (
     os.environ.get("LC79_NODE_SERVER_URL")
@@ -19,6 +21,24 @@ NODE_SERVER_URL = (
 ).strip() or _NODE_DEFAULT
 
 _XOSO66_DIR = Path(__file__).resolve().parent
+
+
+def to_banking_game_deposit_order_id(local_id: str | int) -> str:
+    s = str(local_id or "").strip()
+    if not s:
+        return s
+    p = BANKING_GAME_DEPOSIT_ORDER_PREFIX
+    if s.lower().startswith(p.lower()):
+        return s
+    return f"{p}{s}"
+
+
+def from_banking_game_deposit_order_id(banking_order_id: str | int) -> str:
+    s = str(banking_order_id or "").strip()
+    p = BANKING_GAME_DEPOSIT_ORDER_PREFIX
+    if s.lower().startswith(p.lower()):
+        return s[len(p) :].lstrip("_") or s
+    return s
 
 
 def _extract_order_from_api(js: dict) -> dict:
@@ -111,9 +131,10 @@ def resolve_callback_game(
     Xác định đơn thuộc game nào.
     Handler :5000 chỉ forward khi chắc chắn là XOSO66; handler :5001 bỏ qua đơn LC79.
     """
+    local_id = from_banking_game_deposit_order_id(order_id)
     u = (username or "").strip().lower()
-    lc79_row = get_lc79_order(order_id, transfer_content)
-    x66_row = get_xoso66_order(order_id)
+    lc79_row = get_lc79_order(local_id, transfer_content)
+    x66_row = get_xoso66_order(local_id)
     has_lc79 = lc79_row is not None
     has_x66 = x66_row is not None
 

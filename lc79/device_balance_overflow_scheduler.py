@@ -214,34 +214,28 @@ def check_and_maybe_deposit() -> None:
         print(f"{_LOG} ❌ Gửi lệnh thất bại", flush=True)
 
 
-def start_device_balance_overflow_scheduler() -> None:
-    cfg = _cfg()
-    if not cfg["ENABLED"]:
-        print(f"{_LOG} Tắt (ENABLED=0 trong config)", flush=True)
-        return
-
-    interval = max(60, cfg["CHECK_INTERVAL_SECONDS"])
-
-    def _loop() -> None:
-        print(
-            f"{_LOG} Mỗi {interval}s — nạp {cfg['DEPOSIT_AMOUNT_VND']:,}đ "
-            f"nếu tổng số dư Banking > {cfg['TOTAL_BALANCE_THRESHOLD_VND']:,}đ "
-            f"({cfg['BANKING_API_URL']})",
-            flush=True,
-        )
-        while True:
+def _loop() -> None:
+    print(
+        f"{_LOG} Scheduler đã khởi động (đọc DEVICE_BALANCE_OVERFLOW_DEPOSIT mỗi vòng)",
+        flush=True,
+    )
+    while True:
+        cfg = _cfg()
+        interval = max(60, cfg["CHECK_INTERVAL_SECONDS"])
+        try:
+            if not _tick_lock.acquire(blocking=False):
+                time.sleep(interval)
+                continue
             try:
-                if not _tick_lock.acquire(blocking=False):
-                    time.sleep(interval)
-                    continue
-                try:
-                    check_and_maybe_deposit()
-                finally:
-                    _tick_lock.release()
-            except Exception as ex:
-                print(f"{_LOG} ❌ {ex}", flush=True)
-            time.sleep(interval)
+                check_and_maybe_deposit()
+            finally:
+                _tick_lock.release()
+        except Exception as ex:
+            print(f"{_LOG} ❌ {ex}", flush=True)
+        time.sleep(interval)
 
+
+def start_device_balance_overflow_scheduler() -> None:
     threading.Thread(
         target=_loop,
         daemon=True,

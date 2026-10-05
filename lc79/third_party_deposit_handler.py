@@ -34,6 +34,11 @@ import time
 import threading
 from flask import Flask, request, jsonify
 from deposit_api import update_deposit_order_status
+from deposit_callback_routing import (
+	from_banking_game_deposit_order_id,
+	resolve_callback_game,
+	to_banking_game_deposit_order_id,
+)
 
 
 # ========== CẤU HÌNH ==========
@@ -513,8 +518,9 @@ def send_to_third_party(username: str, amount: int, order_data: dict) -> dict:
 	tc = fields["transfer_content"]
 	amount = fields["amount"]
 
+	banking_oid = to_banking_game_deposit_order_id(order_id)
 	payload = {
-		"orderId": str(order_id),
+		"orderId": banking_oid,
 		"qrBase64": qr_base64,
 		"username": username,
 		"amount": amount,
@@ -592,7 +598,9 @@ def receive_callback():
 	"""
 	data = request.json
 	# Hỗ trợ cả camelCase và snake_case
-	order_id = data.get("order_id") or data.get("orderId")
+	order_id = from_banking_game_deposit_order_id(
+		data.get("order_id") or data.get("orderId")
+	)
 	status = data.get("status")
 	transaction_id = data.get("transaction_id") or data.get("transactionId")
 	message = data.get("message", "")
@@ -630,8 +638,6 @@ def receive_callback():
 		}), 200
 
 	refresh_urls()
-	from deposit_callback_routing import resolve_callback_game
-
 	game = resolve_callback_game(order_id, username, transfer_content)
 	if game == "xoso66":
 		fwd = _forward_callback_to_xoso66(data, order_id)

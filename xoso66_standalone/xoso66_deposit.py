@@ -77,6 +77,32 @@ QRPAY_GET_WU_INFO_PATH = "/prod-api/pay/page/PayAccount/getWUInfo"
 _DEPOSIT_PLAYWRIGHT_ACTIONS = ("userCenter/depositorder",)
 _HTTP_DEPOSIT_FALLBACK_CODES = (1004, 10055, 10058)
 
+
+def _api_response_session_invalid(raw: Any) -> bool:
+    """API site báo hết / sai phiên (vd. code 1004 «Thông tin phiên không hợp lệ»)."""
+    if isinstance(raw, dict):
+        try:
+            code = int(raw.get("code"))
+        except (TypeError, ValueError):
+            code = None
+        if code in _HTTP_DEPOSIT_FALLBACK_CODES:
+            return True
+        msg = str(raw.get("msg") or "").strip().lower()
+        if msg:
+            needles = (
+                "thông tin phiên không hợp lệ",
+                "thong tin phien khong hop le",
+                "phiên không hợp lệ",
+                "phien khong hop le",
+                "chưa đăng nhập",
+                "chua dang nhap",
+                "vui lòng đăng nhập",
+                "vui long dang nhap",
+            )
+            if any(x in msg for x in needles):
+                return True
+    return False
+
 DIR = Path(__file__).resolve().parent
 QR_OUTPUT_DIR = DIR / "qr_outputs"
 from xoso66_sessions_io import SESSIONS_FILE, load_sessions, save_sessions  # noqa: E402
@@ -108,10 +134,12 @@ def build_common_headers(session: dict, *, form_token: str, content_type: str) -
         "origin": resolve_base_url(session),
         "referer": f"{resolve_base_url(session)}/home/",
         "user-agent": session.get("user_agent") or DEFAULT_UA,
-        "x-device": "pc",
+        "x-device": str(session.get("x_device") or extra.get("x-device") or "pc"),
         "x-lang": "vi",
         "x-theme": "dark",
-        "x-app-platform": "undefined",
+        "x-app-platform": str(
+            session.get("x_app_platform") or extra.get("x-app-platform") or "undefined"
+        ),
         "cookie": _cookie_header(session),
         "form-token": form_token,
         "c-a-i": extra.get("c-a-i") or session.get("c_a_i") or "",
@@ -1542,6 +1570,26 @@ def create_deposit_order(
         if proxy_hit:
             out["proxy_error"] = True
         return out
+    if not info.get("ok") and _api_response_session_invalid(info.get("raw")):
+        try:
+            from xoso66_accounts_db import username_for_log
+
+            user = username_for_log(account_id, session)
+            print(
+                f"[NẠP] {user}: depositinfo phiên không hợp lệ — login lại…",
+                flush=True,
+            )
+            session = ensure_session(
+                account_id, force_login=True, ignore_session_ttl=True
+            )
+            persist_session(account_id, session)
+            info = get_deposit_info(session=session)
+        except Exception as e:
+            return {
+                "ok": False,
+                "account_id": account_id,
+                "error": f"depositinfo lỗi + login lại fail: {e}",
+            }
     if not info.get("ok"):
         return {
             "ok": False,

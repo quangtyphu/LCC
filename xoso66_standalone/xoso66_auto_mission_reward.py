@@ -1036,7 +1036,6 @@ def _manual_claim_with_poll(
     *,
     do_claim: bool = True,
     withdraw_before: bool = True,
-    force_login: bool = True,
 ) -> dict[str, Any]:
     """
     CMS nút Ck — poll done_bet 161 (giống worker) rồi hết poll thì hạ DB về done_bet game.
@@ -1050,17 +1049,10 @@ def _manual_claim_with_poll(
     needs_poll = False
     force_synced = False
 
-    if force_login:
-        print(
-            f"[AUTO-MISSION] {u}: session trước mission/list (Ck)",
-            flush=True,
-        )
-
     result = _run_claim_flow(
         aid,
         do_claim=do_claim,
         withdraw_before=withdraw_before,
-        force_login=False,
     )
     if _manual_claim_should_stop(result):
         return _enrich_manual_claim_result(result, poll_attempts=poll_attempts)
@@ -1468,6 +1460,7 @@ def _process_queue_row(qrow: dict[str, Any]) -> None:
             flush=True,
         )
 
+    # Poll / retry: chỉ gọi lại mission/list — không ép login (tránh spam login khi site chặn).
     try:
         result = _run_claim_flow(
             aid,
@@ -1475,6 +1468,8 @@ def _process_queue_row(qrow: dict[str, Any]) -> None:
             withdraw_before=not is_reward_retry,
             only_level_keys=pending_keys if is_reward_retry else None,
             reason=reason,
+            force_login=False,
+            ignore_session_ttl=False,
         )
     except Exception as e:
         _queue_update(aid, phase="polling", last_error=str(e))
@@ -1515,7 +1510,10 @@ def _process_queue_row(qrow: dict[str, Any]) -> None:
         return
 
 def _reschedule_poll(account_id: str, poll_count: int, reason: str) -> None:
-    from xoso66_account_errors import maybe_mark_account_loi
+    from xoso66_account_errors import (
+        account_loi_for_unresolved_session,
+        maybe_mark_account_loi,
+    )
 
     if poll_count >= _poll_max_attempts():
         u = username_for_log(account_id)
@@ -1523,6 +1521,9 @@ def _reschedule_poll(account_id: str, poll_count: int, reason: str) -> None:
             f"[AUTO-MISSION] {u}: không hẹn poll thêm — đã {poll_count}/"
             f"{_poll_max_attempts()} ({reason})",
             flush=True,
+        )
+        account_loi_for_unresolved_session(
+            account_id, reason, source="auto-mission hết poll"
         )
         _queue_update(
             account_id,
@@ -1626,7 +1627,6 @@ def run_manual_auto_mission_claim(
                         aid,
                         do_claim=do_claim,
                         withdraw_before=withdraw_before,
-                        force_login=True,
                     )
                 )
             except Exception as e:
