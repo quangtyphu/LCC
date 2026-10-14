@@ -150,9 +150,11 @@ def fetch_vip_list(session: dict) -> dict[str, Any]:
         content_type="application/json",
     )
     url = f"{resolve_base_url(session)}{VIP_LIST_PATH}"
-    r = _game_http(session).get(url, headers=headers, timeout=35)
+    from xoso66_session import site_http_get, _merge_any_response_cookies
+
+    r = site_http_get(session, url, headers, {}, 35)
     apply_response_tokens(session, r.headers)
-    _merge_response_cookies(session, r)
+    _merge_any_response_cookies(session, r)
     try:
         js = r.json()
     except Exception:
@@ -795,7 +797,11 @@ def check_username(
         "saved_path": saved_path,
     }
     if not rep.get("ok"):
-        result["error"] = str(rep.get("msg") or rep.get("raw_text") or "vipList thất bại")
+        result["error"] = str(
+            rep.get("msg")
+            or rep.get("raw_text")
+            or f"vipList thất bại HTTP {rep.get('http_status')}"
+        )
     result["report"] = build_vip_report(result)
     if verbose:
         _print_vip_block_verbose(u, {**result, "ok": rep.get("ok")}, saved_path=saved_path)

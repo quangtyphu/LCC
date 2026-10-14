@@ -174,6 +174,46 @@ def _apply_cookies(session: dict, cookie_jar: Any) -> None:
     merge_session_cookies(session, incoming, allow_identity=False)
 
 
+_CF_IMPERSONATE_PREFER = (
+    "chrome136",
+    "chrome131",
+    "chrome124",
+    "chrome123",
+    "chrome120",
+    "chrome119",
+)
+
+
+def cf_impersonate() -> str:
+    """Fingerprint curl_cffi. Chrome 136 qua được POST bị CF 475; bản cũ không có tên này."""
+    wanted = (os.environ.get("XOSO66_CF_IMPERSONATE") or "").strip()
+    try:
+        from curl_cffi.requests import BrowserType
+
+        supported = {str(item.value) for item in BrowserType}
+    except Exception:
+        return wanted or "chrome120"
+    if wanted and wanted in supported:
+        return wanted
+    for name in _CF_IMPERSONATE_PREFER:
+        if name in supported:
+            return name
+    chromes = [n for n in supported if n.startswith("chrome") and "android" not in n]
+    if not chromes:
+        return wanted or "chrome120"
+
+    def _chrome_num(name: str) -> int:
+        digits = ""
+        for ch in name[6:]:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        return int(digits or "0")
+
+    return max(chromes, key=_chrome_num)
+
+
 def refresh_cf_curl_cffi(session: dict) -> dict[str, Any]:
     """Thử lấy cf_clearance bằng TLS giống Chrome (không có cf-auth-token)."""
     try:
@@ -195,7 +235,7 @@ def refresh_cf_curl_cffi(session: dict) -> dict[str, Any]:
     try:
         r = cffi_requests.get(
             f"{resolve_base_url(session)}/home/",
-            impersonate=os.environ.get("XOSO66_CF_IMPERSONATE", "chrome120"),
+            impersonate=cf_impersonate(),
             headers=hdrs,
             cookies=session.get("cookies") or {},
             proxies=_proxy_dict(session),

@@ -9,6 +9,9 @@ Bù slot WS / mở WS / nạp (sort_rows_ws_fill_priority):
   ws_fill_priority = 0: mọi acc chung một list — balance thấp → cao, bằng nhau cược ngày cao → thấp.
   ws_fill_priority = 2: mọi acc chung một list — cược ngày cao → thấp, bằng nhau số dư cao → thấp
     (thiếu tiền vẫn theo thứ tự này → nạp rồi mở WS).
+  Khi daily_bet_cap_vnd > mốc reset (895k): gộp «Đang Chơi» + Hết Tiền/Đủ ngày;
+    cược ngày < ws_fill_under_milestone_daily_vnd (890k) trước, trong nhóm theo ws_fill_priority.
+    việc4 mở WS cũng theo thứ tự này.
 
 Gán cược mỗi phiên vẫn theo assign_strategy (xoso66_bet_assign).
 
@@ -1193,13 +1196,16 @@ def dang_choi_without_connected_ws(
         str(x).strip() for x in get_connected_ws_accounts() if str(x).strip()
     }
     pending_kq = list_C_pending_kq_ids()
-    out: list[str] = []
+    rows: list[dict[str, Any]] = []
     for aid in dang_choi_account_ids(cfg):
         aid = str(aid).strip()
         if not aid or aid in ex or aid in connected or aid in pending_kq:
             continue
-        out.append(aid)
-    return out
+        rows.append(get_account(aid) or {"id": aid})
+    if not rows:
+        return []
+    ordered = sort_rows_ws_fill_priority(rows, cfg)
+    return [str(r.get("id") or "").strip() for r in ordered if str(r.get("id") or "").strip()]
 
 
 def list_dang_choi_missing_ws_connect(
@@ -1251,15 +1257,7 @@ def ranked_deposit_candidates(
         if str(r.get("id") or "") not in ex
         and is_row_deposit_candidate(r, min_bal=min_bal, daily_limit=daily_limit)
     ]
-    under = [r for r in rows if account_balance_vnd(r) < min_bal]
-    fill_mode = ws_fill_priority_mode(cfg)
-    if fill_mode == 0:
-        under.sort(key=lambda r: _sort_key_ws_fill_unified(r, cfg))
-    elif fill_mode == 2:
-        under.sort(key=_sort_key_ws_fill_daily_desc_balance)
-    else:
-        under.sort(key=lambda r: _sort_key_daily_bet_ws_fill(r, cfg))
-    return under
+    return sort_rows_ws_fill_priority(rows, cfg)
 
 
 def list_ws_dang_choi_ids(
@@ -1605,12 +1603,19 @@ def plan_ws_slot_fill(
         picked += 1
         return True
 
-    if prefer_dang_choi:
+    if is_post_first_milestone_cap_raise(cfg):
+        for row in sort_rows_ws_fill_priority(_merged_ws_fill_rows(cfg), cfg):
+            if not _take(row):
+                break
+    elif prefer_dang_choi:
         for row in sort_rows_ws_fill_priority(_pool_rows(cfg), cfg):
             if not _take(row):
                 break
-
-    if picked < need:
+        if picked < need:
+            for row in iter_ws_priority_rows(cfg, exclude=ex):
+                if not _take(row):
+                    break
+    else:
         for row in iter_ws_priority_rows(cfg, exclude=ex):
             if not _take(row):
                 break
@@ -2223,6 +2228,53 @@ def daily_bet_cap_vnd(cfg: dict[str, Any]) -> int:
     return int(gw.get("daily_bet_cap_vnd") or 890_000)
 
 
+def first_milestone_daily_bet_vnd(cfg: dict[str, Any]) -> int:
+    """Mốc cược ngày điểm danh (~895k) — daily_bet_cap_reset.value_vnd."""
+    reset = cfg.get("daily_bet_cap_reset")
+    if isinstance(reset, dict) and reset.get("value_vnd") is not None:
+        try:
+            return max(0, int(reset.get("value_vnd") or 895_000))
+        except (TypeError, ValueError):
+            pass
+    return 895_000
+
+
+def is_post_first_milestone_cap_raise(cfg: dict[str, Any]) -> bool:
+    """True sau khi auto nâng daily_bet_cap lên mốc mini game (> mốc điểm danh)."""
+    return daily_bet_cap_vnd(cfg) > first_milestone_daily_bet_vnd(cfg)
+
+
+def ws_fill_under_milestone_daily_vnd(cfg: dict[str, Any]) -> int:
+    """
+    Ngưỡng ưu tiên bù WS/nạp sau nâng cap (mặc định 890k — chưa xong điểm danh).
+    game_worker.ws_fill_under_milestone_daily_vnd
+    """
+    gw = game_worker_cfg(cfg)
+    if gw.get("ws_fill_under_milestone_daily_vnd") is not None:
+        try:
+            return max(0, int(gw.get("ws_fill_under_milestone_daily_vnd") or 890_000))
+        except (TypeError, ValueError):
+            pass
+    return 890_000
+
+
+def row_below_first_milestone(row: dict[str, Any], cfg: dict[str, Any]) -> bool:
+    return daily_bet_today_vnd(row) < float(ws_fill_under_milestone_daily_vnd(cfg))
+
+
+def _merged_ws_fill_rows(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """«Đang Chơi» + list Hết Tiền/Đủ ngày (dedupe) — sort một lần sau nâng cap."""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for row in _pool_rows(cfg) + _pool_rows_ws_open_list(cfg):
+        aid = str(row.get("id") or "").strip()
+        if not aid or aid in seen:
+            continue
+        seen.add(aid)
+        out.append(row)
+    return out
+
+
 def bet_step_vnd(cfg: dict[str, Any]) -> int:
     ab = cfg.get("auto_bet")
     if isinstance(ab, dict) and ab.get("bet_step_vnd"):
@@ -2634,16 +2686,10 @@ def _sort_key_ws_fill_daily_desc_balance(r: dict[str, Any]) -> tuple:
     )
 
 
-def sort_rows_ws_fill_priority(
+def _sort_rows_ws_fill_priority_core(
     rows: list[dict[str, Any]], cfg: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """
-    Bù slot WS / mở WS / nạp (game_worker.ws_fill_priority):
-      ws_fill_priority=0: balance thấp→cao (mọi acc), bằng nhau cược ngày cao→thấp.
-      ws_fill_priority=1: đủ tiền balance cao→thấp; thiếu tiền cược ngày thấp→cao.
-      ws_fill_priority=2: cược ngày cao→thấp (mọi acc), bằng nhau số dư cao→thấp.
-    Strategy 3: luôn balance cao→thấp (funded trước), bỏ qua ws_fill_priority 0/2.
-    """
+    """Sort WS fill theo ws_fill_priority (không tách mốc 895k)."""
     force_s3_desc = False
     try:
         from xoso66_bet_assign import _auto_bet_cfg, is_assign_strategy_3
@@ -2689,6 +2735,26 @@ def sort_rows_ws_fill_priority(
         funded.sort(key=lambda r: _sort_key_balance_ws_fill(r, cfg))
         under.sort(key=lambda r: _sort_key_daily_bet_ws_fill(r, cfg))
     return funded + under
+
+
+def sort_rows_ws_fill_priority(
+    rows: list[dict[str, Any]], cfg: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """
+    Bù slot WS / mở WS / nạp (game_worker.ws_fill_priority):
+      ws_fill_priority=0: balance thấp→cao (mọi acc), bằng nhau cược ngày cao→thấp.
+      ws_fill_priority=1: đủ tiền balance cao→thấp; thiếu tiền cược ngày thấp→cao.
+      ws_fill_priority=2: cược ngày cao→thấp (mọi acc), bằng nhau số dư cao→thấp.
+    Strategy 3: luôn balance cao→thấp (funded trước), bỏ qua ws_fill_priority 0/2.
+    Sau nâng cap: acc cược ngày < ws_fill_under_milestone_daily_vnd (890k) trước, rồi sort trong nhóm.
+    """
+    if not is_post_first_milestone_cap_raise(cfg):
+        return _sort_rows_ws_fill_priority_core(rows, cfg)
+    tier_a = [r for r in rows if row_below_first_milestone(r, cfg)]
+    tier_b = [r for r in rows if not row_below_first_milestone(r, cfg)]
+    return _sort_rows_ws_fill_priority_core(
+        tier_a, cfg
+    ) + _sort_rows_ws_fill_priority_core(tier_b, cfg)
 
 
 def sort_rows_ws_priority(
@@ -3868,13 +3934,25 @@ def _deposit_order(
     first.sort(key=lambda x: pri.index(x[0]) if x[0] in pri else 999)
     rest = [t for t in need if t[0] not in pri_set]
     fill_mode = ws_fill_priority_mode(cfg)
-    if fill_mode == 0:
-        rest.sort(key=lambda x: (x[2], -x[1], x[0]))
-    elif fill_mode == 2:
-        # need tuple: (aid, daily, bal) → cược ngày↓ rồi số dư↓
-        rest.sort(key=lambda x: (-x[1], -x[2], x[0]))
+
+    def _sort_deposit_need(
+        batch: list[tuple[str, float, float]],
+    ) -> list[tuple[str, float, float]]:
+        if fill_mode == 0:
+            batch.sort(key=lambda x: (x[2], -x[1], x[0]))
+        elif fill_mode == 2:
+            batch.sort(key=lambda x: (-x[1], -x[2], x[0]))
+        else:
+            batch.sort(key=lambda x: (x[1], -x[2], x[0]))
+        return batch
+
+    if is_post_first_milestone_cap_raise(cfg):
+        milestone = float(ws_fill_under_milestone_daily_vnd(cfg))
+        tier_a = [t for t in rest if t[1] < milestone]
+        tier_b = [t for t in rest if t[1] >= milestone]
+        rest = _sort_deposit_need(tier_a) + _sort_deposit_need(tier_b)
     else:
-        rest.sort(key=lambda x: (x[1], -x[2], x[0]))
+        rest = _sort_deposit_need(rest)
     return [t[0] for t in first + rest]
 
 

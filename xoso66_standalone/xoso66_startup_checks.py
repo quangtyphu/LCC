@@ -309,8 +309,8 @@ def _check_one_balance(account_id: str, sessions: dict[str, dict], cfg: dict) ->
         }
 
     def _get_bal(acc: dict) -> dict[str, Any]:
-        from xoso66_deposit import apply_response_tokens, build_common_headers, get_form_token
-        from xoso66_session import GET_BALANCE_PATH, _merge_response_cookies, _requests_session
+        from xoso66_deposit import get_form_token
+        from xoso66_session import get_user_balance
 
         ensure_proxy(acc)
         form_token = str(acc.get("form_token") or "").strip()
@@ -318,32 +318,7 @@ def _check_one_balance(account_id: str, sessions: dict[str, dict], cfg: dict) ->
             form_token = get_form_token(acc)
         elif not form_token:
             return {"ok": False, "reason": "thiếu form_token — worker session sẽ login sau"}
-        headers = build_common_headers(
-            acc,
-            form_token=form_token,
-            content_type="application/x-www-form-urlencoded/json",
-        )
-        params = {"refresh": "1"} if use_refresh else {}
-        r = _requests_session(acc).get(
-            f"{resolve_base_url(acc)}{GET_BALANCE_PATH}",
-            headers=headers,
-            params=params,
-            timeout=bal_timeout,
-        )
-        apply_response_tokens(acc, r.headers)
-        _merge_response_cookies(acc, r)
-        if r.status_code in (401, 403) or "cloudflare" in (r.text or "")[:500].lower():
-            return {"ok": False, "http_status": r.status_code, "need_cf_refresh": True}
-        try:
-            js = r.json()
-        except Exception:
-            return {"ok": False, "http_status": r.status_code, "need_cf_refresh": True}
-        from xoso66_session import is_session_valid_response
-
-        data = js.get("data") if isinstance(js.get("data"), dict) else {}
-        balance = data.get("money") or data.get("balance") or data.get("total_money")
-        ok = is_session_valid_response(js, http_status=r.status_code)
-        return {"ok": ok, "balance": balance, "raw": js}
+        return get_user_balance(acc, refresh=use_refresh, timeout_sec=bal_timeout)
 
     try:
         base = sessions.get(account_id)

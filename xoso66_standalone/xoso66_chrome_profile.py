@@ -669,7 +669,12 @@ def warm_session_from_profile(
     from xoso66_session import merge_session_cookies
 
     cookies = read_profile_cookies(profile_dir, host=host)
-    merge_session_cookies(session, cookies, allow_identity=allow_identity)
+    # Login xong: tin cookie Chrome của đúng host. Merge sẽ giữ cookie rác cũ
+    # (quảng cáo / .com) và nginx trả 400 Request Header Or Cookie Too Large.
+    if allow_identity and cookies.get("PHPSESSID"):
+        session["cookies"] = dict(cookies)
+    else:
+        merge_session_cookies(session, cookies, allow_identity=allow_identity)
     has_clearance = bool(cookies.get("cf_clearance"))
     return {
         "ok": has_clearance,

@@ -20,6 +20,10 @@ from game_api_helper import game_request_with_retry
 API_BASE = "http://127.0.0.1:3000"
 STATUS_FETCH_URL = f"{API_BASE}/api/users/lc79-playing-or-out"
 TARGET_TOP_IDX = 500
+DISPLAY_TOP_IDX = 800
+LEADERBOARD_FETCH_LIMIT = 800
+TOP_RANK_OPTIONS = frozenset({TARGET_TOP_IDX, DISPLAY_TOP_IDX})
+DEFAULT_TOP800_MILESTONE_USER_COUNT = 10
 DEFAULT_TOP_500_OFFSET_VND = 500_000
 _ALLOWED_STATUSES = frozenset({"Đang Chơi", "Hết Tiền"})
 
@@ -179,6 +183,89 @@ def _exit_gap_min_vnd() -> int:
     return DEFAULT_EXIT_GAP_MIN_VND
 
 
+def resolve_config_top_rank(cfg: dict | None = None) -> int:
+    """TOP_BET_DAILY_MODE.TOP_RANK: 500 (mặc định) hoặc 800."""
+    if cfg is None:
+        cfg = load_config() or {}
+    block = cfg.get("TOP_BET_DAILY_MODE")
+    if not isinstance(block, dict):
+        return TARGET_TOP_IDX
+    rank = _to_int(block.get("TOP_RANK", TARGET_TOP_IDX), TARGET_TOP_IDX)
+    return rank if rank in TOP_RANK_OPTIONS else TARGET_TOP_IDX
+
+
+def resolve_config_top800_user_count(cfg: dict | None = None) -> int:
+    """USER_COUNT_800 khi mốc hạng 800 (TOP_RANK=800 hoặc TOP_RANK=500 + top500>7tr)."""
+    if cfg is None:
+        cfg = load_config() or {}
+    block = cfg.get("TOP_BET_DAILY_MODE")
+    if not isinstance(block, dict):
+        return DEFAULT_TOP800_MILESTONE_USER_COUNT
+    return max(
+        0,
+        _to_int(
+            block.get("USER_COUNT_800", DEFAULT_TOP800_MILESTONE_USER_COUNT),
+            DEFAULT_TOP800_MILESTONE_USER_COUNT,
+        ),
+    )
+
+
+@dataclass
+class TopBetMilestone:
+    rank: int
+    money_bet: int | None
+    user_count: int
+    note: str = ""
+
+
+def resolve_top_bet_milestone(
+    data: List[dict],
+    *,
+    config_top_rank: int | None = None,
+    cfg: dict | None = None,
+) -> TopBetMilestone:
+    """
+    TOP_RANK=800 → mốc hạng 800, USER_COUNT_800 từ config.
+    TOP_RANK=500 → 6/8 theo moneyBet top500; top500 > 7tr → mốc 800 + USER_COUNT_800.
+    """
+    if config_top_rank is None:
+        config_top_rank = resolve_config_top_rank(cfg)
+    if config_top_rank not in TOP_RANK_OPTIONS:
+        config_top_rank = TARGET_TOP_IDX
+
+    top800_users = resolve_config_top800_user_count(cfg)
+    money_at_500 = _money_bet_at_top_idx(data, TARGET_TOP_IDX)
+    money_at_800 = _money_bet_at_top_idx(data, DISPLAY_TOP_IDX)
+
+    if config_top_rank == DISPLAY_TOP_IDX:
+        if not money_at_800:
+            return TopBetMilestone(
+                DISPLAY_TOP_IDX, None, top800_users, "thiếu mốc top 800"
+            )
+        return TopBetMilestone(DISPLAY_TOP_IDX, money_at_800, top800_users)
+
+    if not money_at_500:
+        return TopBetMilestone(TARGET_TOP_IDX, None, 8, "thiếu mốc top 500")
+
+    if money_at_500 > _TOP500_USER_COUNT_SKIP_VND:
+        if money_at_800:
+            return TopBetMilestone(
+                DISPLAY_TOP_IDX,
+                money_at_800,
+                top800_users,
+                f"top500={money_at_500:,} > 7tr → mốc top800, USER_COUNT_800={top800_users}",
+            )
+        return TopBetMilestone(
+            DISPLAY_TOP_IDX,
+            None,
+            top800_users,
+            f"top500={money_at_500:,} > 7tr nhưng thiếu mốc top800",
+        )
+
+    user_count = resolve_user_count_from_top500(money_at_500)
+    return TopBetMilestone(TARGET_TOP_IDX, money_at_500, user_count)
+
+
 def effective_compare_moc(money_500_raw: int, offset_vnd: int | None = None) -> int:
     """Mốc so sánh CMS = moneyBet top500 − offset (mặc định 300k)."""
     off = DEFAULT_TOP_500_OFFSET_VND if offset_vnd is None else max(0, int(offset_vnd))
@@ -189,6 +276,8 @@ def effective_compare_moc(money_500_raw: int, offset_vnd: int | None = None) -> 
 class TopBetPickResult:
     selected: List[dict] = field(default_factory=list)
     money_500: int = 0
+    target_top_rank: int = TARGET_TOP_IDX
+    user_count: int = 0
     compare_moc: int = 0
     threshold_offset_vnd: int = DEFAULT_TOP_500_OFFSET_VND
     duoi_top: List[dict] = field(default_factory=list)
@@ -359,12 +448,14 @@ def _pick_v2_users_by_gap_filter(
     money_500_raw: int,
     max_entry_gap_vnd: int,
     user_count: int,
+    target_top_rank: int = TARGET_TOP_IDX,
 ) -> TopBetPickResult:
     """
     Lọc user có total_day − top500 ≤ max_entry_gap_vnd, sort total_day giảm dần, lấy user_count.
     """
     result = TopBetPickResult(
         money_500=money_500_raw,
+        target_top_rank=target_top_rank,
         threshold_offset_vnd=max_entry_gap_vnd,
     )
     if user_count <= 0:
@@ -384,13 +475,14 @@ def _pick_v2_users_by_gap_filter(
     picked = pool[:user_count]
     result.selected = picked
     result.rule = (
-        f"Lọc gap≤{max_entry_gap_vnd:,} (total_day−top{TARGET_TOP_IDX}), "
+        f"Lọc gap≤{max_entry_gap_vnd:,} (total_day−top{target_top_rank}), "
         f"sort total_day giảm dần, lấy tối đa {user_count}"
     )
     for row in picked:
         u = row["username"]
         result.pick_reasons[u] = (
-            f"total_day={row['total_day']:,}, top500={money_500_raw:,}, gap={row['gap']:,}"
+            f"total_day={row['total_day']:,}, top{target_top_rank}={money_500_raw:,}, "
+            f"gap={row['gap']:,}"
         )
     return result
 
@@ -398,10 +490,11 @@ def _pick_v2_users_by_gap_filter(
 def format_top_bet_gap_pick_report(pick: TopBetPickResult, *, user_count: int = 8) -> str:
     lines: List[str] = []
     raw = pick.money_500
+    rank = pick.target_top_rank or TARGET_TOP_IDX
     max_gap = pick.threshold_offset_vnd
-    lines.append(f"📊 Mốc top {TARGET_TOP_IDX} (moneyBet) = {raw:,}")
+    lines.append(f"📊 Mốc top {rank} (moneyBet) = {raw:,}")
     lines.append(
-        f"   Lọc: total_day − top{TARGET_TOP_IDX} ≤ {max_gap:,} → {len(pick.duoi_top)} user CMS"
+        f"   Lọc: total_day − top{rank} ≤ {max_gap:,} → {len(pick.duoi_top)} user CMS"
     )
     if pick.duoi_top:
         preview = ", ".join(
@@ -508,17 +601,22 @@ def _fetch_top_bet_daily_list(
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
     url = "https://gameapi.tele68.com/v1/event/top-bet/daily"
-    params = {"date": date, "limit": limit}
-    resp = game_request_with_retry(
-        username, "GET", url, params=params, extra_headers=_TOP_BET_HEADERS
-    )
-    if not resp:
-        return None
-    if resp.status_code == 400 and limit > 200:
-        params["limit"] = 200
+    try_limits: List[int] = []
+    for candidate in (limit, LEADERBOARD_FETCH_LIMIT, 500, 200):
+        if candidate not in try_limits:
+            try_limits.append(candidate)
+    try_limits.sort(reverse=True)
+
+    resp = None
+    for try_limit in try_limits:
+        params = {"date": date, "limit": try_limit}
         resp = game_request_with_retry(
             username, "GET", url, params=params, extra_headers=_TOP_BET_HEADERS
         )
+        if resp and resp.status_code == 200:
+            break
+        if not resp or resp.status_code != 400:
+            break
     if not resp or resp.status_code != 200:
         return None
     try:
@@ -560,43 +658,50 @@ def compute_top_bet_daily_gap_pick(
     username: str,
     *,
     date: str | None = None,
-    limit: int = 500,
+    limit: int | None = None,
     user_count: int | None = None,
     max_entry_gap_vnd: int | None = None,
+    cfg: dict | None = None,
 ) -> TopBetPickResult:
-    """Lấy mốc top 500, lọc gap, sort total_day, chọn user_count user.
-
-    user_count=None → tự tính theo moneyBet top500
-    (>7tr→0 bỏ qua, 6–7tr→6, <6tr→8).
-    """
+    """Lọc gap theo mốc top (TOP_RANK + fallback top500>7tr → top800)."""
     empty = TopBetPickResult()
+    config_rank = resolve_config_top_rank(cfg)
+    if limit is None:
+        limit = max(TARGET_TOP_IDX, DISPLAY_TOP_IDX, config_rank, LEADERBOARD_FETCH_LIMIT)
 
     data = _fetch_top_bet_daily_list(username, date=date, limit=limit)
     if not data:
         empty.rule = "không lấy được top-bet/daily"
         return empty
 
-    money_500_raw = _money_bet_at_top_idx(data, TARGET_TOP_IDX)
-    if not money_500_raw:
-        empty.rule = f"không có mốc idx={TARGET_TOP_IDX}"
+    milestone = resolve_top_bet_milestone(data, config_top_rank=config_rank, cfg=cfg)
+    empty.target_top_rank = milestone.rank
+    if not milestone.money_bet:
+        empty.rule = milestone.note or f"không có mốc idx={milestone.rank}"
         return empty
 
     if user_count is None:
-        user_count = resolve_user_count_from_top500(money_500_raw)
+        user_count = milestone.user_count
     user_count = max(0, int(user_count))
     if user_count <= 0:
-        empty.money_500 = money_500_raw
+        empty.money_500 = milestone.money_bet
+        empty.target_top_rank = milestone.rank
         empty.rule = "USER_COUNT=0"
         return empty
 
     entry_gap = _threshold_offset_vnd() if max_entry_gap_vnd is None else max(0, int(max_entry_gap_vnd))
     candidates = _fetch_all_cms_candidates()
-    return _pick_v2_users_by_gap_filter(
+    pick = _pick_v2_users_by_gap_filter(
         candidates,
-        money_500_raw=money_500_raw,
+        money_500_raw=milestone.money_bet,
         max_entry_gap_vnd=entry_gap,
         user_count=user_count,
+        target_top_rank=milestone.rank,
     )
+    pick.user_count = user_count
+    if milestone.note:
+        pick.rule = f"{milestone.note}; {pick.rule}"
+    return pick
 
 
 def compute_top_bet_daily_v2_pick(
@@ -637,53 +742,72 @@ def compute_top_bet_daily_v2_usernames(
     return [str(row["username"]).strip() for row in pick.selected if row.get("username")]
 
 
-def fetch_top_bet_daily(username, date=None, limit=500, nearest_users_count=None):
+def fetch_top_bet_daily(
+    username, date=None, limit=None, nearest_users_count=None
+):
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
+    if limit is None:
+        limit = LEADERBOARD_FETCH_LIMIT
 
     data = _fetch_top_bet_daily_list(username, date=date, limit=limit)
     if not data:
         print("❌ Lỗi lấy top cược ngày (không có dữ liệu hoặc request thất bại)")
         return
 
-    idx_lo = max(1, TARGET_TOP_IDX - 15)
-    print(f"\nTOP cược ngày {date} (hạng {idx_lo}-{TARGET_TOP_IDX}):\n")
+    print(
+        f"\nTOP cược ngày {date} (hạng {TARGET_TOP_IDX} & {DISPLAY_TOP_IDX}):\n"
+    )
     print(f"{'Idx':>4} | {'Nickname':<20} | {'MoneyBet':>12} | {'Prize':>8}")
     print("-" * 55)
     printed_count = 0
-    for entry in data:
-        idx = entry.get("idx")
-        try:
-            idx_int = int(idx)
-        except Exception:
+    for rank in (TARGET_TOP_IDX, DISPLAY_TOP_IDX):
+        entry = next(
+            (e for e in data if _to_int(e.get("idx"), 0) == rank),
+            None,
+        )
+        if not entry:
+            print(f"⚠️ Không có dữ liệu hạng {rank}.")
             continue
-        if idx_lo <= idx_int <= TARGET_TOP_IDX:
-            nickname = entry.get("nickname", "")
-            money_bet = entry.get("moneyBet", "0")
-            prize = entry.get("prize", 0)
-            print(f"{idx_int:>4} | {nickname:<20} | {int(float(money_bet)):,} | {prize:,}")
-            printed_count += 1
+        idx_int = rank
+        nickname = entry.get("nickname", "")
+        money_bet = entry.get("moneyBet", "0")
+        prize = entry.get("prize", 0)
+        print(f"{idx_int:>4} | {nickname:<20} | {int(float(money_bet)):,} | {prize:,}")
+        printed_count += 1
     if printed_count == 0:
-        print("⚠️ Không có dòng nào trong khoảng hạng yêu cầu.")
+        print("⚠️ Không có dòng hạng 500 / 800.")
 
-    money_500_raw = _money_bet_at_top_idx(data, TARGET_TOP_IDX)
-    if not money_500_raw:
-        print(f"\n⚠️ Không lấy được mốc idx={TARGET_TOP_IDX}.")
+    cfg = load_config() or {}
+    config_rank = resolve_config_top_rank(cfg)
+    top800_users_cfg = resolve_config_top800_user_count(cfg)
+    milestone = resolve_top_bet_milestone(data, config_top_rank=config_rank, cfg=cfg)
+    if not milestone.money_bet:
+        print(f"\n⚠️ Không lấy được mốc idx={milestone.rank}. {milestone.note}".strip())
         return
 
     if nearest_users_count is None:
-        nearest_users_count = resolve_user_count_from_top500(money_500_raw)
+        nearest_users_count = milestone.user_count
+    top500_line = _money_bet_at_top_idx(data, TARGET_TOP_IDX)
+    top500_s = f"{top500_line:,}" if top500_line else "?"
     print(
-        f"\nUSER_COUNT={nearest_users_count} "
-        f"(top500={money_500_raw:,}: >7tr→0, 6–7tr→6, <6tr→8)"
+        f"\nTOP_RANK config={config_rank} → mốc hạng {milestone.rank}, "
+        f"USER_COUNT={nearest_users_count}"
     )
+    if milestone.note:
+        print(f"   ({milestone.note})")
+    elif config_rank == TARGET_TOP_IDX:
+        print(
+            f"   (top500={top500_s}: >7tr→top800+USER_COUNT_800={top800_users_cfg}, "
+            f"6–7tr→6, <6tr→8)"
+        )
+    else:
+        print(f"   (TOP_RANK=800: USER_COUNT_800={top800_users_cfg})")
 
-    candidates = _fetch_all_cms_candidates()
-    entry_gap = _threshold_offset_vnd()
-    pick = _pick_v2_users_by_gap_filter(
-        candidates,
-        money_500_raw=money_500_raw,
-        max_entry_gap_vnd=entry_gap,
+    pick = compute_top_bet_daily_gap_pick(
+        username,
+        date=date,
+        limit=limit,
         user_count=nearest_users_count,
     )
     print("\n" + format_top_bet_gap_pick_report(pick, user_count=nearest_users_count))

@@ -45,9 +45,9 @@ from xoso66_deposit import (  # noqa: E402
 )
 from xoso66_session import (  # noqa: E402
     _merge_response_cookies,
-    _requests_session,
     ensure_session,
     persist_session,
+    site_http_get,
 )
 
 configure_stdio_utf8()
@@ -114,7 +114,7 @@ def fetch_lottery_winloss_report(
     )
     url = f"{resolve_base_url(session)}{HISTORY_WINLOSS_PATH}"
     params = {"start_date": int(start_ms), "end_date": int(end_ms)}
-    r = _requests_session(session).get(url, headers=headers, params=params, timeout=35)
+    r = site_http_get(session, url, headers, params, 35)
     apply_response_tokens(session, r.headers)
     _merge_response_cookies(session, r)
     try:

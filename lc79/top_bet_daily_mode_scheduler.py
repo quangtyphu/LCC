@@ -5,12 +5,13 @@ Config TOP_BET_DAILY_MODE:
   ENABLED: 0 tắt, 1 bật
   CHECK_INTERVAL_SECONDS: mỗi N giây tick scheduler + kiểm tra DB (thoát V2)
   START: giờ kích hoạt hàng ngày (Asia/Ho_Chi_Minh), 1 lần/ngày sau START
-  API_INTERVAL_SECONDS: mỗi N giây gọi game API lấy mốc top 500 (khi đang monitor)
-  USER_COUNT: không dùng cố định — số user V2 theo mốc top500:
-    top500 > 7tr → 0 (bỏ qua, không chạy mode / không đổi strategy)
-    | 6tr ≤ top500 ≤ 7tr → 6 | top500 < 6tr → 8
-  THRESHOLD_OFFSET_VND: loại user có total_day − top500 > ngưỡng này khi chọn (vd 1_000_000)
-  EXIT_GAP_MIN_VND: thoát V2 khi mọi user V2 có total_day − top500 > ngưỡng này (vd 200_000)
+  API_INTERVAL_SECONDS: mỗi N giây gọi game API lấy mốc top (khi đang monitor)
+  TOP_RANK: 500 (mặc định) hoặc 800 — hạng làm mốc moneyBet / gap
+    USER_COUNT_800: số user V2 khi mốc top800 (TOP_RANK=800 hoặc top500>7tr); mặc định 10
+    TOP_RANK=500: 6tr≤top500≤7tr→6 user, top500<6tr→8; top500>7tr→mốc top800 + USER_COUNT_800
+    TOP_RANK=800: mốc top800 + USER_COUNT_800
+  THRESHOLD_OFFSET_VND: loại user có total_day − mốc top > ngưỡng khi chọn (vd 1_000_000)
+  EXIT_GAP_MIN_VND: thoát V2 khi mọi user V2 có total_day − mốc top > ngưỡng này (vd 200_000)
   API_USERNAME: user gọi game API (trống → WS đang chạy hoặc user đầu V2/PRIORITY)
 
 Luồng:
@@ -32,13 +33,15 @@ from zoneinfo import ZoneInfo
 
 from constants import load_config, save_config
 from top_bet_daily_checker import (
+    LEADERBOARD_FETCH_LIMIT,
     _fetch_cms_total_day_by_username,
     _fetch_top_bet_daily_list,
-    _money_bet_at_top_idx,
     compute_top_bet_daily_gap_pick,
     fetch_playing_or_out_usernames,
     format_top_bet_gap_pick_report,
-    resolve_user_count_from_top500,
+    resolve_top_bet_milestone,
+    resolve_config_top_rank,
+    resolve_config_top800_user_count,
     v2_users_all_above_exit_gap,
 )
 
@@ -47,6 +50,7 @@ _STATE_PATH = Path(__file__).resolve().parent / "top_bet_daily_state.json"
 _config_lock = threading.Lock()
 _last_api_fetch_mono: float = 0.0
 _cached_money_500: int = 0
+_cached_target_top_rank: int = 500
 
 
 def _parse_hhmm(s: str, default_h: int, default_m: int) -> tuple[int, int]:
@@ -326,8 +330,8 @@ def _should_run_daily_pick(cfg: dict, now: datetime | None = None) -> bool:
 
 
 def _refresh_top500_cache(cfg: dict, *, force: bool = False) -> int:
-    """Gọi game API, cache moneyBet hạng 500. Trả về mốc (0 nếu thất bại)."""
-    global _last_api_fetch_mono, _cached_money_500
+    """Gọi game API, cache moneyBet mốc top đang dùng (500/800). Trả 0 nếu thất bại."""
+    global _last_api_fetch_mono, _cached_money_500, _cached_target_top_rank
 
     block = _mode_block(cfg)
     api_interval = max(1, _to_int(block.get("API_INTERVAL_SECONDS", 300), 300))
@@ -340,13 +344,16 @@ def _refresh_top500_cache(cfg: dict, *, force: bool = False) -> int:
     if not username:
         return _cached_money_500
 
-    data = _fetch_top_bet_daily_list(username)
+    data = _fetch_top_bet_daily_list(username, limit=LEADERBOARD_FETCH_LIMIT)
     if not data:
         return _cached_money_500
 
-    money_500 = _money_bet_at_top_idx(data, 500)
-    if money_500:
-        _cached_money_500 = money_500
+    milestone = resolve_top_bet_milestone(
+        data, config_top_rank=resolve_config_top_rank(cfg), cfg=cfg
+    )
+    if milestone.money_bet:
+        _cached_money_500 = milestone.money_bet
+        _cached_target_top_rank = milestone.rank
         _last_api_fetch_mono = now_mono
     return _cached_money_500
 
@@ -374,9 +381,21 @@ def top_bet_daily_mode_daily_pick_tick(*, force: bool = False) -> None:
             _set_session_active(False, last_pick_date=_today_str(now))
             return
 
-        # USER_COUNT tự theo mốc top500 (>7tr→0 bỏ qua, 6–7tr→6, <6tr→8)
-        pick = compute_top_bet_daily_gap_pick(username, user_count=None)
-        user_count = resolve_user_count_from_top500(pick.money_500)
+        config_top_rank = resolve_config_top_rank(cfg)
+        print(
+            f"[TOP-BET-DAY] 📌 TOP_RANK={config_top_rank} "
+            f"(THRESHOLD_OFFSET_VND={_to_int(_mode_block(cfg).get('THRESHOLD_OFFSET_VND', 0), 0):,})",
+            flush=True,
+        )
+        pick = compute_top_bet_daily_gap_pick(username, user_count=None, cfg=cfg)
+        user_count = pick.user_count
+        rank = pick.target_top_rank
+        if rank != config_top_rank and pick.money_500:
+            print(
+                f"[TOP-BET-DAY] ℹ️ Mốc thực tế top{rank} "
+                f"(TOP_RANK config={config_top_rank}; xem note trong báo cáo nếu có fallback)",
+                flush=True,
+            )
         selected = [
             str(row["username"]).strip()
             for row in pick.selected
@@ -385,15 +404,15 @@ def top_bet_daily_mode_daily_pick_tick(*, force: bool = False) -> None:
 
         today = _today_str(now)
         if pick.money_500:
-            global _cached_money_500, _last_api_fetch_mono
+            global _cached_money_500, _cached_target_top_rank, _last_api_fetch_mono
             _cached_money_500 = pick.money_500
+            _cached_target_top_rank = rank
             _last_api_fetch_mono = time.monotonic()
 
-        # >7tr → coi như TOP_BET_DAILY_MODE không chạy hôm nay (không đụng V2/strategy)
         if user_count <= 0:
             print(
-                f"[TOP-BET-DAY] ⏭️ Bỏ qua — top500={pick.money_500:,} > 7tr "
-                f"(USER_COUNT=0). Không đổi V2/ASSIGN_STRATEGY.",
+                f"[TOP-BET-DAY] ⏭️ Bỏ qua — USER_COUNT=0 (mốc top{rank}). "
+                f"Không đổi V2/ASSIGN_STRATEGY.",
                 flush=True,
             )
             _set_session_active(False, last_pick_date=today)
@@ -401,14 +420,14 @@ def top_bet_daily_mode_daily_pick_tick(*, force: bool = False) -> None:
 
         if not selected:
             print(
-                "[TOP-BET-DAY] ⚠️ Không chọn được user (top500/bet-totals/lọc gap)",
+                f"[TOP-BET-DAY] ⚠️ Không chọn được user (top{rank}/bet-totals/lọc gap)",
                 flush=True,
             )
             if pick.rule:
                 print(f"[TOP-BET-DAY]    {pick.rule}", flush=True)
             if pick.money_500:
                 print(
-                    f"[TOP-BET-DAY]    top500={pick.money_500:,} → USER_COUNT={user_count}",
+                    f"[TOP-BET-DAY]    top{rank}={pick.money_500:,} → USER_COUNT={user_count}",
                     flush=True,
                 )
             _set_session_active(False, last_pick_date=today)
@@ -418,7 +437,7 @@ def top_bet_daily_mode_daily_pick_tick(*, force: bool = False) -> None:
             _set_session_active(True, last_pick_date=today)
             print(
                 f"[TOP-BET-DAY] ✅ Bắt đầu phiên V2 ({len(selected)}/{user_count}) "
-                f"(top500={pick.money_500:,} → USER_COUNT={user_count}) + "
+                f"(top{rank}={pick.money_500:,} → USER_COUNT={user_count}) + "
                 f"ASSIGN_STRATEGY={_ACTIVE_STRATEGY} + "
                 f"MAX outside={_MAX_ACTIVE_IN_WINDOW} (runtime): "
                 f"{', '.join(selected)}",
@@ -499,9 +518,10 @@ def top_bet_daily_mode_monitor_tick() -> None:
             return
 
         summary = ", ".join(f"{d['username']}(gap={d['gap']:,})" for d in details)
+        rank = _cached_target_top_rank
         print(
             f"[TOP-BET-DAY] 🏁 Thoát V2 — mọi user gap > {exit_gap:,} "
-            f"(top500={money_500:,}): {summary}",
+            f"(top{rank}={money_500:,}): {summary}",
             flush=True,
         )
         if cleared:
@@ -530,7 +550,7 @@ def top_bet_daily_mode_limits_tick() -> None:
 
 
 def top_bet_daily_mode_scheduler_loop() -> None:
-    global _last_api_fetch_mono, _cached_money_500
+    global _last_api_fetch_mono, _cached_money_500, _cached_target_top_rank
     print(
         "[TOP-BET-DAY] Scheduler đã khởi động (CHECK_INTERVAL_SECONDS khi ENABLED=1)",
         flush=True,
@@ -550,6 +570,7 @@ def top_bet_daily_mode_scheduler_loop() -> None:
             else:
                 _last_api_fetch_mono = 0.0
                 _cached_money_500 = 0
+                _cached_target_top_rank = 500
 
             time.sleep(check_interval)
         except Exception as e:
@@ -561,6 +582,14 @@ def top_bet_daily_mode_scheduler_loop() -> None:
 
 
 def start_top_bet_daily_mode_scheduler() -> None:
+    cfg = load_config() or {}
+    if top_bet_daily_mode_enabled(cfg):
+        print(
+            f"[TOP-BET-DAY] TOP_RANK={resolve_config_top_rank(cfg)} "
+            f"(USER_COUNT_800={resolve_config_top800_user_count(cfg)}; "
+            f"500=6/8 theo top500)",
+            flush=True,
+        )
     threading.Thread(
         target=top_bet_daily_mode_scheduler_loop,
         daemon=True,

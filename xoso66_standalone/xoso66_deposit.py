@@ -42,10 +42,37 @@ except ImportError:
 
 
 def _game_http(session: dict):
-    """requests.Session qua SOCKS5 — bắt buộc proxy."""
-    if _game_http_session is None:
-        raise RuntimeError("xoso66_session không import được")
-    return _game_http_session(session)
+    """HTTP tới site game qua curl_cffi. requests bị Cloudflare HTTP 475."""
+
+    class _SiteHttp:
+        def __init__(self, sess: dict) -> None:
+            self._sess = sess
+
+        def get(self, url: str, **kwargs: Any) -> Any:
+            from xoso66_session import site_http_get
+
+            return site_http_get(
+                self._sess,
+                url,
+                kwargs.get("headers") or {},
+                kwargs.get("params") or {},
+                float(kwargs.get("timeout") or 30),
+            )
+
+        def post(self, url: str, **kwargs: Any) -> Any:
+            from xoso66_session import site_http_post
+
+            return site_http_post(
+                self._sess,
+                url,
+                kwargs.get("headers") or {},
+                float(kwargs.get("timeout") or 30),
+                data=kwargs.get("data"),
+                json_body=kwargs.get("json"),
+                params=kwargs.get("params"),
+            )
+
+    return _SiteHttp(session)
 
 
 try:
@@ -118,11 +145,34 @@ DEPOSIT_INFO_PATH = "/server/payment/depositinfo"
 
 # ── Sessions ─────────────────────────────────────────────────────────────────
 
+def _is_latin1_text(value: Any) -> bool:
+    """curl_cffi encode header/cookie bằng latin-1. Giá trị lệch (vd. f-c-v giải mã hỏng) làm vỡ request."""
+    try:
+        str(value).encode("latin-1")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def latin1_cookies(cookies: dict | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for key, value in (cookies or {}).items():
+        if value is None:
+            continue
+        name = str(key)
+        text = str(value)
+        if _is_latin1_text(name) and _is_latin1_text(text):
+            out[name] = text
+    return out
+
+
 def _cookie_header(session: dict) -> str:
     cookies = session.get("cookies") or {}
     if isinstance(cookies, str):
-        return cookies.strip()
-    return "; ".join(f"{k}={v}" for k, v in cookies.items() if v is not None)
+        text = cookies.strip()
+        return text if _is_latin1_text(text) else ""
+    safe = latin1_cookies(cookies if isinstance(cookies, dict) else {})
+    return "; ".join(f"{k}={v}" for k, v in safe.items())
 
 
 def build_common_headers(session: dict, *, form_token: str, content_type: str) -> dict[str, str]:

@@ -13,7 +13,8 @@ Chỉnh trong JSON:
   game_worker.ws_default_username  (WS CLI mặc định)
   game_worker.ws_listener_username  (nick giữ WS nghe phiên — không ngắt cap; fallback ws_default_username)
   game_worker.ws_listener_enabled  (true/false — tắt hẳn WS listener)
-  game_worker.ws_fill_priority  (list Hết Tiền+Đủ ngày under-cap: 2 = cược ngày cao→thấp rồi số dư cao→thấp; 1 = đủ tiền số dư cao→thấp, thiếu tiền cược thấp→cao; 0 = số dư thấp→cao rồi cược cao→thấp)
+  game_worker.ws_fill_priority  (2 = cược ngày cao→thấp rồi số dư cao→thấp; 1 = đủ tiền số dư cao→thấp, thiếu tiền cược thấp→cao; 0 = số dư thấp→cao rồi cược cao→thấp). Khi daily_bet_cap > daily_bet_cap_reset.value_vnd: gộp pool + list nạp; cược ngày < ws_fill_under_milestone_daily_vnd (890k) trước, rồi sort trong nhóm.
+  game_worker.ws_fill_under_milestone_daily_vnd  (mặc định 890000 — ngưỡng ưu tiên sau nâng cap)
   game_worker.win_credit_recheck_delays_sec  (thắng + DB < min: mốc giây refresh sau KQ, tối đa 5; mặc định [10,20,30,40,50])
   auto_bet.enabled
   auto_bet.quiet_hours.enabled  (true = không đặt cược trong khung giờ VN)
@@ -143,6 +144,7 @@ USER_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("game_worker", "ws_listener_username"),
     ("game_worker", "ws_listener_enabled"),
     ("game_worker", "ws_fill_priority"),
+    ("game_worker", "ws_fill_under_milestone_daily_vnd"),
     ("game_worker", "win_credit_recheck_delays_sec"),
     ("game_worker", "round_start_balance_check_delay_sec"),
     ("game_worker", "ws_pool_resync_after_begin_sec"),
@@ -316,6 +318,7 @@ HARDCODED_CONFIG: dict[str, Any] = {
         "ws_bulk_refresh_threshold": 5,
         "ws_listener_enabled": True,
         "ws_fill_priority": 2,
+        "ws_fill_under_milestone_daily_vnd": 890_000,
         "ws_listener_account_id": "",
         "ws_listener_username": "quangtyphu",
         "ws_default_username": "quangtyphu",

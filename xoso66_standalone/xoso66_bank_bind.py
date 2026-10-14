@@ -36,12 +36,13 @@ from xoso66_session import (
     ensure_session,
     merge_playwright_cookies,
     post_encrypted,
+    site_http_get,
     _merge_response_cookies,
     _requests_session
 )
 from xoso66_sessions_io import load_sessions, save_sessions
 
-_ENCRYPTED_GET_FALLBACK_CODES = (1004, 10055, 10058)
+_ENCRYPTED_GET_FALLBACK_CODES = (1004, 10055)
 _USER_BANKLIST_ACTIONS = ("user/getUserBanklist", "userCenter/getUserBanklist")
 _USER_ADDRESSLIST_ACTIONS = (
     "user/getUserAddresslist",
@@ -81,11 +82,12 @@ def _get_encrypted(session: dict, path: str, params: dict | None = None) -> tupl
             str(session.get("user_agent") or DEFAULT_UA),
         )
     )
-    r = _requests_session(session).get(
+    r = site_http_get(
+        session,
         url,
-        params=params or None,
-        headers=headers,
-        timeout=30,
+        headers,
+        params or {},
+        30,
     )
     apply_response_tokens(session, r.headers)
     _merge_response_cookies(session, r)
@@ -122,6 +124,12 @@ def _get_encrypted(session: dict, path: str, params: dict | None = None) -> tupl
 def _encrypted_get_to_result(session: dict, path: str, params: dict | None) -> dict[str, Any]:
     status, data = _get_encrypted(session, path, params or {})
     js = _parse_api_body(data)
+    # cek_p lưu trong DB lệch khóa server → userbanklist code 10058, data rỗng.
+    if js.get("code") == 10058:
+        session.pop("cek_p", None)
+        session.pop("aes_session_key", None)
+        status, data = _get_encrypted(session, path, params or {})
+        js = _parse_api_body(data)
     return {
         "ok": js.get("code") == 1,
         "code": js.get("code"),
@@ -169,7 +177,10 @@ def _playwright_store_dispatch(
                 """async ([action, body]) => {
                     const vm = document.querySelector('#app').__vue__;
                     try { return await vm.$store.dispatch(action, body); }
-                    catch (e) { return { code: 0, msg: String(e) }; }
+                    catch (e) {
+                        const msg = (e && (e.msg || e.message)) || String(e && e.message || e);
+                        return { code: (e && e.code) || 0, msg: typeof msg === 'string' ? msg : JSON.stringify(e) };
+                    }
                 }""",
                 [action, body],
             )
@@ -222,11 +233,12 @@ def _auth_headers(session: dict, *, content_type: str = "application/json") -> d
 def _get_json(session: dict, path: str, *, params: dict | None = None) -> dict[str, Any]:
     from xoso66_deposit import apply_response_tokens
 
-    r = _requests_session(session).get(
+    r = site_http_get(
+        session,
         f"{resolve_base_url(session)}{path}",
-        headers=_auth_headers(session),
-        params=params or {},
-        timeout=30,
+        _auth_headers(session),
+        params or {},
+        30,
     )
     apply_response_tokens(session, r.headers)
     _merge_response_cookies(session, r)

@@ -632,10 +632,11 @@ def refresh_minigame_cf(
 
     try:
         from curl_cffi import requests as cffi_requests
+        from xoso66_cf import cf_impersonate
 
         r = cffi_requests.get(
             url,
-            impersonate=os.environ.get("XOSO66_CF_IMPERSONATE", "chrome120"),
+            impersonate=cf_impersonate(),
             headers={
                 "user-agent": ua,
                 "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -851,7 +852,7 @@ def refresh_user_token_via_gameurl(
 
     from xoso66_deposit import build_common_headers, get_form_token
     from xoso66_proxy import apply_requests_proxy, ensure_proxy
-    from xoso66_session import _requests_session
+    from xoso66_session import site_http_get
     from xoso66_game_domain import resolve_base_url
 
     mg = get_minigame(session)
@@ -872,11 +873,12 @@ def refresh_user_token_via_gameurl(
         content_type="application/x-www-form-urlencoded/json",
     )
     params = {"nav_id": nav_id, "sub_game_code": sub_game_code, "islobby": islobby}
-    r = _requests_session(session).get(
+    r = site_http_get(
+        session,
         f"{resolve_base_url(session)}/server/thirdgame/gameurl",
-        headers=headers,
-        params=params,
-        timeout=45,
+        headers,
+        params,
+        45,
     )
     try:
         js = r.json()

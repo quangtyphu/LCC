@@ -37,6 +37,8 @@ from xoso66_session import (
     bootstrap_prelogin,
     post_encrypted,
     refresh_cloudflare,
+    site_http_get,
+    site_http_post,
     _merge_response_cookies,
     _requests_session
 )
@@ -149,11 +151,12 @@ def get_captcha(session: dict) -> dict[str, Any]:
     """GET /server/index/getcaptcha."""
     from xoso66_deposit import apply_response_tokens
 
-    http = _requests_session(session)
-    r = http.get(
+    r = site_http_get(
+        session,
         f"{resolve_base_url(session)}{GET_CAPTCHA_PATH}",
-        headers=_plain_headers(session, content_type="application/json"),
-        timeout=25,
+        _plain_headers(session, content_type="application/json"),
+        {},
+        25,
     )
     apply_response_tokens(session, r.headers)
     _merge_response_cookies(session, r)
@@ -175,12 +178,12 @@ def send_sms_code(session: dict, phone: str, *, source: str = "register") -> dic
     if not phone or len(phone) != 10 or not phone.isdigit():
         raise ValueError("phone phải là 10 chữ số (VD: 0912345678)")
 
-    http = _requests_session(session)
-    r = http.post(
+    r = site_http_post(
+        session,
         f"{resolve_base_url(session)}{SMS_CODE_PATH}",
-        json={"source": source, "phone": phone},
-        headers=_plain_headers(session),
-        timeout=25,
+        _plain_headers(session),
+        25,
+        json_body={"source": source, "phone": phone},
     )
     apply_response_tokens(session, r.headers)
     _merge_response_cookies(session, r)

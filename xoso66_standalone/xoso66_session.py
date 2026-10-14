@@ -415,10 +415,9 @@ def _requests_session(session: dict) -> Any:
     return wrap_requests_session(s, session, source="HTTP")
 
 
-def _merge_response_cookies(session: dict, resp: requests.Response) -> None:
+def _merge_response_cookies(session: dict, resp: Any) -> None:
     """Gộp Set-Cookie từ response HTTP của chính session này (được phép PHPSESSID mới)."""
-    incoming = {c.name: c.value for c in resp.cookies}
-    merge_session_cookies(session, incoming, allow_identity=True)
+    _merge_any_response_cookies(session, resp)
 
 
 def _merge_any_response_cookies(session: dict, resp: Any) -> None:
@@ -690,6 +689,7 @@ def post_login_encrypted(
     if force_cffi or _login_use_cffi():
         try:
             from curl_cffi import requests as cffi_requests
+            from xoso66_cf import cf_impersonate
 
             ensure_proxy(session)
             r = cffi_requests.post(
@@ -698,7 +698,7 @@ def post_login_encrypted(
                 headers=headers,
                 cookies=session.get("cookies") or {},
                 proxies=build_proxies(session["proxy"]),
-                impersonate=os.environ.get("XOSO66_CF_IMPERSONATE", "chrome120"),
+                impersonate=cf_impersonate(),
                 timeout=45,
             )
             decrypted = _parse_encrypted_post_response(
@@ -785,18 +785,49 @@ def bootstrap_prelogin(session: dict, http: requests.Session | None = None) -> N
     )
 
     session.pop("aes_session_key", None)
-    http = http or _requests_session(session)
+    _ = http
     headers = {
         "user-agent": session.get("user_agent") or DEFAULT_UA,
         "accept": "application/json",
         "cookie": _cookie_header(session),
     }
     try:
-        r = http.get(f"{resolve_base_url(session)}{ENCRYPT_KEY_PATH}", headers=headers, timeout=25)
+        r = site_http_get(
+            session,
+            f"{resolve_base_url(session)}{ENCRYPT_KEY_PATH}",
+            headers,
+            {},
+            25,
+        )
         apply_response_tokens(session, r.headers)
         if r.headers.get("cek-p") or r.headers.get("Cek-P"):
             session["cek_p"] = r.headers.get("cek-p") or r.headers.get("Cek-P")
         _merge_response_cookies(session, r)
+        if r.status_code not in (0, 200):
+            session.pop("cek_p", None)
+        else:
+            try:
+                js = r.json()
+            except Exception:
+                js = None
+            if isinstance(js, dict):
+                code = js.get("code")
+                msg = str(js.get("msg") or "")
+                if code not in (None, 1):
+                    session.pop("cek_p", None)
+                    session.pop("aes_session_key", None)
+                    if int(code) == 1049 or "thường xuyên" in msg.lower():
+                        raise RuntimeError(
+                            f"encryptKey code={code}: {msg or 'rate limit'} "
+                            "— chờ 5–10 phút, giảm luồng balance/login, hoặc đổi proxy"
+                        )
+                    if int(code) == 10056 or "tham số" in msg.lower():
+                        raise RuntimeError(
+                            f"encryptKey code={code}: {msg} "
+                            "— mở Chrome profile device, giải CF (/__verify/check), sync lại session"
+                        )
+    except RuntimeError:
+        raise
     except Exception:
         pass
     try:
@@ -845,12 +876,14 @@ def post_encrypted(
             str(session.get("user_agent") or DEFAULT_UA),
         )
     )
-    http = http or _requests_session(session)
-    r = http.post(
+    # requests bị Cloudflare HTTP 475. http= giữ cho caller cũ, transport luôn curl_cffi.
+    _ = http
+    r = site_http_post(
+        session,
         url,
+        headers,
+        45,
         data=pack_v2_ciphertext(encrypted_body),
-        headers=headers,
-        timeout=45,
     )
     text = r.text
     if text.startswith('"') and text.endswith('"'):
@@ -944,7 +977,12 @@ def _login_fail_message(
 
     msg = str(body.get("msg") or body.get("message") or "").strip()
     code = body.get("code")
-    if msg and msg not in parts:
+    if code == 10056 and msg and "tham số" in msg.lower():
+        parts.append(
+            f"{msg} (code=10056 — thường do encryptKey/CF chưa qua hoặc form-token/crypto cũ; "
+            "giải captcha con vật trên Chrome rồi login lại)"
+        )
+    elif msg and msg not in parts:
         parts.append(msg)
     if code is not None and not decrypt_err and not any(str(code) in p for p in parts):
         if not msg:
@@ -1353,7 +1391,82 @@ def _login_account_locked(
     raise RuntimeError(fail_msg)
 
 
-def get_user_balance(session: dict, *, refresh: bool = True) -> dict[str, Any]:
+def site_http_get(
+    session: dict,
+    url: str,
+    headers: dict,
+    params: dict,
+    timeout: float,
+) -> Any:
+    """GET API site qua curl_cffi (TLS Chrome). requests bị CF HTTP 475."""
+    from xoso66_proxy import build_proxies, ensure_proxy
+
+    from xoso66_deposit import latin1_cookies
+    from xoso66_cf import cf_impersonate
+
+    ensure_proxy(session)
+    try:
+        from curl_cffi import requests as cffi_requests
+
+        return cffi_requests.get(
+            url,
+            headers=headers,
+            params=params or None,
+            cookies=latin1_cookies(session.get("cookies") or {}),
+            proxies=build_proxies(session["proxy"]),
+            impersonate=cf_impersonate(),
+            timeout=timeout,
+        )
+    except ImportError:
+        return _requests_session(session).get(
+            url, headers=headers, params=params or None, timeout=timeout
+        )
+
+
+def site_http_post(
+    session: dict,
+    url: str,
+    headers: dict,
+    timeout: float,
+    *,
+    data: Any = None,
+    json_body: Any = None,
+    params: dict | None = None,
+) -> Any:
+    """POST API site qua curl_cffi (TLS Chrome). requests bị CF HTTP 475."""
+    from xoso66_proxy import build_proxies, ensure_proxy
+    from xoso66_deposit import latin1_cookies
+    from xoso66_cf import cf_impersonate
+
+    ensure_proxy(session)
+    try:
+        from curl_cffi import requests as cffi_requests
+
+        return cffi_requests.post(
+            url,
+            headers=headers,
+            params=params or None,
+            data=data,
+            json=json_body,
+            cookies=latin1_cookies(session.get("cookies") or {}),
+            proxies=build_proxies(session["proxy"]),
+            impersonate=cf_impersonate(),
+            timeout=timeout,
+        )
+    except ImportError:
+        return _requests_session(session).post(
+            url,
+            headers=headers,
+            params=params or None,
+            data=data,
+            json=json_body,
+            timeout=timeout,
+        )
+
+
+def get_user_balance(
+    session: dict, *, refresh: bool = True, timeout_sec: float = 25
+) -> dict[str, Any]:
     """GET /server/user/getBalance — probe session + số dư."""
     from xoso66_cf import is_cloudflare_rate_limited, mark_cf_rate_limited
     from xoso66_deposit import apply_response_tokens, build_common_headers, get_form_token
@@ -1375,14 +1488,15 @@ def get_user_balance(session: dict, *, refresh: bool = True) -> dict[str, Any]:
         content_type="application/x-www-form-urlencoded/json",
     )
     params = {"refresh": "1"} if refresh else {}
-    r = _requests_session(session).get(
+    r = site_http_get(
+        session,
         f"{resolve_base_url(session)}{GET_BALANCE_PATH}",
-        headers=headers,
-        params=params,
-        timeout=25,
+        headers,
+        params,
+        timeout_sec,
     )
     apply_response_tokens(session, r.headers)
-    _merge_response_cookies(session, r)
+    _merge_any_response_cookies(session, r)
     if is_cloudflare_rate_limited(r.text or "", r.status_code):
         mark_cf_rate_limited(session)
         out = {
@@ -1394,7 +1508,7 @@ def get_user_balance(session: dict, *, refresh: bool = True) -> dict[str, Any]:
         }
         _log_getbalance_http_result(session, out)
         return out
-    if r.status_code in (401, 403) or "cloudflare" in (r.text or "")[:500].lower():
+    if r.status_code in (401, 403, 475) or "cloudflare" in (r.text or "")[:500].lower():
         out = {"ok": False, "http_status": r.status_code, "raw": r.text[:400], "need_cf_refresh": True}
         _log_getbalance_http_result(session, out)
         return out

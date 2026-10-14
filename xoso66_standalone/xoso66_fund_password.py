@@ -29,6 +29,7 @@ from xoso66_session import (
     ensure_session,
     merge_playwright_cookies,
     post_encrypted,
+    site_http_post,
     _merge_response_cookies,
     _requests_session
 )
@@ -94,11 +95,12 @@ def get_user_info(session: dict, *, is_user_center: bool = True) -> dict[str, An
         content_type="application/x-www-form-urlencoded/json",
     )
     body = {"isUserCenter": True} if is_user_center else {}
-    r = _requests_session(session).post(
+    r = site_http_post(
+        session,
         f"{resolve_base_url(session)}{USER_INFO_PATH}",
-        json=body,
-        headers=headers,
-        timeout=25,
+        headers,
+        25,
+        json_body=body,
     )
     apply_response_tokens(session, r.headers)
     _merge_response_cookies(session, r)

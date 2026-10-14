@@ -939,6 +939,31 @@ def _strategy10_plan_max_bal_slot(
     return outside_max, user_max_bal, enabled
 
 
+# Mức cược: nếu không tìm được user đủ tiền thì bỏ qua (không hủy cả phiên).
+_SKIP_ASSIGN_AMOUNT_IF_NO_USER = 10000
+
+
+def _abort_assign_if_no_user(
+    amount: int, door: str
+) -> Optional[List[Tuple[str, int, str, int]]]:
+    """
+    None → bỏ qua mức này, tiếp tục vòng gán.
+    []   → hủy phiên.
+    """
+    if amount == _SKIP_ASSIGN_AMOUNT_IF_NO_USER:
+        msg = (
+            f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. "
+            f"Bỏ qua mức 10k, tiếp tục phiên."
+        )
+        print(msg)
+        return None
+    msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
+    print(msg)
+    if amount > _SKIP_ASSIGN_AMOUNT_IF_NO_USER:
+        send_telegram(msg)
+    return []
+
+
 def assign_bets(
     bets: List[Tuple[None, int, str]],
     online_users: List[str],
@@ -1174,10 +1199,10 @@ def assign_bets(
                 candidates.append((bal - amount, u, bal))  # (after, username, bal)
 
         if not candidates:
-            msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
-            print(msg)
-            send_telegram(msg)
-            return []
+            _abort = _abort_assign_if_no_user(amount, door)
+            if _abort is None:
+                continue
+            return _abort
 
         if chosen is None:
             # -------------------- Chiến lược chọn account --------------------
@@ -1239,10 +1264,10 @@ def assign_bets(
                     )
 
                 if chosen is None:
-                    msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
-                    print(msg)
-                    send_telegram(msg)
-                    return []
+                    _abort = _abort_assign_if_no_user(amount, door)
+                    if _abort is None:
+                        continue
+                    return _abort
 
             elif strategy == 4:
                 # Ưu tiên PRIORITY_USERS, fallback: balance cao → thấp cho users KHÔNG thuộc V2/V3, sau đó mới đến V2 rồi V3
@@ -1270,10 +1295,10 @@ def assign_bets(
                             break
     
                 if chosen is None:
-                    msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
-                    print(msg)
-                    send_telegram(msg)
-                    return []
+                    _abort = _abort_assign_if_no_user(amount, door)
+                    if _abort is None:
+                        continue
+                    return _abort
     
             elif strategy == 5:
                 # Ưu tiên PRIORITY_USERS, fallback tổng cược tháng thấp nhất
@@ -1290,10 +1315,10 @@ def assign_bets(
                     candidates_sorted = sorted(candidates, key=lambda t: (monthly_bets.get(t[1], 0), t[2]))
                     after, chosen, _bal = candidates_sorted[0]
                 if chosen is None:
-                    msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
-                    print(msg)
-                    send_telegram(msg)
-                    return []
+                    _abort = _abort_assign_if_no_user(amount, door)
+                    if _abort is None:
+                        continue
+                    return _abort
     
             elif strategy == 6:
                 # 1) PRIORITY_USERS  2) V2 (total_week thấp nhất; mức cao→thấp nên max vào acc V2 thấp nhất)
@@ -1320,10 +1345,10 @@ def assign_bets(
                     candidates_sorted = sorted(candidates, key=lambda t: (weekly_bets.get(t[1], 0), t[2]))
                     after, chosen, _bal = candidates_sorted[0]
                 if chosen is None:
-                    msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
-                    print(msg)
-                    send_telegram(msg)
-                    return []
+                    _abort = _abort_assign_if_no_user(amount, door)
+                    if _abort is None:
+                        continue
+                    return _abort
 
             elif strategy == 13:
                 # 1) PRIORITY_USERS  2) V2 (total_month thấp nhất; mức cao→thấp nên max vào acc V2 thấp nhất)
@@ -1350,10 +1375,10 @@ def assign_bets(
                     candidates_sorted = sorted(candidates, key=lambda t: (monthly_bets.get(t[1], 0), t[2]))
                     after, chosen, _bal = candidates_sorted[0]
                 if chosen is None:
-                    msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
-                    print(msg)
-                    send_telegram(msg)
-                    return []
+                    _abort = _abort_assign_if_no_user(amount, door)
+                    if _abort is None:
+                        continue
+                    return _abort
     
             elif strategy == 7:
                 # Ưu tiên mức max (balance+max≈TARGET_SUM) + mức min (balance≈min); còn lại random
@@ -1399,10 +1424,10 @@ def assign_bets(
                         after = _bal - amount
 
                 if chosen is None:
-                    msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
-                    print(msg)
-                    send_telegram(msg)
-                    return []
+                    _abort = _abort_assign_if_no_user(amount, door)
+                    if _abort is None:
+                        continue
+                    return _abort
     
             elif strategy == 8:
                 # PRIORITY_USERS → V2/V3 (today thấp) → others: balance max (9) + head_pair (10) → random
@@ -1448,10 +1473,10 @@ def assign_bets(
                     )
 
                 if chosen is None:
-                    msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
-                    print(msg)
-                    send_telegram(msg)
-                    return []
+                    _abort = _abort_assign_if_no_user(amount, door)
+                    if _abort is None:
+                        continue
+                    return _abort
     
             elif strategy == 9:
                 chosen, after, _bal, strategy9_outside_max_slot_used = _strategy9_choose_user(
@@ -1523,10 +1548,10 @@ def assign_bets(
                                 break
 
                 if chosen is None:
-                    msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
-                    print(msg)
-                    send_telegram(msg)
-                    return []
+                    _abort = _abort_assign_if_no_user(amount, door)
+                    if _abort is None:
+                        continue
+                    return _abort
             elif strategy == 11:
                 # Ưu tiên PRIORITY_USERS, fallback: 1️⃣ User KHÔNG thuộc V2 & V3 → balance tăng dần
                 chosen, after, _bal = None, None, None
@@ -1564,10 +1589,10 @@ def assign_bets(
                             break
     
                 if chosen is None:
-                    msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
-                    print(msg)
-                    send_telegram(msg)
-                    return []
+                    _abort = _abort_assign_if_no_user(amount, door)
+                    if _abort is None:
+                        continue
+                    return _abort
             elif strategy == 12:
                 # Ưu tiên PRIORITY_USERS (đủ tiền, online, chưa dùng); sau đó mọi acc còn lại theo today_bets thấp nhất.
                 chosen, after, _bal = None, None, None
@@ -1587,20 +1612,20 @@ def assign_bets(
                         after = _bal - amount
     
                 if chosen is None:
-                    msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
-                    print(msg)
-                    send_telegram(msg)
-                    return []
+                    _abort = _abort_assign_if_no_user(amount, door)
+                    if _abort is None:
+                        continue
+                    return _abort
     
             else:
                 # fallback an toàn
                 after, chosen, _bal = random.choice(candidates)
 
         if chosen is None:
-            msg = f"⚠️ Không tìm được user đủ tiền cho {door} {amount}. Hủy phiên."
-            print(msg)
-            send_telegram(msg)
-            return []
+            _abort = _abort_assign_if_no_user(amount, door)
+            if _abort is None:
+                continue
+            return _abort
 
         current_bal = balances[chosen]
 

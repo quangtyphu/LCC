@@ -188,8 +188,10 @@ def _bring_window_to_front(win: Any) -> bool:
             hwnd = int(getattr(win, "NativeWindowHandle", 0) or 0)
             if hwnd:
                 user32 = ctypes.windll.user32
-                SW_RESTORE = 9
-                user32.ShowWindow(hwnd, SW_RESTORE)
+                # Profile CMS hay nhớ cửa sổ nhỏ. Phóng to trước khi gõ,
+                # không thì ô đăng nhập bị che.
+                SW_SHOWMAXIMIZED = 3
+                user32.ShowWindow(hwnd, SW_SHOWMAXIMIZED)
                 user32.BringWindowToTop(hwnd)
                 # AttachThreadInput giúp SetForegroundWindow khi bị Windows chặn.
                 fg = user32.GetForegroundWindow()
@@ -364,6 +366,32 @@ def _is_password_edit(edit: Any) -> bool:
         return bool(getattr(edit, "IsPassword", False))
     except Exception:
         return False
+
+
+def _same_ui_control(a: Any, b: Any) -> bool:
+    """True nếu a và b là cùng một control UIA (tránh gõ 2 lần vào một ô)."""
+    if a is None or b is None:
+        return False
+    if a is b:
+        return True
+    try:
+        ra, rb = getattr(a, "RuntimeId", None), getattr(b, "RuntimeId", None)
+        if ra is not None and rb is not None and tuple(ra) == tuple(rb):
+            return True
+    except Exception:
+        pass
+    try:
+        ba, bb = a.BoundingRectangle, b.BoundingRectangle
+        if (
+            ba.left == bb.left
+            and ba.top == bb.top
+            and ba.right == bb.right
+            and ba.bottom == bb.bottom
+        ):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _escape_sendkeys(text: str) -> str:
@@ -852,10 +880,14 @@ def _scan_pre_login(
         user_el = all_edits[0]
         pass_el = all_edits[1]
         captcha_el = all_edits[2] if len(all_edits) >= 3 else None
-    elif has_login_btn and has_google_login and len(all_edits) >= 1:
-        # Ít nhất 1 edit + nút login — vẫn thử (ô pass đôi khi không IsPassword).
-        user_el = all_edits[0] if all_edits else None
-        pass_el = all_edits[1] if len(all_edits) >= 2 else all_edits[0]
+    elif has_login_btn and has_google_login and len(all_edits) >= 2:
+        user_el = all_edits[0]
+        pass_el = all_edits[1]
+        captcha_el = all_edits[2] if len(all_edits) >= 3 else None
+    elif has_login_btn and has_google_login and len(all_edits) == 1:
+        # Chỉ 1 ô — đợi thêm (tránh gán user=pass cùng control → gõ đè 2 lần).
+        user_el = all_edits[0]
+        pass_el = None
 
     has_pass = pass_el is not None
     siteish = any(
@@ -865,12 +897,19 @@ def _scan_pre_login(
     title_ok = bool(title) and title not in ("Untitled", "about:blank")
     form_ready = bool(has_pass and has_login_btn and title_ok)
     # Đã thấy khu vực login (Google + Đăng nhập) dù edit khó đọc — coi gần sẵn sàng.
-    if not form_ready and has_login_btn and has_google_login and title_ok and len(all_edits) >= 1:
+    if (
+        not form_ready
+        and has_login_btn
+        and has_google_login
+        and title_ok
+        and len(all_edits) >= 2
+    ):
         form_ready = True
-        if pass_el is None and all_edits:
+        if pass_el is None:
             pass_el = all_edits[-1]
             has_pass = True
-            user_el = all_edits[0] if len(all_edits) >= 2 else all_edits[0]
+            user_el = all_edits[0]
+            captcha_el = all_edits[2] if len(all_edits) >= 3 else None
 
     logged_in = False
     if not has_cf and not has_1970 and not has_login_btn and pass_el is None:
@@ -1078,7 +1117,7 @@ def ui_login_in_chrome(
             time.sleep(0.1)
             continue
 
-        # Form vừa thấy — chờ ổn định rồi mới gõ (tránh Vue chưa bind).
+        # Chỉ gõ user/pass một lần mỗi lượt (retry chỉ khi reset typed_once).
         if not typed_once:
             _log(f"Form sẵn sàng sau {now - t_loop0:.1f}s — chờ 2.5s ổn định rồi login…")
             time.sleep(2.5)
@@ -1090,15 +1129,23 @@ def ui_login_in_chrome(
             cap_el = st.get("captcha_el")
             if not pass_el:
                 continue
+            if _same_ui_control(user_el, pass_el):
+                _log("UI chỉ thấy 1 ô edit — đợi thêm ô mật khẩu…")
+                time.sleep(0.35)
+                continue
             _log(f"Form sẵn sàng sau {now - t_loop0:.1f}s — gõ user/pass + Đăng nhập")
+            _bring_window_to_front(win)
 
-        ok_user = _type_into_edit(user_el, username, auto) if user_el else False
-        time.sleep(0.05)
-        ok_pass = _type_into_edit(pass_el, password, auto)
-        if ok_user or ok_pass:
-            filled += 1
-            typed_once = True
-        time.sleep(0.06)
+            ok_user = _type_into_edit(user_el, username, auto) if user_el else False
+            time.sleep(0.05)
+            ok_pass = _type_into_edit(pass_el, password, auto)
+            if ok_user or ok_pass:
+                filled += 1
+                typed_once = True
+            time.sleep(0.06)
+
+        if not typed_once:
+            continue
 
         clicked = _click_dang_nhap(win, auto)
         if not clicked:
