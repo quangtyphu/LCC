@@ -91,6 +91,7 @@ def _launch_chrome_native(
     url: str = "",
     urls: list[str] | None = None,
     cdp_port: int = 0,
+    cdp_minimal: bool = False,
 ) -> subprocess.Popen[Any]:
     chrome = _find_chrome_exe()
     if not chrome:
@@ -110,12 +111,17 @@ def _launch_chrome_native(
             [
                 f"--remote-debugging-port={port}",
                 "--remote-allow-origins=*",
-                "--window-size=1440,900",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
             ]
         )
+        if not cdp_minimal:
+            cmd.extend(
+                [
+                    "--window-size=1440,900",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                ]
+            )
     prep = None
     if proxy.strip():
         from proxy_util import prepare_chrome_proxy

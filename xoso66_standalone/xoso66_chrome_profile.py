@@ -226,30 +226,50 @@ def _copy_cookies_db_for_read(db: Path) -> Path | None:
     return None
 
 
-def _query_cookies_db(db: Path, sql: str, params: tuple = ()) -> list[tuple]:
-    tmp = _copy_cookies_db_for_read(db)
-    paths = [tmp, db] if tmp else [db]
-    for path in paths:
-        if not path or not path.is_file():
-            continue
+def _drop_cookie_copy(tmp: Path | None) -> None:
+    if not tmp:
+        return
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        p = Path(str(tmp) + suffix) if suffix else tmp
         try:
-            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-            rows = conn.execute(sql, params).fetchall()
-            conn.close()
-            if tmp and path == tmp:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except Exception:
-                    pass
+            p.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _query_cookies_db(db: Path, sql: str, params: tuple = ()) -> list[tuple]:
+    """Đọc Cookies kể cả khi Chrome đang mở.
+
+    Cookie mới (PHPSESSID vừa login) nằm ở file -wal. Mở bản copy ở chế độ
+    chỉ đọc sẽ bỏ qua wal, nên chỉ thấy cookie cũ như cf_clearance. Xóa -shm
+    rồi mở bản copy cho ghi để SQLite gộp wal vào, giống lúc Chrome đóng.
+    """
+    tmp = _copy_cookies_db_for_read(db)
+    if tmp:
+        shm = Path(str(tmp) + "-shm")
+        try:
+            shm.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            conn = sqlite3.connect(str(tmp))
+            try:
+                rows = conn.execute(sql, params).fetchall()
+            finally:
+                conn.close()
             return rows
         except Exception:
-            if tmp and path == tmp:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except Exception:
-                    pass
-            continue
-    return []
+            pass
+        finally:
+            _drop_cookie_copy(tmp)
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            return conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return []
 
 
 def read_profile_cookies(profile_dir: Path, *, host: str = _SITE_HOST) -> dict[str, str]:
@@ -333,10 +353,12 @@ def launch_cms_chrome(
     *,
     urls: list[str] | None = None,
     cdp_port: int = 0,
+    cdp_minimal: bool = False,
 ) -> subprocess.Popen[Any]:
     """
     Mở Chrome y hệt CMS (cms_launch.py).
     cdp_port=0 → không remote-debugging (CF ít chặn).
+    cdp_minimal → chỉ cổng debug để đọc cookie, không thêm flag cửa sổ.
     """
     _browser_isolate_dir()
     from launcher import _launch_chrome_native  # type: ignore
@@ -349,6 +371,7 @@ def launch_cms_chrome(
         url=open_urls[0],
         urls=open_urls,
         cdp_port=int(cdp_port or 0),
+        cdp_minimal=bool(cdp_minimal),
     )
 
 

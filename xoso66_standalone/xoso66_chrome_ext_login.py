@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Đăng nhập XOSO66 qua Google Chrome CMS — KHÔNG CDP, KHÔNG extension.
+Đăng nhập XOSO66 qua Google Chrome CMS — không Playwright, không extension.
 
 Chrome 152+ bỏ --load-extension; Chrome for Testing + profile CMS → trang trắng.
+PHPSESSID là cookie HttpOnly, Chrome giữ trong RAM và chỉ ghi file Cookies khi
+thoát process. Sau khi bấm Đăng nhập, đọc cookie qua cổng debug local
+(Network.getCookies), không điều hướng trang.
 
 Mở Google Chrome y hệt CMS → chờ trang/bootstrap xong → gõ user/pass bằng phím
-(thật, để Vue nhận) → click «Đăng nhập» → sync cookie.
+(thật, để Vue nhận) → click «Đăng nhập» → đọc cookie → getBalance → đóng Chrome.
 
 Dùng:
   python xoso66_chrome_ext_login.py dareyoubo
@@ -46,16 +49,112 @@ def _log(msg: str) -> None:
         print(line.encode("ascii", "replace").decode("ascii"), flush=True)
 
 
+def _free_tcp_port() -> int:
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = int(sock.getsockname()[1])
+    sock.close()
+    return port
+
+
+def _wait_cdp_port(port: int, *, timeout: float = 20.0) -> bool:
+    import socket
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.4):
+                return True
+        except OSError:
+            time.sleep(0.2)
+    return False
+
+
+def _cdp_page_cookies(port: int, page_url: str) -> dict[str, str]:
+    """Cookie đang nằm trong Chrome (kể cả HttpOnly). Không gọi Page.navigate."""
+    import json
+    import urllib.request
+
+    try:
+        import websocket
+    except ImportError:
+        return {}
+    parsed = urlparse(page_url)
+    host = parsed.netloc
+    origin = f"{parsed.scheme}://{host}/" if host else page_url
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=5) as resp:
+            targets = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return {}
+    ws_url = ""
+    fallback = ""
+    for target in targets if isinstance(targets, list) else []:
+        if target.get("type") != "page":
+            continue
+        candidate = str(target.get("webSocketDebuggerUrl") or "")
+        if not candidate:
+            continue
+        if not fallback:
+            fallback = candidate
+        if host and host in str(target.get("url") or ""):
+            ws_url = candidate
+            break
+    ws_url = ws_url or fallback
+    if not ws_url:
+        return {}
+    ws = websocket.create_connection(ws_url, timeout=8, suppress_origin=True)
+    try:
+        urls = [origin]
+        if page_url and page_url not in urls:
+            urls.append(page_url)
+        ws.send(json.dumps({
+            "id": 1,
+            "method": "Network.getCookies",
+            "params": {"urls": urls},
+        }))
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            msg = json.loads(ws.recv())
+            if msg.get("id") != 1:
+                continue
+            out: dict[str, str] = {}
+            for cookie in (msg.get("result") or {}).get("cookies") or []:
+                name = str(cookie.get("name") or "").strip()
+                value = str(cookie.get("value") or "").strip()
+                if name and value:
+                    out[name] = value
+            return out
+    except Exception:
+        return {}
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
+    return {}
+
+
 def _launch_google_chrome_cms(
     profile_dir: Path,
     proxy: str,
     url: str,
+    *,
+    cdp_port: int = 0,
 ) -> subprocess.Popen[Any]:
-    """Mở đúng như CMS — không thêm flag lạ (tránh site lỗi baseInfo)."""
+    """Mở đúng như CMS. Cổng debug chỉ để đọc cookie, không Playwright."""
     from xoso66_chrome_profile import launch_cms_chrome
 
-    _log("Google Chrome CMS (không CDP, không a11y-force)")
-    return launch_cms_chrome(profile_dir, proxy, urls=[url], cdp_port=0)
+    port = int(cdp_port or 0)
+    if port > 0:
+        _log(f"Google Chrome CMS + đọc cookie local :{port} (không Playwright)")
+    else:
+        _log("Google Chrome CMS (không CDP, không a11y-force)")
+    return launch_cms_chrome(
+        profile_dir, proxy, urls=[url], cdp_port=port, cdp_minimal=True
+    )
 
 
 def _window_pid(win: Any) -> int:
@@ -1362,7 +1461,7 @@ def login_via_chrome_ui(
         profile_is_locked,
         warm_session_from_profile,
     )
-    from xoso66_session import persist_session, strip_identity_cookies
+    from xoso66_session import get_user_balance, persist_session, strip_identity_cookies
 
     proxy = str(session.get("proxy") or "").strip()
     if not proxy:
@@ -1382,7 +1481,7 @@ def login_via_chrome_ui(
     host = urlparse(base).netloc or urlparse(default_base_url()).netloc
     meta: dict[str, Any] = {
         "method": "chrome_ui_login",
-        "cdp": False,
+        "cdp": "cookies_only",
         "url": url,
         "force_fill": force_fill,
     }
@@ -1390,16 +1489,22 @@ def login_via_chrome_ui(
     meta["php_before"] = (old_php[:12] + "…") if old_php else ""
     _log(f"Mở Chrome CMS + URL trực tiếp: {url}")
     proc: subprocess.Popen[Any] | None = None
+    close_chrome = True
     try:
         mark_chrome_clean_exit(profile_dir)
         had_cf = profile_has_cf_clearance(profile_dir)
         meta["had_cf_before_launch"] = had_cf
 
-        proc = _launch_google_chrome_cms(profile_dir, proxy, url)
+        cdp_port = _free_tcp_port()
+        proc = _launch_google_chrome_cms(profile_dir, proxy, url, cdp_port=cdp_port)
         meta["pid"] = proc.pid
+        meta["cdp_port"] = cdp_port
         meta["skipped_cf_wait"] = True
         meta["launch_mode"] = "direct_url"
-        time.sleep(0.6)
+        if not _wait_cdp_port(cdp_port, timeout=15):
+            _log("Cổng đọc cookie chưa mở — sẽ chỉ đọc file Cookies")
+            cdp_port = 0
+        time.sleep(0.4)
 
         ui = ui_login_in_chrome(
             username=username,
@@ -1413,48 +1518,83 @@ def login_via_chrome_ui(
         if not ui.get("ok"):
             return {**meta, "ok": False, "error": ui.get("error") or "ui_login_fail", **ui}
 
-        # Cho Chrome flush cookie; đóng nhẹ (không kill) rồi mới đọc disk.
+        # Chrome còn mở: đọc PHPSESSID + cf_clearance, getBalance xong mới đóng.
         session["base_url"] = base
-        _log("Login UI OK — chờ 4s flush cookie rồi đóng Chrome nhẹ…")
-        time.sleep(4.0)
-    finally:
-        mark_chrome_clean_exit(profile_dir)
-        close_chrome_gracefully(proc, profile_dir, wait_unlock_sec=15)
-        mark_chrome_clean_exit(profile_dir)
+        close_chrome = False
+        _log("Login UI OK — Chrome vẫn mở, đọc PHP/CF trong bộ nhớ rồi kiểm tra số dư…")
+        last_msg = ""
+        has_php = False
+        has_cf = False
+        for attempt in range(1, 13):
+            source = "disk"
+            live: dict[str, str] = {}
+            if cdp_port:
+                live = _cdp_page_cookies(cdp_port, url)
+                if live.get("PHPSESSID"):
+                    source = "memory"
+            if not live.get("PHPSESSID"):
+                strip_identity_cookies(session)
+                warm_session_from_profile(
+                    session, profile_dir, host=host, allow_identity=True
+                )
+                live = dict(session.get("cookies") or {})
+                source = "disk"
+            else:
+                session["cookies"] = dict(live)
+            cookies = session.get("cookies") or {}
+            has_php = bool(cookies.get("PHPSESSID"))
+            has_cf = bool(cookies.get("cf_clearance"))
+            _log(
+                f"Chrome còn mở try={attempt}/12 "
+                f"PHPSESSID={has_php} cf_clearance={has_cf} via={source}"
+            )
+            if not (has_php and has_cf):
+                last_msg = (
+                    "thiếu PHPSESSID" if not has_php else "thiếu cf_clearance"
+                )
+                time.sleep(3.0)
+                continue
+            bal = get_user_balance(session, refresh=True, timeout_sec=25)
+            if bal.get("ok"):
+                balance = bal.get("balance")
+                _log(f"Balance OK {balance} — đóng Chrome")
+                try:
+                    persist_session(str(session.get("id") or ""), session)
+                except Exception:
+                    pass
+                close_chrome = True
+                return {
+                    **meta,
+                    "ok": True,
+                    "verified": True,
+                    "balance": balance,
+                    "ui": ui,
+                    "has_php": True,
+                    "has_cf": True,
+                }
+            raw = bal.get("raw") if isinstance(bal.get("raw"), dict) else {}
+            last_msg = str(
+                raw.get("msg") or bal.get("reason") or bal.get("http_status") or "session chưa hợp lệ"
+            )
+            _log(f"getBalance chưa OK (try {attempt}/12): {last_msg}")
+            time.sleep(3.0)
 
-    # Xóa PHPSESSID cũ trong session JSON — tránh getBalance bằng phiên hết hạn.
-    strip_identity_cookies(session)
-    warm = warm_session_from_profile(
-        session, profile_dir, host=host, allow_identity=True
-    )
-    new_php = str((session.get("cookies") or {}).get("PHPSESSID") or "")
-    meta["warm_after_close"] = {
-        "names": [n for n in (warm.get("cookie_names") or []) if not str(n).startswith("_")],
-        "has_php": bool(new_php),
-        "php_prefix": (new_php[:12] + "…") if new_php else "",
-        "php_changed": bool(new_php) and new_php != old_php,
-    }
-    _log(
-        f"Cookie sau đóng Chrome: PHPSESSID={bool(new_php)} "
-        f"changed={meta['warm_after_close']['php_changed']} "
-        f"keys={meta['warm_after_close']['names']}"
-    )
-    if not new_php:
         return {
             **meta,
             "ok": False,
-            "error": "missing_phpsessid_after_login",
-            "msg": (
-                "Chrome không ghi PHPSESSID sau login (UI có thể báo OK sớm / cookie chưa flush). "
-                "Thử lại hoặc login tay rồi sync."
-            ),
+            "verified": False,
+            "chrome_left_open": True,
+            "error": "getBalance_fail" if has_php and has_cf else "missing_cookie_while_open",
+            "msg": last_msg or "chưa đọc được PHPSESSID và cf_clearance",
             "ui": ui,
+            "has_php": has_php,
+            "has_cf": has_cf,
         }
-    try:
-        persist_session(str(session.get("id") or ""), session)
-    except Exception:
-        pass
-    return {**meta, "ok": True, "ui": ui}
+    finally:
+        if close_chrome:
+            mark_chrome_clean_exit(profile_dir)
+            close_chrome_gracefully(proc, profile_dir, wait_unlock_sec=15)
+            mark_chrome_clean_exit(profile_dir)
 
 
 def login_via_chrome_extension(
@@ -1539,11 +1679,29 @@ def login_account_via_extension(account_id: str, *, timeout_sec: int = 180) -> d
             timeout_sec=timeout_sec,
             force_fill=force_fill,
         )
+        if ext.get("verified"):
+            row2 = get_account(aid) or {}
+            if str(row2.get("status") or "").strip() != STATUS_DANG_CHOI:
+                set_account_status(
+                    aid, STATUS_DANG_CHOI, reason="Login Chrome UI (không CDP)"
+                )
+            return {
+                "ok": True,
+                "account_id": aid,
+                "balance": ext.get("balance"),
+                "status": (get_account(aid) or {}).get("status"),
+                "method": "chrome_ui_login",
+                "ui_via": (ext.get("ui") or {}).get("via"),
+            }
         if not ext.get("ok"):
             return {
                 "ok": False,
                 "account_id": aid,
                 "error": ext.get("error") or ext.get("msg") or "login_ui_fail",
+                "msg": ext.get("msg"),
+                "ui_ok": bool((ext.get("ui") or {}).get("ok")) or bool(ext.get("chrome_left_open")),
+                "chrome_left_open": bool(ext.get("chrome_left_open")),
+                "ui_via": (ext.get("ui") or {}).get("via"),
                 "ext": {k: v for k, v in ext.items() if k not in ("response",)},
             }
         time.sleep(0.8)
@@ -1592,7 +1750,9 @@ def login_account_via_extension(account_id: str, *, timeout_sec: int = 180) -> d
                     set_account_status(
                         aid, STATUS_DANG_CHOI, reason="Login Chrome UI (sync retry)"
                     )
-                _log(f"Sync OK sau retry (lần {i}) — không cần mở Chrome lại")
+                if out.get("chrome_left_open"):
+                    terminate_chrome_profile(profile_dir)
+                _log(f"Sync OK sau retry (lần {i}) — đóng Chrome")
                 return {
                     "ok": True,
                     "account_id": aid,
