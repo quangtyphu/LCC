@@ -150,6 +150,7 @@ USER_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("game_worker", "ws_pool_resync_after_begin_sec"),
     ("game_worker", "ws_pool_resync_min_before_end_sec"),
     ("auto_bet", "enabled"),
+    ("auto_bet", "quiet_hours"),
     ("auto_bet", "quiet_hours_enabled"),
     ("auto_bet", "quiet_hours_start_hour"),
     ("auto_bet", "quiet_hours_end_hour"),
