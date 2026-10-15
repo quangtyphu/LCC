@@ -20,7 +20,6 @@ Chỉnh trong JSON:
   auto_bet.quiet_hours.enabled  (true = không đặt cược trong khung giờ VN)
   auto_bet.quiet_hours.start_hour  (mặc định 2 — inclusive)
   auto_bet.quiet_hours.end_hour  (mặc định 8 — exclusive; 02h–08h = từ 02:00 đến trước 08:00)
-  auto_bet.quiet_hours_enabled / quiet_hours_start_hour / quiet_hours_end_hour  (cách ghi phẳng, tương đương)
   auto_bet.side_total_by_jackpot_enabled  (0 = cố định side_total_low_vnd; 1 = cược tăng theo bậc hũ)
   auto_bet.min_jackpot_vnd  (mốc bắt đầu chơi + mốc cược base)
   auto_bet.jackpot_side_step_vnd  (hũ tăng bao nhiêu thì lên 1 bậc cược; VD 500000000)
@@ -151,9 +150,6 @@ USER_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("game_worker", "ws_pool_resync_min_before_end_sec"),
     ("auto_bet", "enabled"),
     ("auto_bet", "quiet_hours"),
-    ("auto_bet", "quiet_hours_enabled"),
-    ("auto_bet", "quiet_hours_start_hour"),
-    ("auto_bet", "quiet_hours_end_hour"),
     ("auto_bet", "side_total_by_jackpot_enabled"),
     ("auto_bet", "min_jackpot_vnd"),
     ("auto_bet", "jackpot_side_step_vnd"),

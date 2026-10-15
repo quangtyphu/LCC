@@ -38,21 +38,12 @@ def vn_hour_in_quiet_range(hour: int, start_hour: int, end_hour: int) -> bool:
 
 
 def auto_bet_quiet_hours_window(acfg: dict) -> tuple[bool, int, int]:
-    """
-    Đọc auto_bet.quiet_hours {enabled, start_hour, end_hour}
-    hoặc quiet_hours_enabled / quiet_hours_start_hour / quiet_hours_end_hour.
-    """
+    """Đọc auto_bet.quiet_hours {enabled, start_hour, end_hour}."""
     qh = acfg.get("quiet_hours")
-    if isinstance(qh, dict) and qh.get("enabled") is not None:
-        if not qh.get("enabled"):
-            return False, 0, 0
-        start = int(qh.get("start_hour", qh.get("hour_start", 2)))
-        end = int(qh.get("end_hour", qh.get("hour_end", 8)))
-        return True, start, end
-    if not acfg.get("quiet_hours_enabled"):
+    if not isinstance(qh, dict) or not qh.get("enabled"):
         return False, 0, 0
-    start = int(acfg.get("quiet_hours_start_hour", 2))
-    end = int(acfg.get("quiet_hours_end_hour", 8))
+    start = int(qh.get("start_hour", qh.get("hour_start", 2)))
+    end = int(qh.get("end_hour", qh.get("hour_end", 8)))
     return True, start, end
 
 
