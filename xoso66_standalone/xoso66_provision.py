@@ -259,7 +259,7 @@ def _provision_fund_password(p: dict[str, Any]) -> dict[str, Any]:
         fp = set_fund_password_for_account(
             account_id,
             p["fund_password"],
-            use_playwright=True,
+            use_playwright=False,
         )
         if fp.get("ok"):
             update_account(
@@ -332,7 +332,7 @@ def _provision_bank_bind(p: dict[str, Any]) -> dict[str, Any]:
             truename=p["account_holder"],
             fund_password=p["fund_password"],
             branch=branch,
-            use_playwright=True,
+            use_playwright=False,
         )
         if bk.get("ok"):
             cards = bk.get("linked_cards") or []

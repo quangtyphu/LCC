@@ -1,5 +1,7 @@
 """
-01:00 (Asia/Ho_Chi_Minh) mỗi ngày: ép WITHDRAW_THRESHOLD_MIN trong config.json → 310000.
+01:00 (Asia/Ho_Chi_Minh) mỗi ngày:
+- WITHDRAW_THRESHOLD_MIN → 310000
+- ASSIGN_STRATEGY → 3
 """
 
 import threading
@@ -12,8 +14,16 @@ from constants import load_config, save_config
 
 _TZ = pytz.timezone("Asia/Ho_Chi_Minh")
 _TARGET = 310000
+_STRATEGY = 3
 _CHECK_TIMES = ("01:00", "01:01")
 _last_run_date = ""
+
+
+def _cfg_int(config: dict, key: str, default: int) -> int:
+    try:
+        return int(config.get(key, default) or default)
+    except (TypeError, ValueError):
+        return default
 
 
 def _apply_reset() -> bool:
@@ -23,15 +33,23 @@ def _apply_reset() -> bool:
             print("[WITHDRAW-THRESHOLD] ❌ Không đọc được config", flush=True)
             return False
 
-        current = int(config.get("WITHDRAW_THRESHOLD_MIN", _TARGET) or _TARGET)
-        if current == _TARGET:
+        changed: list[str] = []
+        current = _cfg_int(config, "WITHDRAW_THRESHOLD_MIN", _TARGET)
+        if current != _TARGET:
+            config["WITHDRAW_THRESHOLD_MIN"] = _TARGET
+            changed.append(f"WITHDRAW_THRESHOLD_MIN: {current:,} → {_TARGET:,}")
+
+        current_strategy = _cfg_int(config, "ASSIGN_STRATEGY", _STRATEGY)
+        if current_strategy != _STRATEGY:
+            config["ASSIGN_STRATEGY"] = _STRATEGY
+            changed.append(f"ASSIGN_STRATEGY: {current_strategy} → {_STRATEGY}")
+
+        if not changed:
             return True
 
-        config["WITHDRAW_THRESHOLD_MIN"] = _TARGET
         if save_config(config):
             print(
-                f"[WITHDRAW-THRESHOLD] ✅ 01:00 — WITHDRAW_THRESHOLD_MIN: "
-                f"{current:,} → {_TARGET:,}",
+                f"[WITHDRAW-THRESHOLD] ✅ 01:00 — {'; '.join(changed)}",
                 flush=True,
             )
             return True
@@ -48,7 +66,8 @@ def start_withdraw_threshold_reset_scheduler() -> None:
     def _loop():
         global _last_run_date
         print(
-            "[WITHDRAW-THRESHOLD] 🕐 01:00 VN — ép WITHDRAW_THRESHOLD_MIN → 310000",
+            "[WITHDRAW-THRESHOLD] 🕐 01:00 VN — WITHDRAW_THRESHOLD_MIN → 310000, "
+            "ASSIGN_STRATEGY → 3",
             flush=True,
         )
         while True:

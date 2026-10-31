@@ -314,6 +314,9 @@ def _init_db_impl() -> None:
         from xoso66_auto_mission_reward import init_mission_claim_queue
 
         init_mission_claim_queue(conn)
+        from xoso66_chat_lixi_store import init_chat_lixi_table
+
+        init_chat_lixi_table(conn)
 
 
 def init_db() -> None:

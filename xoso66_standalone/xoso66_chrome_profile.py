@@ -457,11 +457,38 @@ def close_chrome_gracefully(
     profile_dir: Path,
     *,
     wait_unlock_sec: float = 12.0,
+    force: bool = False,
 ) -> None:
     """
-    Đóng Chrome nhẹ (taskkill /IM không dùng) — chờ process thoát + unlock profile
-    để cookie (kể cả PHPSESSID) kịp flush xuống disk.
+    Đóng Chrome. force=False: WM_CLOSE rồi chờ cookie flush xuống disk.
+    force=True: taskkill /F ngay — dùng khi PHP/CF và số dư đã đọc xong.
     """
+    if force:
+        if proc is not None and proc.poll() is None:
+            try:
+                if sys.platform == "win32" and proc.pid:
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(proc.pid), "/T"],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                else:
+                    proc.kill()
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            deadline = time.time() + 2.0
+            while time.time() < deadline and proc.poll() is None:
+                time.sleep(0.1)
+        unlock_deadline = time.time() + min(2.0, float(wait_unlock_sec))
+        while time.time() < unlock_deadline:
+            if not profile_is_locked(profile_dir):
+                return
+            time.sleep(0.15)
+        return
+
     if proc is not None and proc.poll() is None:
         # Windows: gửi WM_CLOSE tới process tree qua taskkill /T không -F trước.
         try:

@@ -187,8 +187,13 @@ def build_common_headers(session: dict, *, form_token: str, content_type: str) -
         "x-device": str(session.get("x_device") or extra.get("x-device") or "pc"),
         "x-lang": "vi",
         "x-theme": "dark",
-        "x-app-platform": str(
-            session.get("x_app_platform") or extra.get("x-app-platform") or "undefined"
+        # APP native gửi x-app-platform rỗng — phân biệt None (chưa set) vs "".
+        "x-app-platform": (
+            str(session["x_app_platform"])
+            if "x_app_platform" in session
+            else str(extra["x-app-platform"])
+            if "x-app-platform" in extra
+            else "undefined"
         ),
         "cookie": _cookie_header(session),
         "form-token": form_token,
@@ -198,9 +203,18 @@ def build_common_headers(session: dict, *, form_token: str, content_type: str) -
         "cf-pass": extra.get("cf-pass") or session.get("cf_pass") or "",
     }
     for k, v in extra.items():
-        if v and k.lower() not in ("cookie",):
-            h[k] = str(v)
-    return {k: v for k, v in h.items() if v}
+        if k.lower() == "cookie":
+            continue
+        # Cho phép "" (vd. x-app-platform APP); bỏ None.
+        if v is None:
+            continue
+        h[k] = str(v)
+    # Giữ header rỗng có chủ đích (x-app-platform); bỏ key falsy khác.
+    out: dict[str, str] = {}
+    for k, v in h.items():
+        if v or k.lower() in ("x-app-platform", "x-app-version", "x-app-build-version"):
+            out[k] = v
+    return out
 
 
 def build_request_headers(session: dict, *, cek_k: str, form_token: str) -> dict[str, str]:
@@ -519,7 +533,8 @@ def fetch_cek_p(session: dict) -> str:
         },
         timeout=20,
     )
-    cek_p = r.headers.get("cek-p") or r.headers.get("Cek-P") or ""
+    apply_response_tokens(session, r.headers)
+    cek_p = str(session.get("cek_p") or r.headers.get("cek-p") or r.headers.get("Cek-P") or "")
     if not cek_p:
         raise ValueError(
             "Khong lay duoc cek-p. Them 'cek_p' vao session (copy response header sau login/refresh trang)."
@@ -753,21 +768,15 @@ def deposit_order_playwright(session: dict, plain: dict) -> dict[str, Any]:
     except ImportError:
         raise RuntimeError("pip install playwright && playwright install chromium")
 
+    from xoso66_captcha_solver import vue_store_unavailable_message, wait_for_vue_store
     from xoso66_session import merge_playwright_cookies
     from xoso66_game_domain import resolve_base_url as _rbu
     _base = _rbu(session)
 
-    extra = {"accept": "application/json", "x-lang": "vi", "x-device": "pc"}
-    for k in ("c-a-i", "cf-auth-token", "cf-con-s", "cf-pass"):
-        v = (session.get("headers") or {}).get(k)
-        if v:
-            extra[k] = v
-    ft = plain.get("form_token") or session.get("form_token")
-    if ft:
-        extra["form-token"] = ft
-
+    # Không gắn Accept: application/json lên context. Playwright gửi header này
+    # cho cả GET /home/ nên server không trả HTML SPA — #app = null, đọc __vue__ văng.
     js: Any = None
-    with playwright_browser(session, base_url=_base, headless=True, extra_http_headers=extra) as (
+    with playwright_browser(session, base_url=_base, headless=True) as (
         _p,
         _browser,
         context,
@@ -778,13 +787,39 @@ def deposit_order_playwright(session: dict, plain: dict) -> dict[str, Any]:
             page.wait_for_load_state("networkidle", timeout=20_000)
         except Exception:
             page.wait_for_timeout(6_000)
-        page.wait_for_timeout(2_000)
+        vue_wait = wait_for_vue_store(page, timeout_ms=30_000)
+        if not vue_wait.get("ok"):
+            return {
+                "ok": False,
+                "error": vue_store_unavailable_message(vue_wait),
+                "raw": vue_wait,
+                "method": "playwright",
+            }
         for action in _DEPOSIT_PLAYWRIGHT_ACTIONS:
             js = page.evaluate(
                 """async ([action, body]) => {
-                    const vm = document.querySelector('#app').__vue__;
-                    try { return await vm.$store.dispatch(action, body); }
-                    catch (e) { return { code: 0, msg: String(e) }; }
+                    const app = document.querySelector('#app');
+                    const vm = app && app.__vue__;
+                    if (!vm || !vm.$store) return { code: 0, msg: 'no_vue_store' };
+                    const payload = Object.assign({}, body || {});
+                    const live = (vm.$store.getters && vm.$store.getters.fromToken) || '';
+                    if (live) payload.form_token = String(live);
+                    const describe = (e) => {
+                        if (e == null) return { code: 0, msg: 'dispatch_error' };
+                        if (typeof e === 'string') return { code: 0, msg: e };
+                        const code = e.code || (e.data && e.data.code) || 0;
+                        let msg = e.msg || e.message || '';
+                        if (!msg) {
+                            try { msg = JSON.stringify(e); } catch (err) { msg = String(e); }
+                        }
+                        return { code: code || 0, msg: String(msg), data: e.data || null };
+                    };
+                    try {
+                        const r = await vm.$store.dispatch(action, payload);
+                        return r && typeof r === 'object' ? r : { code: 0, msg: String(r) };
+                    } catch (e) {
+                        return describe(e);
+                    }
                 }""",
                 [action, plain],
             )
@@ -1693,10 +1728,52 @@ def create_deposit_order(
     method = "http"
     parsed = parse_deposit_response(decrypted)
     raw_code = (parsed.get("raw") or {}).get("code")
+    pw_error = ""
+    if not parsed.get("success") and raw_code == 10058:
+        from xoso66_accounts_db import username_for_log
+
+        user = username_for_log(account_id)
+        print(
+            f"[NẠP] {user}: depositorder HTTP code=10058 — xóa cek_p cũ, lấy khóa mới rồi gọi lại",
+            flush=True,
+        )
+        session.pop("cek_p", None)
+        session.pop("aes_session_key", None)
+        try:
+            fetch_cek_p(session)
+            plain["form_token"] = get_form_token(session)
+            status, decrypted, resp_headers = post_encrypted(
+                session,
+                DEPOSIT_ORDER_PATH,
+                plain,
+            )
+            if status == 200 and not (
+                isinstance(decrypted, dict) and decrypted.get("_decrypt_error")
+            ):
+                parsed = parse_deposit_response(decrypted)
+                raw_code = (parsed.get("raw") or {}).get("code")
+                if parsed.get("success"):
+                    print(f"[NẠP] {user}: gọi lại API sau khóa mới — OK", flush=True)
+        except Exception as e:
+            print(f"[NẠP] {user}: lấy khóa mới lỗi: {e}", flush=True)
     if not parsed.get("success") and raw_code in _HTTP_DEPOSIT_FALLBACK_CODES:
+        from xoso66_accounts_db import username_for_log
+
+        user = username_for_log(account_id)
+        http_msg = ""
+        http_raw = parsed.get("raw") if isinstance(parsed.get("raw"), dict) else {}
+        if isinstance(http_raw, dict):
+            http_msg = str(http_raw.get("msg") or "").strip()
+        print(
+            f"[NẠP] {user}: depositorder HTTP code={raw_code}"
+            + (f" ({http_msg})" if http_msg else "")
+            + " — mở trang lấy lệnh qua Vue",
+            flush=True,
+        )
         pw = deposit_order_playwright(session, plain)
         method = pw.get("method", "playwright")
-        parsed = parse_deposit_response(pw.get("raw") or pw)
+        pw_error = str(pw.get("error") or "").strip()
+        parsed = parse_deposit_response(pw.get("raw") if pw.get("raw") is not None else pw)
 
     trade_no = parsed.get("trade_no")
     pay_url = parsed.get("pay_url")
@@ -1757,7 +1834,12 @@ def create_deposit_order(
 
     if not out["ok"]:
         raw = parsed.get("raw") or {}
-        out["error"] = raw.get("msg") or "Tạo đơn thất bại — kiểm tra decrypt / payload / form_token"
+        raw_msg = raw.get("msg") if isinstance(raw, dict) else ""
+        out["error"] = (
+            str(raw_msg or "").strip()
+            or pw_error
+            or "Tạo đơn thất bại — kiểm tra decrypt / payload / form_token"
+        )
     else:
         try:
             # Chỉ ghi 1 acc — save_sessions cả map = 123 UPDATE (~13–20s).

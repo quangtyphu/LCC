@@ -858,24 +858,39 @@ def post_encrypted(
     from xoso66_secure_headers import (
         CRYPTO_VERSION_HEADER,
         CRYPTO_VERSION_V2,
+        CRYPTO_VERSION_V3,
         generate_secure_headers,
+        generate_secure_headers_v3,
         pack_v2_ciphertext,
+        pack_v3_ciphertext,
         unpack_v2_ciphertext,
     )
 
     if not crypto_available():
         raise RuntimeError("pip install pycryptodome")
 
+    crypto_ver = str(
+        session.get("crypto_version")
+        or os.environ.get("XOSO66_CRYPTO_VERSION")
+        or CRYPTO_VERSION_V2
+    ).strip().lower()
+    use_v3 = crypto_ver == CRYPTO_VERSION_V3
+
     form_token = get_form_token(session)
     encrypted_body, cek_k, aes_key = encrypt_deposit_body(session, plain)
     headers = build_request_headers(session, cek_k=cek_k, form_token=form_token)
     url = f"{resolve_base_url(session)}{path}"
-    headers.update(
-        generate_secure_headers(
-            url,
-            str(session.get("user_agent") or DEFAULT_UA),
-        )
-    )
+    ua = str(session.get("user_agent") or DEFAULT_UA)
+    if use_v3:
+        headers.update(generate_secure_headers_v3(url, ua))
+        # APP v3: double-AES trên JSON plaintext (không pack MD5 v2)
+        import json as _json
+
+        plain_json = _json.dumps(plain, separators=(",", ":"), ensure_ascii=False)
+        body_data = pack_v3_ciphertext(plain_json, aes_key)
+    else:
+        headers.update(generate_secure_headers(url, ua))
+        body_data = pack_v2_ciphertext(encrypted_body)
     # requests bị Cloudflare HTTP 475. http= giữ cho caller cũ, transport luôn curl_cffi.
     _ = http
     r = site_http_post(
@@ -883,7 +898,7 @@ def post_encrypted(
         url,
         headers,
         45,
-        data=pack_v2_ciphertext(encrypted_body),
+        data=body_data,
     )
     text = r.text
     if text.startswith('"') and text.endswith('"'):
@@ -903,7 +918,7 @@ def post_encrypted(
                     or r.headers.get(CRYPTO_VERSION_HEADER.title())
                     or headers.get(CRYPTO_VERSION_HEADER)
                 )
-                if response_version == CRYPTO_VERSION_V2:
+                if response_version in (CRYPTO_VERSION_V2, CRYPTO_VERSION_V3):
                     text = unpack_v2_ciphertext(text)
                 decrypted = decrypt_deposit_body(session, text, aes_key, dict(r.headers))
         except Exception as e:

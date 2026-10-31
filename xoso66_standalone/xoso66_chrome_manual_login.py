@@ -173,6 +173,8 @@ def sync_after_manual_login(account_id: str, profile_dir: Path) -> dict:
         bal = get_user_balance(sess, refresh=True)
         last_bal = bal if isinstance(bal, dict) else {}
         if last_bal.get("ok"):
+            sess.pop("cek_p", None)
+            sess.pop("aes_session_key", None)
             persist_session(aid, sess)
             refresh_account_balance_to_db(aid, sess, refresh=True)
             row = get_account(aid) or {}

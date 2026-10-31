@@ -501,6 +501,14 @@ def main() -> int:
     elif not quiet:
         print("[AUTO-LIXI] TẮT (auto_red_packet.enabled=false)", flush=True)
 
+    # Lì xì chat — luôn start worker; enabled đọc mỗi tick (CMS toggle).
+    from xoso66_auto_chat_lixi import auto_chat_lixi_enabled, start_auto_chat_lixi_thread
+
+    acl_t = start_auto_chat_lixi_thread(quiet=quiet)
+    _track_thread(acl_t)
+    if not quiet and not auto_chat_lixi_enabled():
+        print("[AUTO-CHAT-LIXI] Worker chạy nền — đang TẮT (auto_chat_lixi.enabled=false)", flush=True)
+
     dcr = cfg.get("daily_bet_cap_reset")
     if isinstance(dcr, dict) and dcr.get("enabled", True):
         from xoso66_daily_bet_cap_reset import start_daily_bet_cap_reset_thread

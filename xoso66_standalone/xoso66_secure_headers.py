@@ -13,6 +13,7 @@ _K_B = "DciXrMfN44tr9EItTzrW1H"
 _SEED = "A1b3D5"
 CRYPTO_VERSION_HEADER = "cf-f-v"
 CRYPTO_VERSION_V2 = "v2"
+CRYPTO_VERSION_V3 = "v3"
 
 
 def _md5(value: str) -> str:
@@ -83,6 +84,44 @@ def generate_secure_headers(
         "cf-con-s": cf_con_s,
         CRYPTO_VERSION_HEADER: CRYPTO_VERSION_V2,
     }
+
+
+def generate_secure_headers_v3(
+    url: str,
+    user_agent: str,
+    *,
+    now_ms: int | None = None,
+) -> dict[str, str]:
+    """Header APP mobile — cùng thuật toán ký, ``cf-f-v: v3``."""
+    headers = generate_secure_headers(url, user_agent, now_ms=now_ms)
+    headers[CRYPTO_VERSION_HEADER] = CRYPTO_VERSION_V3
+    return headers
+
+
+def _aes_ecb_b64(plain_text: str, key16: str) -> str:
+    """AES-128-ECB PKCS7 → Base64 (giống CryptoJS ECB + ciphertext Base64)."""
+    from Crypto.Cipher import AES
+    from Crypto.Util.Padding import pad
+
+    key = key16.encode("utf-8")[:16]
+    raw = plain_text.encode("utf-8")
+    cipher = AES.new(key, AES.MODE_ECB)
+    return base64.b64encode(cipher.encrypt(pad(raw, 16))).decode("ascii")
+
+
+def _v3_derived_key(aes_key: str) -> str:
+    """``MD5(aes_key).toString().split('').reverse().join('').slice(0, 16)``."""
+    return _md5(aes_key)[::-1][:16]
+
+
+def pack_v3_ciphertext(plain_json: str, aes_key: str) -> str:
+    """
+    APP ``cf-f-v: v3`` — mã hóa 2 lớp AES (webcrack ``_0x9288eb4f``):
+      1) AES(plain, reverse(md5(aes_key))[:16])
+      2) AES(result, aes_key)
+    """
+    mid = _aes_ecb_b64(str(plain_json), _v3_derived_key(aes_key))
+    return _aes_ecb_b64(mid, aes_key)
 
 
 def unpack_v2_ciphertext(value: str) -> str:

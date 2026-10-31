@@ -692,7 +692,7 @@ if __name__ == "__main__":
     start_withdraw_threshold_reset_scheduler()
     # 02:00 VN: bật JACKPOT_NIGHT_EXTEND.ENABLED
     start_jackpot_night_enable_scheduler()
-    # 09:00 VN: tắt JACKPOT_NIGHT_EXTEND + WITHDRAW_THRESHOLD_MIN → 510000
+    # 09:00 VN: tắt JACKPOT_NIGHT_EXTEND + WITHDRAW_THRESHOLD_MIN → 510000 + ASSIGN_STRATEGY → 10
     start_jackpot_morning_reset_scheduler()
     start_device_balance_overflow_scheduler()
     try:

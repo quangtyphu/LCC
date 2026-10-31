@@ -25,7 +25,7 @@ DEPOSIT_CACHE_FILE = _os.path.join(_DEP_DIR, "deposit_pending_cache.json")
 DEPOSIT_CACHE_LOCK_FILE = _os.path.join(_DEP_DIR, "deposit_pending_cache.json.lock")
 DEPOSIT_SENT_FILE = _os.path.join(_DEP_DIR, "deposit_sent_to_banking.json")
 DEPOSIT_CACHE_DELAY_SECONDS = 15 * 60  # 15 phút = 900 giây
-DEPOSIT_QUEUE_INTERVAL_SECONDS = 60  # Khoảng cách giữa 2 lệnh nạp liên tục
+DEPOSIT_QUEUE_INTERVAL_SECONDS = 10  # Khoảng cách giữa 2 lệnh nạp liên tục
 PERIODIC_DEPOSIT_CHECK_SECONDS = 60  # Chu kỳ quét auto nạp (Hết Tiền / MAX_ACTIVE)
 # Trước auto nạp: gọi rút thử; nếu [-10] khóa profile → status Khoá, bỏ nạp
 DEPOSIT_PRE_WITHDRAW_PROBE_AMOUNT_VND = 2_000_000

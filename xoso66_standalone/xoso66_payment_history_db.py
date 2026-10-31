@@ -180,10 +180,10 @@ def _migrate_payment_orders_username_conn(conn: sqlite3.Connection) -> None:
 
 
 def _repair_stuck_withdraw_submissions_conn(conn: sqlite3.Connection) -> int:
-    """resolved=0 nhưng payment_orders đã Hoàn tất (status=1) → đánh resolved.
+    """resolved=0 nhưng payment_orders đã có KQ cuối → đánh resolved.
 
-    Xảy ra khi sync Hoàn tất thấy payment_orders.submitted_at_ms đã có
-    (ghi lúc gửi lệnh) nên bỏ qua _resolve_withdraw_submission.
+    KQ cuối: Hoàn tất (status=1) hoặc rút thất bại
+    «Trạng thái không thành công» (status=3). Không cộng device khi thất bại.
     """
     cur = conn.execute(
         """
@@ -198,7 +198,11 @@ def _repair_stuck_withdraw_submissions_conn(conn: sqlite3.Connection) -> int:
           AND EXISTS (
             SELECT 1 FROM payment_orders po
             WHERE po.serial_no = withdraw_submissions.serial_no
-              AND po.status = 1
+              AND (
+                po.status = 1
+                OR po.status = 3
+                OR po.status_formatted LIKE '%không thành công%'
+              )
           )
         """
     )
@@ -567,8 +571,22 @@ def save_withdraw_confirm_poll_attempt(serial_no: str, poll_attempt: int) -> boo
 
 
 SITE_STATUS_SUCCESS = 1
+# Site: «Trạng thái không thành công» — rút thất bại, đã có kết quả.
+SITE_STATUS_WITHDRAW_FAILED = 3
 ORDER_TYPE_DEPOSIT = 1
 ORDER_TYPE_WITHDRAW = 2
+
+
+def is_withdraw_terminal_failure(status: Any, status_formatted: str = "") -> bool:
+    """True nếu lệnh rút đã thất bại và có KQ cuối (không còn chờ Hoàn tất)."""
+    try:
+        st = int(status or 0)
+    except (TypeError, ValueError):
+        st = 0
+    if st == SITE_STATUS_WITHDRAW_FAILED:
+        return True
+    sf = str(status_formatted or "").strip().lower()
+    return "không thành công" in sf or "khong thanh cong" in sf
 
 
 def payment_order_exists(serial_no: str) -> bool:
@@ -728,6 +746,49 @@ def sync_withdraw_successes_from_list(
     }
 
 
+def resolve_terminal_failed_withdraw_submission(
+    account_id: str,
+    item: dict[str, Any],
+) -> bool:
+    """Rút «Trạng thái không thành công» → resolved=1. Không cộng tiền device."""
+    if not is_withdraw_terminal_failure(
+        item.get("status"), str(item.get("status_formatted") or "")
+    ):
+        return False
+    serial = str(item.get("serial_no") or "").strip()
+    if not serial:
+        return False
+    try:
+        amt = int(float(item.get("true_amount") or item.get("amount") or 0))
+    except (TypeError, ValueError):
+        amt = 0
+    from xoso66_confirm_duration import game_item_end_ms, now_ms
+
+    end_ms = game_item_end_ms(item)
+    if end_ms <= 0:
+        end_ms = now_ms()
+    aid = str(account_id).strip()
+    with db_conn() as conn:
+        open_row = conn.execute(
+            """
+            SELECT id FROM withdraw_submissions
+            WHERE account_id = ? AND serial_no = ? AND resolved = 0
+            LIMIT 1
+            """,
+            (aid, serial),
+        ).fetchone()
+        if not open_row:
+            return False
+        _resolve_withdraw_submission(
+            conn,
+            account_id=aid,
+            amount_vnd=amt,
+            payment_serial=serial,
+            end_ms=end_ms,
+        )
+    return True
+
+
 def _credit_device_if_withdraw_success(
     account_id: str, item: dict[str, Any], order_type: int
 ) -> None:
@@ -808,6 +869,10 @@ def upsert_payment_order(account_id: str, item: dict[str, Any], order_type: int)
             """,
             row,
         )
+    if int(order_type) == ORDER_TYPE_WITHDRAW and is_withdraw_terminal_failure(
+        item.get("status"), str(item.get("status_formatted") or "")
+    ):
+        resolve_terminal_failed_withdraw_submission(account_id, item)
     _credit_device_if_withdraw_success(account_id, item, order_type)
     return row["serial_no"]
 

@@ -37,6 +37,7 @@ from xoso66_red_packet import (
 
 PATH_CHAT_GRAB = "/server/chat/grabred"
 PATH_CHAT_LOG = "/server/chat/getChatLog"
+PATH_CHAT_TOKEN = "/server/chat/getToken"
 
 # Phòng chat chính (sniff gianghoahoa 2026-10-05 — ``chat/getChatLog`` Vue dispatch).
 DEFAULT_CHAT_GROUP_ID = "928D69AEE182CFA576837902F1FC5D8E"
@@ -106,6 +107,22 @@ def parse_chat_red_payload(msg: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def fetch_chat_token(session: dict) -> dict[str, Any]:
+    """GET /server/chat/getToken — web gọi trước khi mở WS phòng chat."""
+    from xoso66_bank_bind import _get_encrypted
+
+    _, raw = _get_encrypted(session, PATH_CHAT_TOKEN, {})
+    out = _parse_api_body(raw)
+    data = out.get("data") if isinstance(out, dict) else None
+    return {
+        "ok": out.get("code") == 1 if isinstance(out, dict) else False,
+        "code": out.get("code") if isinstance(out, dict) else None,
+        "msg": out.get("msg") if isinstance(out, dict) else None,
+        "data": data,
+        "raw": out,
+    }
+
+
 def fetch_chat_log(
     session: dict,
     *,
@@ -150,6 +167,65 @@ def find_chat_red_in_log(session: dict, **kwargs: Any) -> list[dict[str, Any]]:
     return found
 
 
+def notify_time_left(item: dict[str, Any]) -> int | None:
+    """Giây còn lại. Web gán ``curTime[red_id] = time_interval`` rồi giảm mỗi 1 giây."""
+    if not isinstance(item, dict):
+        return None
+    for key in ("time_interval", "time_left", "remain_time", "left_time"):
+        if item.get(key) is None:
+            continue
+        try:
+            return int(float(item.get(key)))
+        except (TypeError, ValueError):
+            continue
+    exp = item.get("expire_time")
+    if exp is not None and str(exp).strip():
+        try:
+            from datetime import datetime
+
+            from xoso66_time_util import VN_TZ, now_vn
+
+            raw = str(exp).strip()
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+                try:
+                    dt = datetime.strptime(raw, fmt).replace(tzinfo=VN_TZ)
+                    left = int((dt - now_vn()).total_seconds())
+                    return max(0, left)
+                except ValueError:
+                    continue
+        except Exception:
+            pass
+    return None
+
+
+def pick_live_notify_red(
+    items: list[Any],
+    *,
+    skip_ids: set[int] | None = None,
+) -> dict[str, Any] | None:
+    """Bao còn ``time_interval > 0``. Bỏ id đã biết hết. Chọn bao còn nhiều giây nhất."""
+    skip = skip_ids or set()
+    best: dict[str, Any] | None = None
+    best_left = -1
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        rid = item.get("red_id") if item.get("red_id") is not None else item.get("id") or item.get("rid")
+        try:
+            red_id = int(rid)
+        except (TypeError, ValueError):
+            continue
+        if red_id in skip:
+            continue
+        left = notify_time_left(item)
+        if left is None or left <= 0:
+            continue
+        if left > best_left:
+            best_left = left
+            best = {"red_id": red_id, "time_interval": left, "meta": item}
+    return best
+
+
 def fetch_red_notify(session: dict) -> list[Any]:
     """``getredpacketinfo.data.red_notify`` — danh sách lì xì đang notify (có thể kèm chat)."""
     info = fetch_red_packet_info(session)
@@ -158,6 +234,82 @@ def fetch_red_notify(session: dict) -> list[Any]:
         data = (info["raw"].get("data") or {}) if isinstance(info["raw"], dict) else {}
         notify = data.get("red_notify")
     return list(notify or [])
+
+
+def red_notify_from_chat_log(session: dict) -> list[Any]:
+    """``getChatLog.data.red_notify`` — web lấy countdown bao chat khi mở phòng."""
+    log = fetch_chat_log(session)
+    raw = log.get("raw") if isinstance(log.get("raw"), dict) else {}
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+    notify = data.get("red_notify")
+    return list(notify) if isinstance(notify, list) else []
+
+
+def merge_red_notify_items(*lists: list[Any]) -> list[Any]:
+    """Gộp theo red_id — giữ bản có time_interval lớn hơn."""
+    merged: dict[int, dict[str, Any]] = {}
+    for lst in lists:
+        for item in lst or []:
+            if not isinstance(item, dict):
+                continue
+            rid = item.get("red_id") if item.get("red_id") is not None else item.get("id") or item.get("rid")
+            try:
+                red_id = int(rid)
+            except (TypeError, ValueError):
+                continue
+            prev = merged.get(red_id)
+            if prev is None:
+                merged[red_id] = item
+                continue
+            if (notify_time_left(item) or 0) > (notify_time_left(prev) or 0):
+                merged[red_id] = item
+    return list(merged.values())
+
+
+def discover_live_chat_red(
+    session: dict,
+    *,
+    join_chat: bool = True,
+    skip_ids: set[int] | None = None,
+) -> dict[str, Any] | None:
+    """
+    Tìm bao chat còn sống — giống web: getChatLog.red_notify + getredpacketinfo, fallback chat_red trong log.
+    """
+    notify_lists: list[list[Any]] = []
+    if join_chat:
+        try:
+            fetch_chat_token(session)
+        except Exception:
+            pass
+        ln = red_notify_from_chat_log(session)
+        if ln:
+            notify_lists.append(ln)
+    try:
+        notify_lists.append(fetch_red_notify(session))
+    except Exception:
+        pass
+    live = pick_live_notify_red(merge_red_notify_items(*notify_lists), skip_ids=skip_ids)
+    if live:
+        live.setdefault("source", "red_notify")
+        return live
+    for row in reversed(find_chat_red_in_log(session)):
+        rid = row.get("red_id")
+        try:
+            red_id = int(rid)
+        except (TypeError, ValueError):
+            continue
+        if skip_ids and red_id in skip_ids:
+            continue
+        raw_data = row.get("raw_data") if isinstance(row.get("raw_data"), dict) else {}
+        left = notify_time_left(raw_data) or notify_time_left(row)
+        if left is not None and left > 0:
+            return {
+                "red_id": red_id,
+                "time_interval": left,
+                "meta": row,
+                "source": "chat_log",
+            }
+    return None
 
 
 def _red_id_done(grab: dict[str, Any]) -> bool:
@@ -190,20 +342,67 @@ def collect_active_red_ids(session: dict, *, limit: int = 100) -> list[dict[str,
     return list(out.values())
 
 
+def join_chat_room(session: dict) -> dict[str, Any]:
+    """getToken + getChatLog — APP vào phòng trước khi grab (tránh 1030)."""
+    tok = fetch_chat_token(session)
+    log = fetch_chat_log(session, limit=100)
+    return {
+        "token_ok": bool(tok.get("ok")),
+        "token_code": tok.get("code"),
+        "chat_ok": bool(log.get("ok")),
+        "chat_code": log.get("code"),
+    }
+
+
 def grab_chat_red(
     session: dict,
     red_id: int | str,
     *,
     client_profile: str | None = DEFAULT_GRAB_PROFILE,
+    join_chat: bool = True,
 ) -> dict[str, Any]:
-    """POST /server/chat/grabred — không qua popup web."""
-    from xoso66_session import post_encrypted
+    """POST /server/chat/grabred — body plaintext như APP (mitm 2026-10-19)."""
+    import json as _json
+
+    from xoso66_deposit import build_common_headers, get_form_token
+    from xoso66_session import resolve_base_url, site_http_post, _merge_response_cookies
 
     if client_profile:
         apply_client_profile(session, client_profile)
+    join_meta: dict[str, Any] | None = None
+    if join_chat:
+        try:
+            join_meta = join_chat_room(session)
+        except Exception as e:
+            join_meta = {"error": f"{type(e).__name__}: {e}"}
     rid = int(red_id)
-    _, raw, _ = post_encrypted(session, PATH_CHAT_GRAB, {"red_id": rid})
-    out = _parse_api_body(raw)
+    base = resolve_base_url(session).rstrip("/")
+    # APP sniff: referer .../mobile/ (+ optional ?platform=app&device=native)
+    referer = f"{base}/mobile/?platform=app&device=native"
+    hdr_extra = dict(session.get("headers") or {})
+    hdr_extra["referer"] = referer
+    session["headers"] = hdr_extra
+    form_token = get_form_token(session)
+    headers = build_common_headers(
+        session,
+        form_token=form_token,
+        content_type="application/x-www-form-urlencoded/json",
+    )
+    headers["referer"] = referer
+    headers["origin"] = base
+    url = f"{base}{PATH_CHAT_GRAB}"
+    body = _json.dumps({"red_id": rid}, separators=(",", ":"))
+    r = site_http_post(session, url, headers, 45, data=body)
+    _merge_response_cookies(session, r)
+    raw: Any
+    try:
+        raw = r.json()
+    except Exception:
+        text = (r.text or "").strip()
+        raw = _parse_api_body(text) if text else {"_http": r.status_code, "_text": text[:300]}
+    out = _parse_api_body(raw) if not isinstance(raw, dict) else raw
+    if not isinstance(out, dict):
+        out = {"raw": out, "code": None}
     data = out.get("data") if isinstance(out, dict) else None
     money = None
     if isinstance(data, dict):
@@ -219,7 +418,9 @@ def grab_chat_red(
         "money": money,
         "data": data,
         "raw": out,
+        "http_status": getattr(r, "status_code", None),
         "client_profile": client_profile,
+        "join": join_meta,
     }
 
 

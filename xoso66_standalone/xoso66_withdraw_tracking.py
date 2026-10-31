@@ -17,6 +17,8 @@ from xoso66_payment_history_db import (
     ORDER_TYPE_WITHDRAW,
     SITE_STATUS_SUCCESS,
     get_payment_order,
+    is_withdraw_terminal_failure,
+    resolve_terminal_failed_withdraw_submission,
     sync_withdraw_successes_from_list,
     upsert_payment_orders,
 )
@@ -407,6 +409,26 @@ def try_confirm_withdraw_from_recent_list(
             return
         lst.append((ct_ms or 0, s, item))
 
+    def _terminal_fail_result(
+        sn: str, fail_item: dict[str, Any] | None, via: str
+    ) -> dict[str, Any]:
+        payload = fail_item if isinstance(fail_item, dict) else {"serial_no": sn}
+        if not str(payload.get("serial_no") or "").strip():
+            payload = {**payload, "serial_no": sn}
+        resolve_terminal_failed_withdraw_submission(account_id, payload)
+        return {
+            "ok": True,
+            "confirmed": False,
+            "success": False,
+            "terminal_failed": True,
+            "serial_no": sn,
+            "item": payload,
+            "sync": sync_all,
+            "via": via,
+            "hint": "rút thất bại — Trạng thái không thành công",
+            "poll_snapshot": poll_snapshot,
+        }
+
     if serial_no:
         sn = str(serial_no).strip()
         item = by_serial.get(sn)
@@ -421,6 +443,10 @@ def try_confirm_withdraw_from_recent_list(
                 "via": "serial_no",
                 "poll_snapshot": poll_snapshot,
             }
+        if item and is_withdraw_terminal_failure(
+            item.get("status"), str(item.get("status_formatted") or "")
+        ):
+            return _terminal_fail_result(sn, item, "serial_failed")
         row = get_payment_order(sn)
         if row and _db_payment_row_matches_withdraw_attempt(
             row,
@@ -438,6 +464,14 @@ def try_confirm_withdraw_from_recent_list(
                 "via": "db_serial",
                 "poll_snapshot": poll_snapshot,
             }
+        if row and is_withdraw_terminal_failure(
+            row.get("status"), str(row.get("status_formatted") or "")
+        ):
+            return _terminal_fail_result(
+                sn,
+                item or _item_stub_from_payment_row(sn, row),
+                "db_serial_failed",
+            )
         return {
             "ok": True,
             "confirmed": False,
@@ -588,7 +622,12 @@ def log_withdraw_poll_attempt(
     elif not (rep.get("confirmed") and rep.get("success")):
         lines.append("  khớp amount+since: không có lệnh Hoàn tất")
 
-    if rep.get("confirmed") and rep.get("success"):
+    if rep.get("terminal_failed"):
+        sn_fail = str(rep.get("serial_no") or sn_tgt or "—")
+        lines.append(
+            f"  → rút thất bại (Trạng thái không thành công) — đã có KQ | serial {sn_fail}"
+        )
+    elif rep.get("confirmed") and rep.get("success"):
         via = str(rep.get("via") or "").strip()
         sn_ok = str(rep.get("serial_no") or sn_tgt or "—")
         lines.append(f"  → OK Hoàn tất | serial {sn_ok}" + (f" | {via}" if via else ""))
@@ -702,6 +741,12 @@ def poll_withdraw_until_confirmed(
                 serial_no=serial_no,
                 log_prefix=log_prefix,
             )
+        if chk.get("terminal_failed"):
+            chk["attempt"] = cumulative
+            chk["max_attempts"] = total_max
+            chk["done"] = True
+            return chk
+
         if chk.get("confirmed") and chk.get("success"):
             chk["attempt"] = cumulative
             chk["max_attempts"] = total_max

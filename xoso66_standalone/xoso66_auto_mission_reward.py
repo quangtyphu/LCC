@@ -618,7 +618,18 @@ def _maybe_withdraw_before_claim(
             out["withdraw_poll"] = poll_rep
             confirmed = bool(poll_rep.get("confirmed") and poll_rep.get("success"))
             out["withdraw_confirmed"] = confirmed
-            if confirmed:
+            if poll_rep.get("terminal_failed"):
+                out["withdraw_terminal_failed"] = True
+                out["withdraw_ok"] = False
+                out["withdraw_msg"] = str(
+                    poll_rep.get("hint") or "rút thất bại — Trạng thái không thành công"
+                )
+                print(
+                    f"[AUTO-MISSION] {u}: rút thất bại "
+                    f"(Trạng thái không thành công) — đã có KQ, nhận thưởng",
+                    flush=True,
+                )
+            elif confirmed:
                 _sync_balance_to_db(account_id, session, label="sau rút Hoàn tất")
                 out["withdraw_ok"] = True
             else:
@@ -662,12 +673,15 @@ def _can_claim_after_withdraw(
     - Không bước rút lần này (reward_retry) và không có rút pending.
     - Bỏ rút vì balance < min_withdraw_vnd (và không có rút pending).
     - Rút fail vì chưa đủ cược turnover → bỏ rút, nhận thưởng.
+    - Rút thất bại «Trạng thái không thành công» (đã có KQ) → nhận thưởng.
     - Đã rút và lịch sử site xác nhận Hoàn tất (withdraw_confirmed).
     """
     from xoso66_payment_history_db import has_unresolved_withdraw_submission
 
     if has_unresolved_withdraw_submission(account_id):
         return False
+    if withdraw_info and withdraw_info.get("withdraw_terminal_failed"):
+        return True
     if withdraw_info is None:
         return True
     if withdraw_info.get("skipped"):

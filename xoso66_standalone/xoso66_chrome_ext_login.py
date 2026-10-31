@@ -164,6 +164,53 @@ def _window_pid(win: Any) -> int:
         return 0
 
 
+def _enum_chrome_top_windows() -> list[tuple[int, int, str]]:
+    """
+    HWND Chrome top-level qua Win32 EnumWindows.
+
+    Không dùng auto.GetRootControl().GetChildren() — UIA hay treo vô hạn khi
+    có Chrome/profile kẹt hoặc cửa sổ không phản hồi accessibility.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return []
+
+    user32 = ctypes.windll.user32
+    found: list[tuple[int, int, str]] = []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    @WNDENUMPROC
+    def _cb(hwnd: int, _lparam: int) -> bool:
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            cls = ctypes.create_unicode_buffer(256)
+            if user32.GetClassNameW(hwnd, cls, 256) == 0:
+                return True
+            if cls.value != "Chrome_WidgetWin_1":
+                return True
+            n = int(user32.GetWindowTextLengthW(hwnd) or 0)
+            title_buf = ctypes.create_unicode_buffer(max(n + 1, 1))
+            user32.GetWindowTextW(hwnd, title_buf, n + 1)
+            title = str(title_buf.value or "")
+            pid = wintypes.DWORD(0)
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            found.append((int(hwnd), int(pid.value or 0), title))
+        except Exception:
+            pass
+        return True
+
+    try:
+        user32.EnumWindows(_cb, 0)
+    except Exception:
+        return []
+    return found
+
+
 def _pids_in_process_tree(root_pid: int) -> set[int]:
     """Mọi PID trong cây process gốc root_pid (Windows)."""
     root = int(root_pid or 0)
@@ -316,26 +363,24 @@ def _find_chrome_windows(
 ) -> list[Any]:
     """Cửa sổ Google Chrome (bỏ Chrome for Testing). Chỉ lấy PID thuộc profile nếu có allow_pids."""
     out: list[Any] = []
-    try:
-        root = auto.GetRootControl()
-    except Exception:
-        return out
-    for w in root.GetChildren():
+    # allow_pids rỗng = chưa resolve được → đừng lọc (tránh treo im forever).
+    pid_filter: set[int] | None = allow_pids if allow_pids else None
+    for hwnd, pid, name in _enum_chrome_top_windows():
         try:
-            if str(getattr(w, "ClassName", "") or "") != "Chrome_WidgetWin_1":
-                continue
-            name = str(getattr(w, "Name", "") or "")
             if "Chrome for Testing" in name:
                 continue
             if not include_blank and name.strip() in ("", "Untitled", "about:blank"):
                 continue
             if include_blank and name.strip() == "":
                 continue
-            if allow_pids is not None:
-                if not allow_pids:
-                    continue
-                if _window_pid(w) not in allow_pids:
-                    continue
+            if pid_filter is not None and pid not in pid_filter:
+                continue
+            try:
+                w = auto.ControlFromHandle(hwnd)
+            except Exception:
+                continue
+            if w is None:
+                continue
             out.append(w)
         except Exception:
             continue
@@ -1080,7 +1125,7 @@ def ui_login_in_chrome(
     allow_pids = _resolve_chrome_allow_pids(
         chrome_pid=chrome_pid, profile_dir=profile_dir
     )
-    last_pid_refresh = 0.0
+    last_pid_refresh = time.time()
     if chrome_pid > 0 or profile_dir is not None:
         _log(
             f"Chỉ điều khiển Chrome PID tree={sorted(allow_pids)[:8]}"
@@ -1089,16 +1134,16 @@ def ui_login_in_chrome(
 
     while time.time() < deadline:
         now = time.time()
-        # Chrome spawn child muộn — refresh allow_pids mỗi ~1.2s (PowerShell tốn kém).
+        # Chrome spawn child muộn — refresh allow_pids mỗi ~2.5s (PowerShell tốn kém).
         if chrome_pid > 0 or profile_dir is not None:
-            if (now - last_pid_refresh) >= 1.2 or not allow_pids:
-                allow_pids = _resolve_chrome_allow_pids(
+            if (now - last_pid_refresh) >= 2.5 or not allow_pids:
+                refreshed = _resolve_chrome_allow_pids(
                     chrome_pid=chrome_pid, profile_dir=profile_dir
                 )
+                if refreshed:
+                    allow_pids = refreshed
                 last_pid_refresh = now
-            wins = _find_chrome_windows(
-                auto, allow_pids=allow_pids if allow_pids else set()
-            )
+            wins = _find_chrome_windows(auto, allow_pids=allow_pids)
         else:
             wins = _find_chrome_windows(auto)
         win = _pick_site_window(wins)
@@ -1106,7 +1151,14 @@ def ui_login_in_chrome(
             last = {"phase": "wait_chrome", "allow_pids": len(allow_pids)}
             blank_since = 0.0
             wait_page_since = 0.0
-            time.sleep(0.2)
+            if last_progress <= 0 or (now - last_progress) >= 2.0:
+                tops = _enum_chrome_top_windows()
+                _log(
+                    f"Đợi cửa sổ Chrome… {now - t_loop0:.1f}s "
+                    f"allow_pids={len(allow_pids)} top_chrome={len(tops)}"
+                )
+                last_progress = now
+            time.sleep(0.25)
             continue
 
         if not brought_front:
@@ -1361,16 +1413,22 @@ def wait_chrome_login_form_ready(
 
         while time.time() < deadline:
             now = time.time()
-            if (now - last_pid_refresh) >= 1.2 or not allow_pids:
-                allow_pids = _resolve_chrome_allow_pids(
+            if (now - last_pid_refresh) >= 2.5 or not allow_pids:
+                refreshed = _resolve_chrome_allow_pids(
                     chrome_pid=int(proc.pid or 0), profile_dir=profile_dir
                 )
+                if refreshed:
+                    allow_pids = refreshed
                 last_pid_refresh = now
-            wins = _find_chrome_windows(
-                auto, allow_pids=allow_pids if allow_pids else set()
-            )
+            wins = _find_chrome_windows(auto, allow_pids=allow_pids)
             win = _pick_site_window(wins)
             if win is None:
+                if last_progress <= 0 or (now - last_progress) >= 2.0:
+                    _log(
+                        f"[READY-TEST] Đợi cửa sổ Chrome… {now - t0:.1f}s "
+                        f"allow_pids={len(allow_pids)}"
+                    )
+                    last_progress = now
                 time.sleep(0.25)
                 continue
             if not brought_front:
@@ -1490,6 +1548,7 @@ def login_via_chrome_ui(
     _log(f"Mở Chrome CMS + URL trực tiếp: {url}")
     proc: subprocess.Popen[Any] | None = None
     close_chrome = True
+    fast_close = False
     try:
         mark_chrome_clean_exit(profile_dir)
         had_cf = profile_has_cf_clearance(profile_dir)
@@ -1558,11 +1617,14 @@ def login_via_chrome_ui(
             if bal.get("ok"):
                 balance = bal.get("balance")
                 _log(f"Balance OK {balance} — đóng Chrome")
+                session.pop("cek_p", None)
+                session.pop("aes_session_key", None)
                 try:
                     persist_session(str(session.get("id") or ""), session)
                 except Exception:
                     pass
                 close_chrome = True
+                fast_close = True
                 return {
                     **meta,
                     "ok": True,
@@ -1593,8 +1655,15 @@ def login_via_chrome_ui(
     finally:
         if close_chrome:
             mark_chrome_clean_exit(profile_dir)
-            close_chrome_gracefully(proc, profile_dir, wait_unlock_sec=15)
+            close_chrome_gracefully(
+                proc,
+                profile_dir,
+                wait_unlock_sec=2 if fast_close else 15,
+                force=fast_close,
+            )
             mark_chrome_clean_exit(profile_dir)
+            if fast_close:
+                _log("Chrome đã đóng")
 
 
 def login_via_chrome_extension(

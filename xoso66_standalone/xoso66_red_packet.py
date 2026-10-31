@@ -103,9 +103,28 @@ CLIENT_PROFILES: dict[str, dict[str, str]] = {
         "user_agent": _CLIENT_UA_ANDROID,
         "playwright_mobile": "1",
     },
+    # Sniff APP native com.bet66.naapp 2026-10-17 (mitm):
+    # x-device=android, x-app-platform rỗng (KHÔNG phải "app"),
+    # x-app-version=8, x-app-build-version=991, x-requested-with=com.bet66.naapp,
+    # referer .../mobile/?platform=app&device=native
     "android_app": {
         "x_device": "android",
-        "x_app_platform": "app",
+        "x_app_platform": "",
+        "x_app_version": "8",
+        "x_app_build_version": "991",
+        "x_requested_with": "com.bet66.naapp",
+        "user_agent": (
+            "Mozilla/5.0 (Linux; Android 13; SM-F946B Build/TP1A.220624.014;) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/119.0.6045.66 "
+            "Mobile Safari/537.36"
+        ),
+        "playwright_mobile": "1",
+    },
+    # Sniff /mobile/ 2026-10-17: site gửi x-device=androidH5, x-app-platform rỗng.
+    # Server trả 1053 «Đăng nhập qua app…» — H5 không nhận được lì xì chat.
+    "androidH5": {
+        "x_device": "androidH5",
+        "x_app_platform": "",
         "user_agent": _CLIENT_UA_ANDROID,
         "playwright_mobile": "1",
     },
@@ -146,6 +165,15 @@ def apply_client_profile(session: dict, profile: str | None) -> dict[str, str] |
     hdr = dict(session.get("headers") or {})
     hdr["x-device"] = meta["x_device"]
     hdr["x-app-platform"] = meta["x_app_platform"]
+    if meta.get("x_app_version") is not None:
+        session["x_app_version"] = meta["x_app_version"]
+        hdr["x-app-version"] = meta["x_app_version"]
+    if meta.get("x_app_build_version") is not None:
+        session["x_app_build_version"] = meta["x_app_build_version"]
+        hdr["x-app-build-version"] = meta["x_app_build_version"]
+    if meta.get("x_requested_with"):
+        session["x_requested_with"] = meta["x_requested_with"]
+        hdr["x-requested-with"] = meta["x_requested_with"]
     session["headers"] = hdr
     return meta
 
@@ -225,28 +253,51 @@ def _parse_body_text(body: str) -> dict[str, Any] | None:
     return None
 
 
+def _crypto_param_error(code: Any, msg: Any) -> bool:
+    """10056/10058 — khóa mã hóa/cek_p cũ, không phải hết bao lì xì."""
+    try:
+        if int(code) in (10056, 10058):
+            return True
+    except (TypeError, ValueError):
+        pass
+    text = str(msg or "").lower()
+    return "tham số" in text or "tham so" in text
+
+
+def _drop_stale_crypto(session: dict) -> None:
+    session.pop("cek_p", None)
+    session.pop("aes_session_key", None)
+
+
 def fetch_red_packet_info(session: dict) -> dict[str, Any]:
     """GET getredpacketinfo — mở lại danh sách sau khi tắt popup."""
     from xoso66_bank_bind import _get_encrypted
 
-    _, raw = _get_encrypted(session, PATH_INFO, {})
-    out = _parse_api_body(raw)
-    data = out.get("data") or {}
-    lst = data.get("list") or []
-    item = lst[0] if lst and isinstance(lst[0], dict) else {}
-    pid = item.get("id")
-    if pid is None:
-        pid = item.get("rid")
-    return {
-        "ok": out.get("code") == 1,
-        "code": out.get("code"),
-        "msg": out.get("msg"),
-        "isNew": data.get("isNew"),
-        "list": lst,
-        "red_notify": data.get("red_notify") or [],
-        "packet_id": pid,
-        "raw": out,
-    }
+    def _once() -> dict[str, Any]:
+        _, raw = _get_encrypted(session, PATH_INFO, {})
+        out = _parse_api_body(raw)
+        data = out.get("data") or {}
+        lst = data.get("list") or []
+        item = lst[0] if lst and isinstance(lst[0], dict) else {}
+        pid = item.get("id")
+        if pid is None:
+            pid = item.get("rid")
+        return {
+            "ok": out.get("code") == 1,
+            "code": out.get("code"),
+            "msg": out.get("msg"),
+            "isNew": data.get("isNew"),
+            "list": lst,
+            "red_notify": data.get("red_notify") or [],
+            "packet_id": pid,
+            "raw": out,
+        }
+
+    info = _once()
+    if not info.get("packet_id") and _crypto_param_error(info.get("code"), info.get("msg")):
+        _drop_stale_crypto(session)
+        info = _once()
+    return info
 
 
 def grab_red_packet(session: dict, packet_id: int | str) -> dict[str, Any]:
@@ -484,8 +535,10 @@ def attempt_http_red_packet_claim(session: dict) -> dict[str, Any]:
     info = fetch_red_packet_info(session)
     pid = info.get("packet_id")
     if not pid:
+        # Lỗi khóa/tham số: còn có thể có bao — đừng đánh hết bao (batch sẽ retry).
+        stale = _crypto_param_error(info.get("code"), info.get("msg"))
         return {
-            "no_packet": True,
+            "no_packet": not stale,
             "packet_id": None,
             "info": info,
             "grab": {
@@ -1052,6 +1105,10 @@ def claim_red_packet(
             return _finish_claim(grab0)
         if http_try.get("no_packet"):
             return _finish_claim(grab0, no_packet=True)
+        if _crypto_param_error(grab0.get("code"), grab0.get("msg")):
+            # Khóa cũ: fetch đã xóa cek_p và gọi lại 1 lần. Vẫn lỗi thì
+            # để batch thử HTTP lần sau — không mở Playwright, không ghi hết bao.
+            return _finish_claim(grab0, no_packet=False)
         _say(
             f"[HTTP-first] chua nhan code={grab0.get('code')} msg={grab0.get('msg')!r} "
             f"— fallback Playwright UI"
@@ -1283,7 +1340,8 @@ def claim_red_packet(
                     }
                     result["still_available"] = True
             else:
-                no_packet = True
+                stale = _crypto_param_error(info.get("code"), info.get("msg"))
+                no_packet = not stale
                 grab = {
                     "ok": False,
                     "code": info.get("code"),
@@ -1291,7 +1349,10 @@ def claim_red_packet(
                     "via": "http_info",
                     "raw": info,
                 }
-                _step("no_packet", {"packet_id": None, "info_ok": info.get("ok")})
+                _step(
+                    "crypto_param_error" if stale else "no_packet",
+                    {"packet_id": None, "info_ok": info.get("ok"), "code": info.get("code")},
+                )
 
     if persist:
         persist_session(account_id, session)
@@ -1380,6 +1441,10 @@ def _claim_one_in_batch(
             amt = int(result.get("amount_received") or 0)
             claimed = bool(result.get("claimed"))
             no_packet = bool(result.get("no_packet"))
+            grab_msg = (result.get("grab") or {}).get("msg")
+            grab_code = (result.get("grab") or {}).get("code")
+            if no_packet and _crypto_param_error(grab_code, grab_msg):
+                no_packet = False
             status = "CO" if claimed else ("KHONG (het bao)" if no_packet else "KHONG")
             extra = ""
             if not claimed and result.get("grab", {}).get("msg"):
