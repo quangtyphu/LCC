@@ -253,6 +253,17 @@ def _parse_body_text(body: str) -> dict[str, Any] | None:
     return None
 
 
+def _rate_limited_error(code: Any, msg: Any) -> bool:
+    """1049 — gọi dày, không phải hết bao."""
+    try:
+        if int(code) == 1049:
+            return True
+    except (TypeError, ValueError):
+        pass
+    text = str(msg or "").lower()
+    return "quá thường xuyên" in text or "qua thuong xuyen" in text
+
+
 def _crypto_param_error(code: Any, msg: Any) -> bool:
     """10056/10058 — khóa mã hóa/cek_p cũ, không phải hết bao lì xì."""
     try:
@@ -302,6 +313,7 @@ def fetch_red_packet_info(session: dict) -> dict[str, Any]:
 
 def grab_red_packet(session: dict, packet_id: int | str) -> dict[str, Any]:
     """POST grabredpacket — thử rid (web) rồi id (bot cũ)."""
+    from xoso66_secure_headers import CRYPTO_VERSION_V3
     from xoso66_session import post_encrypted
 
     pid = int(packet_id)
@@ -310,8 +322,12 @@ def grab_red_packet(session: dict, packet_id: int | str) -> dict[str, Any]:
         "packet_id": pid,
         "raw": {},
     }
+    # Site 6.2.1 từ chối grabredpacket gói v2 (plaintext code 0 «Thất bại», data []).
+    session.pop("aes_session_key", None)
     for body in ({"rid": pid}, {"id": pid}):
-        _, raw, _ = post_encrypted(session, PATH_GRAB, body)
+        _, raw, _ = post_encrypted(
+            session, PATH_GRAB, body, crypto_version=CRYPTO_VERSION_V3
+        )
         out = _parse_api_body(raw)
         last = {
             "ok": out.get("code") == 1,
@@ -535,8 +551,10 @@ def attempt_http_red_packet_claim(session: dict) -> dict[str, Any]:
     info = fetch_red_packet_info(session)
     pid = info.get("packet_id")
     if not pid:
-        # Lỗi khóa/tham số: còn có thể có bao — đừng đánh hết bao (batch sẽ retry).
-        stale = _crypto_param_error(info.get("code"), info.get("msg"))
+        # Lỗi khóa/tham số hoặc rate-limit: còn có thể có bao — đừng đánh hết bao.
+        stale = _crypto_param_error(info.get("code"), info.get("msg")) or _rate_limited_error(
+            info.get("code"), info.get("msg")
+        )
         return {
             "no_packet": not stale,
             "packet_id": None,
@@ -1014,7 +1032,24 @@ def claim_red_packet(
     log_path = LOG_DIR / f"{account_id}_{ts}_claim.jsonl"
 
     if session is None:
-        session = ensure_session(account_id)
+        from xoso66_session import load_sessions
+
+        stored = load_sessions().get(account_id)
+        if stored is None:
+            session = ensure_session(account_id)
+        else:
+            session = stored
+            session.setdefault("id", account_id)
+            bal_probe = get_user_balance(session, refresh=True)
+            if not bal_probe.get("ok"):
+                http_st = bal_probe.get("http_status")
+                if http_st in (403, 475) or bal_probe.get("rate_limited"):
+                    raise RuntimeError(
+                        f"getBalance fail http={http_st} "
+                        f"rate_limited={bool(bal_probe.get('rate_limited'))} "
+                        "— không login lại, không mở trình duyệt"
+                    )
+                session = ensure_session(account_id)
     prof = client_profile if client_profile is not None else RED_PACKET_CLIENT_PROFILE
     client_meta = apply_client_profile(session, prof)
     user = (session.get("user_info") or {}).get("username") or session.get("username")
@@ -1111,8 +1146,9 @@ def claim_red_packet(
             return _finish_claim(grab0, no_packet=False)
         _say(
             f"[HTTP-first] chua nhan code={grab0.get('code')} msg={grab0.get('msg')!r} "
-            f"— fallback Playwright UI"
+            f"— khong mo trinh duyet"
         )
+        return _finish_claim(grab0, no_packet=False)
 
     _say(f"\n=== {account_id} ({user}) | Playwright /home/ (UI mo bao) ===")
     _say(f"proxy={result['proxy']} balance={bal_before}")
@@ -1340,7 +1376,9 @@ def claim_red_packet(
                     }
                     result["still_available"] = True
             else:
-                stale = _crypto_param_error(info.get("code"), info.get("msg"))
+                stale = _crypto_param_error(info.get("code"), info.get("msg")) or _rate_limited_error(
+                    info.get("code"), info.get("msg")
+                )
                 no_packet = not stale
                 grab = {
                     "ok": False,
