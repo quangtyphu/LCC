@@ -846,6 +846,7 @@ def post_encrypted(
     plain: dict,
     *,
     http: requests.Session | None = None,
+    crypto_version: str | None = None,
 ) -> tuple[int, Any, dict]:
     from xoso66_deposit import (
         DEFAULT_UA,
@@ -870,7 +871,8 @@ def post_encrypted(
         raise RuntimeError("pip install pycryptodome")
 
     crypto_ver = str(
-        session.get("crypto_version")
+        crypto_version
+        or session.get("crypto_version")
         or os.environ.get("XOSO66_CRYPTO_VERSION")
         or CRYPTO_VERSION_V2
     ).strip().lower()

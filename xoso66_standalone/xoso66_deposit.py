@@ -1708,13 +1708,16 @@ def create_deposit_order(
     if not crypto_available():
         raise RuntimeError("pip install pycryptodome (hoac them xoso66_crypto_impl.js)")
 
-    # Dùng luồng POST mã hóa chung để luôn áp dụng secure headers + body v2.
-    # Luồng cũ gọi post_deposit_order trực tiếp nên vẫn gửi cipher v1.
+    # Site 6.2.1 từ chối depositorder gói v2 (plaintext code 0 «Thất bại»).
+    # Chỉ lệnh nạp dùng v3. API khác giữ mã hóa của session (mặc định v2).
+    from xoso66_secure_headers import CRYPTO_VERSION_V3
+
     session.pop("aes_session_key", None)
     status, decrypted, resp_headers = post_encrypted(
         session,
         DEPOSIT_ORDER_PATH,
         plain,
+        crypto_version=CRYPTO_VERSION_V3,
     )
     if status != 200:
         return {"ok": False, "error": f"HTTP {status}", "raw": decrypted}
@@ -1746,6 +1749,7 @@ def create_deposit_order(
                 session,
                 DEPOSIT_ORDER_PATH,
                 plain,
+                crypto_version=CRYPTO_VERSION_V3,
             )
             if status == 200 and not (
                 isinstance(decrypted, dict) and decrypted.get("_decrypt_error")
