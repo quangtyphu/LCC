@@ -65,7 +65,8 @@ def _get_encrypted(session: dict, path: str, params: dict | None = None) -> tupl
     from xoso66_secure_headers import (
         CRYPTO_VERSION_HEADER,
         CRYPTO_VERSION_V2,
-        generate_secure_headers,
+        CRYPTO_VERSION_V3,
+        generate_secure_headers_v3,
         unpack_v2_ciphertext,
     )
 
@@ -74,10 +75,9 @@ def _get_encrypted(session: dict, path: str, params: dict | None = None) -> tupl
     _, cek_k, aes_key = encrypt_deposit_body(session, params)
     headers = build_request_headers(session, cek_k=cek_k, form_token=get_form_token(session))
     url = f"{resolve_base_url(session)}{path}"
-    # Frontend 6.1.9 ký mới cho từng request. Header lưu trong DB đã cũ sẽ
-    # khiến API trả code=0/data=[] dù tài khoản thực sự có thẻ ngân hàng.
+    # Site 6.2.1 trả code=0/data=[] khi GET thẻ NH ký v2, dù nick có thẻ.
     headers.update(
-        generate_secure_headers(
+        generate_secure_headers_v3(
             url,
             str(session.get("user_agent") or DEFAULT_UA),
         )
@@ -108,7 +108,7 @@ def _get_encrypted(session: dict, path: str, params: dict | None = None) -> tupl
                 or r.headers.get(CRYPTO_VERSION_HEADER.title())
                 or headers.get(CRYPTO_VERSION_HEADER)
             )
-            if response_version == CRYPTO_VERSION_V2:
+            if response_version in (CRYPTO_VERSION_V2, CRYPTO_VERSION_V3):
                 text = unpack_v2_ciphertext(text)
             return r.status_code, decrypt_deposit_body(
                 session, text, aes_key, dict(r.headers)

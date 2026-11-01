@@ -88,9 +88,18 @@ def is_withdrawal_success(js: dict[str, Any]) -> tuple[bool, str]:
 
 
 def withdrawal_order(session: dict, plain: dict) -> dict[str, Any]:
+    from xoso66_secure_headers import CRYPTO_VERSION_V3
+
     session.pop("aes_session_key", None)
     http = _requests_session(session)
-    status, data, _ = post_encrypted(session, WITHDRAWAL_ORDER_PATH, plain, http=http)
+    # Cùng site 6.2.1: withdrawalorder gói v2 bị trả code 0, giống depositorder.
+    status, data, _ = post_encrypted(
+        session,
+        WITHDRAWAL_ORDER_PATH,
+        plain,
+        http=http,
+        crypto_version=CRYPTO_VERSION_V3,
+    )
     js = _parse_api_body(data)
     ok, reason = is_withdrawal_success(js)
     return {
